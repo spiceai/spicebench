@@ -1,0 +1,10 @@
+[source]
+type = "duckdb"
+scale_factor = 0.01
+batch_size = 1000
+total_batches = 10
+
+[target]
+type = "s3"
+bucket = "viktor-test-snapshots"
+prefix = "data-ingestion"
