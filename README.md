@@ -13,33 +13,48 @@ flowchart TB
         trigger --> orchestrator
     end
 
-    subgraph datagen["Data Generation"]
-        generator["Data Generator\n(configurable rate & schema)"]
-    end
-
-    subgraph adapters["System Adapters"]
+    subgraph run["Spicebench Run"]
         direction TB
-        adapter_iface["Adapter Interface\n(setup / teardown / ingest / query)"]
-        spice["Spice Cloud Adapter\n(Management API)"]
-        databricks["Databricks Adapter\n(REST API)"]
-        snowflake["Snowflake Adapter\n(SQL API)"]
-        other["... Other Adapters"]
-        adapter_iface --- spice
-        adapter_iface --- databricks
-        adapter_iface --- snowflake
-        adapter_iface --- other
-    end
 
-    subgraph sut["System Under Test"]
-        direction TB
-        ingest_ep["Ingestion Endpoint"]
-        query_ep["Query Endpoint"]
-    end
+        subgraph setup_phase["1 · Setup"]
+            adapter_iface["Adapter Interface\n(setup / teardown / ingest / query)"]
+            spice["Spice Cloud Adapter\n(Management API)"]
+            databricks["Databricks Adapter\n(REST API)"]
+            snowflake["Snowflake Adapter\n(SQL API)"]
+            other["... Other Adapters"]
+            adapter_iface --- spice
+            adapter_iface --- databricks
+            adapter_iface --- snowflake
+            adapter_iface --- other
+        end
 
-    subgraph workload["Concurrent Workload Engine"]
-        direction LR
-        ingestion_driver["Ingestion Driver\n(continuous writes)"]
-        query_driver["Query Driver\n(continuous reads)"]
+        subgraph bench_phase["2 · Benchmark (timed)"]
+            direction TB
+
+            subgraph datagen["Data Generation"]
+                generator["Data Generator\n(incremental inserts,\nupdates, deletes)"]
+            end
+
+            subgraph ingestion_paths["Ingestion Paths"]
+                direction TB
+                datalake["Data Lake\n(Delta Lake / Iceberg)"]
+                oltp_cdc["OLTP DB → Debezium\n→ Kafka (CDC)"]
+                direct["Direct SQL\n(INSERT/UPDATE via\nADBC/JDBC/ODBC)"]
+                kafka["Message Bus / Queue\n(Kafka)"]
+            end
+
+            subgraph sut["System Under Test"]
+                direction TB
+                ingest_ep["Ingestion Endpoint"]
+                query_ep["Query Endpoint"]
+            end
+
+            query_driver["Query Driver\n(continuous reads)"]
+        end
+
+        subgraph teardown_phase["3 · Teardown & Cleanup"]
+            cleanup["Deprovision resources\nvia adapter"]
+        end
     end
 
     subgraph metrics["Metrics Collection (OTel)"]
@@ -69,40 +84,56 @@ flowchart TB
         otel_endpoint["OTel Collector Endpoint"]
     end
 
-    subgraph reporting["Reporting"]
-        results["Results Store"]
-        report["Report Generator\n(comparisons & charts)"]
-        results --> report
+    subgraph website["spicebench.com"]
+        leaderboard["Leaderboard\n(ranked by E2E benchmark duration)"]
+        run_details["Run Details\n(per-query breakdown,\nresource usage, latency)"]
+        leaderboard --> run_details
     end
 
-    orchestrator -->|"configure & launch"| datagen
-    orchestrator -->|"setup via adapter"| adapters
-    orchestrator -->|"start workloads"| workload
+    orchestrator -->|"start run"| run
 
-    generator -->|"raw events"| ingestion_driver
     adapter_iface -->|"provision / configure"| sut
+    setup_phase -->|"system ready"| bench_phase
+    bench_phase -->|"benchmark complete"| teardown_phase
 
-    ingestion_driver -->|"write events"| ingest_ep
+    generator -->|"mutations"| ingestion_paths
+    datalake -->|"SUT reads table"| ingest_ep
+    oltp_cdc -->|"SUT consumes CDC"| ingest_ep
+    direct -->|"SQL writes"| ingest_ep
+    kafka -->|"SUT reads queue"| ingest_ep
     query_driver -->|"execute queries"| query_ep
 
-    ingestion_driver -->|"write metrics"| collector
+    generator -->|"ingestion metrics"| collector
     query_driver -->|"query metrics"| collector
     sut -.->|"resource metrics"| collector
 
     collector -->|"OTLP export"| otel_endpoint
-    collector --> results
+    otel_endpoint -->|"run results"| website
 ```
+
+### Spicebench Run
+
+A **Run** is a single end-to-end execution of the benchmark for one system. Each Run proceeds through three phases:
+
+| Phase                    | What happens                                                                                                        | Timed? |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------- | ------ |
+| **1. Setup**             | Provision infrastructure and configure the system under test via its adapter (e.g. Spice Cloud API, Databricks API) | No     |
+| **2. Benchmark (timed)** | Continuous data generation + ingestion and concurrent query execution run simultaneously                            | Yes    |
+| **3. Teardown**          | Deprovision resources and clean up via the adapter                                                                  | No     |
+
+The **E2E benchmark duration** (phase 2 only) is the primary ranking metric. Setup and teardown time are recorded but excluded from the leaderboard ranking.
 
 ### Component Overview
 
-| Component                       | Responsibility                                                                                                                                                                       |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **GitHub Actions Orchestrator** | Triggers benchmark runs on schedule, PR, or manual dispatch. Manages the full lifecycle: provision → run → collect → report → teardown.                                              |
-| **Data Generator**              | Produces realistic operational data at configurable rates and schemas. Emits timestamped events for E2E latency measurement.                                                         |
-| **System Adapters**             | Pluggable interface for provisioning and interacting with each platform. Each adapter implements `setup`, `teardown`, `ingest`, and `query` operations using platform-specific APIs. |
-| **Concurrent Workload Engine**  | Drives continuous ingestion and query execution in parallel, simulating real operational workloads where reads and writes happen simultaneously.                                     |
-| **Metrics Collector**           | Emits all benchmark metrics via OpenTelemetry (OTLP) to `telemetry.spiceai.io`. Captures data from both the workload drivers and the system under test.                              |
-| **Report Generator**            | Aggregates results and produces cross-system comparisons.                                                                                                                            |
+| Component             | Responsibility                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **GitHub Actions**    | Orchestrates Runs on schedule, PR, or manual dispatch. Manages the full Run lifecycle across phases.                |
+| **System Adapters**   | Pluggable interface for each platform. Implements `setup`, `teardown`, `ingest`, and `query` using platform APIs.   |
+| **Data Generator**    | Produces incremental data mutations (inserts, updates, deletes) at configurable rates during the benchmark phase.   |
+| **Ingestion Paths**   | Four modes: Data Lake (Delta Lake/Iceberg), OLTP→Debezium CDC via Kafka, Direct SQL (ADBC/JDBC/ODBC), Kafka.        |
+| **Query Driver**      | Executes the benchmark query suite continuously and concurrently with ingestion during the benchmark phase.         |
+| **Metrics Collector** | Emits all metrics via OpenTelemetry (OTLP) to `telemetry.spiceai.io`. Captures ingestion, query, and resource data. |
+| **spicebench.com**    | Public results site with leaderboard (ranked by E2E benchmark duration) and per-Run detail views.                   |
 
 ### Metrics
 
@@ -116,7 +147,15 @@ flowchart TB
 | Efficiency (cores)    | Performance normalized by compute resources                            |
 | Resource Usage        | CPU, memory, disk, and IOPS utilization during the run                 |
 | E2E Latency           | Time from event creation to the event being queryable                  |
-| E2E Duration          | Total wall-clock time for the full benchmark run                       |
+| E2E Duration          | Total wall-clock time for the benchmark phase                          |
+
+### spicebench.com
+
+Results from every Run are published to [spicebench.com](https://spicebench.com), inspired by [ClickBench](https://clickbench.com/) and [Vortex Bench](https://bench.vortex.dev/). The site provides:
+
+- **Leaderboard** — Systems ranked by E2E benchmark duration (phase 2 wall-clock time). Secondary sort by query latency and ingestion throughput.
+- **Run details** — Per-query latency breakdown, ingestion rates over time, resource utilization charts, and E2E event latency distributions.
+- **Cross-system comparison** — Side-by-side views of any two Runs with relative performance ratios.
 
 ### Adding a New System Adapter
 
