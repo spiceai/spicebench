@@ -166,6 +166,12 @@ To benchmark a new platform, implement the adapter interface:
 3. **Query** — Execute the benchmark query suite against the system.
 4. **Teardown** — Clean up provisioned resources.
 
+### Future Improvements
+
+- **Search** — Full-text search with BM25 indexing, vectorization/embedding, and hybrid search queries as part of the benchmark query suite.
+- **Text-to-SQL / NSQL** — Natural language to SQL translation benchmarks, measuring accuracy and latency of converting plain-English questions into executable queries.
+- **AI** — LLM context generation, retrieval-augmented generation (RAG), and inference benchmarks measuring end-to-end latency from data to AI-ready context.
+
 ## License
 
 See [LICENSE](LICENSE) for details.
