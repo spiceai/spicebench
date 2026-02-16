@@ -1,0 +1,69 @@
+{
+  "id": "snowflake-2025-01-18-g7h8i9",
+  "system": "Snowflake",
+  "systemSlug": "snowflake",
+  "timestamp": "2025-01-18T11:45:00Z",
+  "gitSha": "g7h8i9b",
+  "version": "8.40",
+  "summary": {
+    "e2eDurationSeconds": 183.2,
+    "ingestionRecordsPerSecond": 41000,
+    "dataSizeBytes": 5368709120,
+    "efficiencyCores": 12,
+    "totalQueries": 13500,
+    "queriesPerSecond": 73.7
+  },
+  "queries": [
+    {
+      "queryId": "q01",
+      "queryName": "Point lookup by ID",
+      "latencyP50Ms": 5.3,
+      "latencyP95Ms": 14.2,
+      "latencyP99Ms": 28.7,
+      "executionCount": 2700
+    },
+    {
+      "queryId": "q02",
+      "queryName": "Range scan with filter",
+      "latencyP50Ms": 22.8,
+      "latencyP95Ms": 65.4,
+      "latencyP99Ms": 132.1,
+      "executionCount": 2250
+    },
+    {
+      "queryId": "q03",
+      "queryName": "Aggregation with GROUP BY",
+      "latencyP50Ms": 58.6,
+      "latencyP95Ms": 155.2,
+      "latencyP99Ms": 278.4,
+      "executionCount": 1800
+    },
+    {
+      "queryId": "q04",
+      "queryName": "Join across two tables",
+      "latencyP50Ms": 98.4,
+      "latencyP95Ms": 248.6,
+      "latencyP99Ms": 425.8,
+      "executionCount": 1350
+    },
+    {
+      "queryId": "q05",
+      "queryName": "Time-series window function",
+      "latencyP50Ms": 44.1,
+      "latencyP95Ms": 112.5,
+      "latencyP99Ms": 205.3,
+      "executionCount": 1800
+    }
+  ],
+  "resourceUsage": {
+    "avgCpuPercent": 78.3,
+    "avgMemoryPercent": 68.2,
+    "avgDiskIops": 6100,
+    "peakMemoryBytes": 25769803776
+  },
+  "e2eEventLatency": {
+    "p50Ms": 195.8,
+    "p95Ms": 545.3,
+    "p99Ms": 982.4
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "id": "spice-cloud-2025-01-15-a1b2c3",
+  "system": "Spice Cloud",
+  "systemSlug": "spice-cloud",
+  "timestamp": "2025-01-15T14:30:00Z",
+  "gitSha": "a1b2c3d",
+  "version": "1.2.3",
+  "summary": {
+    "e2eDurationSeconds": 127.4,
+    "ingestionRecordsPerSecond": 48500,
+    "dataSizeBytes": 5368709120,
+    "efficiencyCores": 8,
+    "totalQueries": 15000,
+    "queriesPerSecond": 117.7
+  },
+  "queries": [
+    {
+      "queryId": "q01",
+      "queryName": "Point lookup by ID",
+      "latencyP50Ms": 2.1,
+      "latencyP95Ms": 5.8,
+      "latencyP99Ms": 12.3,
+      "executionCount": 3000
+    },
+    {
+      "queryId": "q02",
+      "queryName": "Range scan with filter",
+      "latencyP50Ms": 15.4,
+      "latencyP95Ms": 42.1,
+      "latencyP99Ms": 89.7,
+      "executionCount": 2500
+    },
+    {
+      "queryId": "q03",
+      "queryName": "Aggregation with GROUP BY",
+      "latencyP50Ms": 45.2,
+      "latencyP95Ms": 120.5,
+      "latencyP99Ms": 210.8,
+      "executionCount": 2000
+    },
+    {
+      "queryId": "q04",
+      "queryName": "Join across two tables",
+      "latencyP50Ms": 78.3,
+      "latencyP95Ms": 195.2,
+      "latencyP99Ms": 340.1,
+      "executionCount": 1500
+    },
+    {
+      "queryId": "q05",
+      "queryName": "Time-series window function",
+      "latencyP50Ms": 32.7,
+      "latencyP95Ms": 88.4,
+      "latencyP99Ms": 156.2,
+      "executionCount": 2000
+    }
+  ],
+  "resourceUsage": {
+    "avgCpuPercent": 72.5,
+    "avgMemoryPercent": 61.3,
+    "avgDiskIops": 4500,
+    "peakMemoryBytes": 17179869184
+  },
+  "e2eEventLatency": {
+    "p50Ms": 85.2,
+    "p95Ms": 245.6,
+    "p99Ms": 512.1
+  }
+}

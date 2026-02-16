@@ -1,0 +1,69 @@
+{
+  "id": "databricks-2025-01-20-d4e5f6",
+  "system": "Databricks",
+  "systemSlug": "databricks",
+  "timestamp": "2025-01-20T09:15:00Z",
+  "gitSha": "d4e5f6a",
+  "version": "14.3",
+  "summary": {
+    "e2eDurationSeconds": 215.8,
+    "ingestionRecordsPerSecond": 35200,
+    "dataSizeBytes": 5368709120,
+    "efficiencyCores": 16,
+    "totalQueries": 12000,
+    "queriesPerSecond": 55.6
+  },
+  "queries": [
+    {
+      "queryId": "q01",
+      "queryName": "Point lookup by ID",
+      "latencyP50Ms": 8.5,
+      "latencyP95Ms": 22.3,
+      "latencyP99Ms": 45.1,
+      "executionCount": 2400
+    },
+    {
+      "queryId": "q02",
+      "queryName": "Range scan with filter",
+      "latencyP50Ms": 35.2,
+      "latencyP95Ms": 98.7,
+      "latencyP99Ms": 178.4,
+      "executionCount": 2000
+    },
+    {
+      "queryId": "q03",
+      "queryName": "Aggregation with GROUP BY",
+      "latencyP50Ms": 72.1,
+      "latencyP95Ms": 185.3,
+      "latencyP99Ms": 320.6,
+      "executionCount": 1600
+    },
+    {
+      "queryId": "q04",
+      "queryName": "Join across two tables",
+      "latencyP50Ms": 125.8,
+      "latencyP95Ms": 310.4,
+      "latencyP99Ms": 520.2,
+      "executionCount": 1200
+    },
+    {
+      "queryId": "q05",
+      "queryName": "Time-series window function",
+      "latencyP50Ms": 55.9,
+      "latencyP95Ms": 142.8,
+      "latencyP99Ms": 265.3,
+      "executionCount": 1600
+    }
+  ],
+  "resourceUsage": {
+    "avgCpuPercent": 85.1,
+    "avgMemoryPercent": 74.8,
+    "avgDiskIops": 8200,
+    "peakMemoryBytes": 34359738368
+  },
+  "e2eEventLatency": {
+    "p50Ms": 320.5,
+    "p95Ms": 890.2,
+    "p99Ms": 1450.8
+  }
+}
