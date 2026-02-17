@@ -18,9 +18,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
 
-mod append;
 mod dataset;
-pub use append::AppendTestArgs;
 pub use dataset::{DatasetTestArgs, LoadTestArgs};
 
 #[derive(Subcommand)]
@@ -79,6 +77,31 @@ pub struct CommonArgs {
     /// Additional OTLP headers in key=value form. Can be repeated.
     #[arg(long, value_parser = parse_key_val, action = ArgAction::Append, requires = "otlp_endpoint", value_name = "KEY=VALUE")]
     pub(crate) otlp_header: Vec<(String, String)>,
+
+    /// Logical name for the system adapter connection.
+    #[arg(long, default_value = "system_adapter")]
+    pub(crate) system_adapter_name: String,
+
+    /// Command to run for a stdio JSON-RPC system adapter.
+    #[arg(long, conflicts_with = "system_adapter_http_url")]
+    pub(crate) system_adapter_stdio_cmd: Option<String>,
+
+    /// Space-delimited argument string passed to the stdio system adapter command.
+    #[arg(long, requires = "system_adapter_stdio_cmd")]
+    pub(crate) system_adapter_stdio_args: Option<String>,
+
+    /// HTTP URL for a remote JSON-RPC system adapter.
+    #[arg(long, conflicts_with = "system_adapter_stdio_cmd")]
+    pub(crate) system_adapter_http_url: Option<String>,
+
+    /// Additional system adapter parameters in key=value form. Can be repeated.
+    /// Reserved for adapter-specific JSON-RPC usage.
+    #[arg(long, value_parser = parse_key_val, action = ArgAction::Append, value_name = "KEY=VALUE")]
+    pub(crate) system_adapter_param: Vec<(String, String)>,
+
+    /// Environment variables for stdio system adapter in key=value form. Can be repeated.
+    #[arg(long, value_parser = parse_key_val, action = ArgAction::Append, value_name = "KEY=VALUE", requires = "system_adapter_stdio_cmd")]
+    pub(crate) system_adapter_env: Vec<(String, String)>,
 }
 
 impl CommonArgs {

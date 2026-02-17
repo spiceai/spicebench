@@ -166,6 +166,44 @@ To benchmark a new platform, implement the adapter interface:
 3. **Query** — Execute the benchmark query suite against the system.
 4. **Teardown** — Clean up provisioned resources.
 
+### System Adapter Transport (stdio or HTTP)
+
+`spicebench` can connect to a system adapter using JSON-RPC 2.0 over either stdio or HTTP.
+
+- **stdio transport**: use `--system-adapter-stdio-cmd` (spicebench starts the child process).
+- **HTTP transport**: use `--system-adapter-http-url` (spicebench connects to a remote adapter endpoint).
+
+#### Stdio example (child process started by spicebench)
+
+```bash
+spicebench run \
+    --query-set tpch \
+    --spicepod-path ./spicepod.yaml \
+    --system-adapter-name spidapter \
+    --system-adapter-stdio-cmd docker \
+    --system-adapter-stdio-args "run -i --rm ghcr.io/spiceai/spidapter:latest" \
+    --system-adapter-param profile=dev \
+    --system-adapter-env API_TOKEN=$API_TOKEN
+```
+
+#### HTTP example (remote adapter)
+
+```bash
+spicebench run \
+    --query-set tpch \
+    --spicepod-path ./spicepod.yaml \
+    --system-adapter-name spidapter \
+    --system-adapter-http-url http://127.0.0.1:8080/jsonrpc \
+    --system-adapter-param profile=dev
+```
+
+Notes:
+
+- Set **exactly one** of `--system-adapter-stdio-cmd` or `--system-adapter-http-url`.
+- `--system-adapter-stdio-args` passes CLI args to the stdio adapter command.
+- `--system-adapter-env` is only valid for stdio transport.
+- On connection, spicebench issues JSON-RPC `rpc.methods` to verify the adapter is reachable.
+
 ## License
 
 See [LICENSE](LICENSE) for details.
