@@ -21,12 +21,6 @@ bytes.workspace = true
 chrono.workspace = true
 dashmap = "6.1.0"
 datafusion.workspace = true
-duckdb = { optional = true, workspace = true, features = [
-    "bundled",
-    "r2d2",
-    "vtab",
-    "vtab-arrow",
-] }
 flight_client = { path = "../flight_client" }
 futures.workspace = true
 indicatif = "0.18.0"
@@ -72,7 +66,6 @@ databricks = []
 debezium = []
 delta_lake = []
 dremio = []
-duckdb = []
 flightsql = []
 ftp = []
 imap = []
@@ -87,5 +80,3 @@ snowflake = []
 spark = []
 sqlite = []
 turso = []
-
-file_append = ["dep:duckdb"]
