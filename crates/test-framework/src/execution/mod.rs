@@ -166,7 +166,7 @@ impl QueryExecutor for FlightExecutor {
 
         let mut result_stream = self
             .client
-            .sql_with_params(&query.sql, query.get_parameters_batch().transpose()?)
+            .query_with_params(&query.sql, query.get_parameters_batch().transpose()?)
             .await?;
 
         let mut batches = Vec::new();

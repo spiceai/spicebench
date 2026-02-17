@@ -563,7 +563,7 @@ impl SpiceTestQueryWorker {
                 );
 
                 let mut ref_result_stream = spice_client
-                    .sql_with_params(
+                    .query_with_params(
                         &reference_query.sql,
                         reference_query.get_parameters_batch().transpose()?,
                     )
