@@ -19,6 +19,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use crate::args::{CommonArgs, DatasetTestArgs};
 use test_framework::{
     anyhow,
+    anyhow::Context,
     app::{App, AppBuilder},
     opentelemetry_sdk::Resource,
     queries::QuerySet,
@@ -33,8 +34,6 @@ use tokio::{
     process::{ChildStdin, ChildStdout, Command},
 };
 
-#[cfg(feature = "append")]
-pub(crate) mod append;
 pub(crate) mod load;
 pub(crate) type RowCounts = BTreeMap<Arc<str>, usize>;
 
@@ -304,7 +303,7 @@ impl SystemAdapterClient {
             }
             Self::Http { client, endpoint } => {
                 let response = client
-                    .post(endpoint)
+                    .post(endpoint.as_str())
                     .json(&request)
                     .send()
                     .await
