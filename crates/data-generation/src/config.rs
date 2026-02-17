@@ -51,13 +51,9 @@ pub struct CommonArgs {
     #[arg(long, default_value_t = 1.0)]
     pub scale_factor: f64,
 
-    /// Number of rows per batch
-    #[arg(long, default_value_t = 10_000)]
-    pub batch_size: usize,
-
-    /// Total number of batches to generate (omit for unlimited)
-    #[arg(long)]
-    pub total_batches: Option<u64>,
+    /// Number of data generation steps (partitions for TPC-H dbgen)
+    #[arg(long, default_value_t = 100)]
+    pub num_steps: u16,
 
     /// S3 bucket name
     #[arg(long)]
@@ -83,8 +79,7 @@ pub struct CommonArgs {
 pub struct DatasetConfig {
     pub dataset_type: String,
     pub scale_factor: f64,
-    pub batch_size: usize,
-    pub total_batches: Option<u64>,
+    pub num_steps: u16,
 }
 
 pub struct TargetConfig {
@@ -103,8 +98,7 @@ impl CommonArgs {
         DatasetConfig {
             dataset_type: self.dataset.clone(),
             scale_factor: self.scale_factor,
-            batch_size: self.batch_size,
-            total_batches: self.total_batches,
+            num_steps: self.num_steps,
         }
     }
 

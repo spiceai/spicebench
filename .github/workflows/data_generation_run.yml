@@ -1,5 +1,5 @@
 name: data-generation run
-run-name: data-generation run - sf${{ github.event.inputs.scale_factor }} - ${{ github.event.inputs.total_batches }} batches
+run-name: data-generation run - sf${{ github.event.inputs.scale_factor }} - ${{ github.event.inputs.num_steps }} steps
 
 on:
   workflow_dispatch:
@@ -9,14 +9,10 @@ on:
         required: true
         default: '1.0'
         type: string
-      batch_size:
-        description: 'Number of rows per batch'
-        required: true
-        default: '10000'
-        type: string
-      total_batches:
-        description: 'Total number of batches to generate (leave empty for unlimited)'
+      num_steps:
+        description: 'Number of data generation steps'
         required: false
+        default: '100'
         type: string
       bucket:
         description: 'S3 bucket name'
@@ -60,16 +56,12 @@ jobs:
       - name: Run data generation
         run: |
           ARGS="--scale-factor ${{ github.event.inputs.scale_factor }}"
-          ARGS="${ARGS} --batch-size ${{ github.event.inputs.batch_size }}"
+          ARGS="${ARGS} --num-steps ${{ github.event.inputs.num_steps }}"
           ARGS="${ARGS} --bucket ${{ github.event.inputs.bucket }}"
           ARGS="${ARGS} --prefix ${{ github.event.inputs.prefix }}"
           ARGS="${ARGS} --max-concurrency ${{ github.event.inputs.max_concurrency }}"
           ARGS="${ARGS} --region ${{ github.event.inputs.region }}"
 
-          if [ -n "${{ github.event.inputs.total_batches }}" ]; then
-            ARGS="${ARGS} --total-batches ${{ github.event.inputs.total_batches }}"
-          fi
-          
           if [ "${{ github.event.inputs.skip_initial }}" = "true" ]; then
             ARGS="${ARGS} --skip-initial"
           fi

@@ -56,7 +56,7 @@ fn build(
 
     tracing::info!(
         dataset_type = dataset_config.dataset_type,
-        batch_size = dataset_config.batch_size,
+        num_steps = dataset_config.num_steps,
         max_concurrency = ingestor_config.max_concurrency,
         bucket = target_config.bucket,
         prefix = target_config.prefix,
@@ -88,9 +88,6 @@ async fn main() -> anyhow::Result<()> {
             let (mut ingestor, target) = build(&args)?;
             let loc_fn = |table: &str| target.table_s3_path(table);
             let result = ingestor.initialize(Some(&loc_fn)).await?;
-
-            println!("\n=== Initialization Summary ===");
-            print_summary(&result);
 
             if result.write_errors > 0 {
                 anyhow::bail!("Initialization failed with {} errors", result.write_errors);

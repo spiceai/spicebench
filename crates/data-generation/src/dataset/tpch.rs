@@ -37,40 +37,34 @@ const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
 
 /// Generates TPC-H data using DuckDB's built-in `dbgen` and yields Arrow `RecordBatch`es.
 ///
-/// On initialization, runs `CALL dbgen(sf=...)` to create TPC-H tables in an in-memory
-/// DuckDB database, then adds a `TIMESTAMPTZ` time column to each table. Yields batches
-/// by querying each table in sequence with `LIMIT/OFFSET` pagination. When all rows from
-/// all tables are exhausted, generates a new step of data for continuous append-based
-/// generation.
+/// Data is partitioned into `num_steps` steps using `dbgen(children=N, step=S)`.
+/// Step 0 is generated on construction. Each subsequent step generates non-overlapping
+/// data into temporary `_new` tables that are read and then dropped.
+///
+/// Each call to `next_batch()` returns all rows from one table for the current step.
 pub struct TpchDataset {
     conn: Connection,
     scale_factor: f64,
-    batch_size: usize,
-    total_batches: Option<u64>,
-    batches_yielded: u64,
 
     /// Index into `TPCH_TABLE_TIME_COLUMNS` for the current table being read.
     table_index: usize,
-    /// Current row offset within the current table.
-    row_offset: usize,
 
     /// Step-based generation for continuous appends.
     /// Step 0 is the initial `dbgen` call; steps 1+ generate new non-overlapping data.
     current_step: u16,
     /// Total number of step partitions for `dbgen(children=...)`.
-    load_steps: u16,
+    num_steps: u16,
 }
 
 impl TpchDataset {
     pub fn new(config: &DatasetConfig) -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
 
-        let load_steps = 100; // partition into 100 steps for continuous generation
-
         // Generate initial TPC-H data (step 0)
         let mut sql = format!(
-            "INSTALL tpch; LOAD tpch; CALL dbgen(sf={sf}, children={load_steps}, step=0);",
+            "INSTALL tpch; LOAD tpch; CALL dbgen(sf={sf}, children={num_steps}, step=0);",
             sf = config.scale_factor,
+            num_steps = config.num_steps,
         );
 
         // Add time columns to each table
@@ -84,44 +78,39 @@ impl TpchDataset {
 
         info!(
             scale_factor = config.scale_factor,
-            batch_size = config.batch_size,
+            num_steps = config.num_steps,
             "DuckDB TPC-H dataset initialized (step 0)"
         );
 
         Ok(Self {
             conn,
             scale_factor: config.scale_factor,
-            batch_size: config.batch_size,
-            total_batches: config.total_batches,
-            batches_yielded: 0,
             table_index: 0,
-            row_offset: 0,
             current_step: 0,
-            load_steps,
+            num_steps: config.num_steps,
         })
     }
 
     /// Advance to the next step of TPC-H data generation.
+    /// Generates new data into `_new` tables (read by `next_batch`, dropped when exhausted).
     /// Returns `false` if all steps are exhausted.
     fn advance_step(&mut self) -> anyhow::Result<bool> {
         self.current_step += 1;
-        if self.current_step >= self.load_steps {
+        if self.current_step >= self.num_steps {
             return Ok(false);
         }
 
         let mut sql = format!(
-            "INSTALL tpch; LOAD tpch; CALL dbgen(sf={sf}, children={load_steps}, step={step}, suffix='_new');",
+            "CALL dbgen(sf={sf}, children={num_steps}, step={step}, suffix='_new');",
             sf = self.scale_factor,
-            load_steps = self.load_steps,
+            num_steps = self.num_steps,
             step = self.current_step,
         );
 
-        // Add time columns to new tables, merge into main tables, then drop
+        // Add time columns to _new tables
         for (table, time_col) in TPCH_TABLE_TIME_COLUMNS {
             sql.push_str(&format!(
-                "ALTER TABLE {table}_new ADD COLUMN {time_col} TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;\
-                 INSERT INTO {table} SELECT * FROM {table}_new;\
-                 DROP TABLE {table}_new;"
+                "ALTER TABLE {table}_new ADD COLUMN {time_col} TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;"
             ));
         }
 
@@ -129,26 +118,30 @@ impl TpchDataset {
 
         info!(step = self.current_step, "Generated new TPC-H data step");
 
-        // Reset table iteration
         self.table_index = 0;
-        self.row_offset = 0;
 
         Ok(true)
+    }
+
+    /// Drop the `_new` tables created by `advance_step()`.
+    fn drop_step_tables(&self) -> anyhow::Result<()> {
+        let mut sql = String::new();
+        for (table, _) in TPCH_TABLE_TIME_COLUMNS {
+            sql.push_str(&format!("DROP TABLE IF EXISTS {table}_new;"));
+        }
+        self.conn.execute_batch(&sql)?;
+        Ok(())
     }
 }
 
 impl Dataset for TpchDataset {
     fn next_batch(&mut self) -> anyhow::Result<Option<DatasetBatch>> {
-        // Check batch limit
-        if let Some(limit) = self.total_batches
-            && self.batches_yielded >= limit
-        {
-            return Ok(None);
-        }
-
         loop {
             if self.table_index >= TPCH_TABLE_TIME_COLUMNS.len() {
-                // All tables exhausted for current step — generate next step
+                // All tables exhausted for current step — drop _new tables and advance
+                if self.current_step > 0 {
+                    self.drop_step_tables()?;
+                }
                 if !self.advance_step()? {
                     return Ok(None); // all steps exhausted
                 }
@@ -156,24 +149,21 @@ impl Dataset for TpchDataset {
             }
 
             let (table, _) = TPCH_TABLE_TIME_COLUMNS[self.table_index];
-            let sql = format!(
-                "SELECT * FROM {table} LIMIT {limit} OFFSET {offset}",
-                limit = self.batch_size,
-                offset = self.row_offset,
-            );
+            let source_table = if self.current_step == 0 {
+                table.to_string()
+            } else {
+                format!("{table}_new")
+            };
 
+            let sql = format!("SELECT * FROM {source_table}");
             let mut stmt = self.conn.prepare(&sql)?;
             let batches: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
 
+            self.table_index += 1;
+
             if batches.is_empty() || batches[0].num_rows() == 0 {
-                // Table exhausted — move to next table
-                self.table_index += 1;
-                self.row_offset = 0;
                 continue;
             }
-
-            self.row_offset += batches[0].num_rows();
-            self.batches_yielded += 1;
 
             return Ok(Some(DatasetBatch {
                 table_name: table.to_string(),
