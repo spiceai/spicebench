@@ -116,6 +116,8 @@ url = { version = "2.5", features = ["serde"] }
 util = { path = "crates/util" }
 uuid = "1"
 
+spiceai = { git = "https://github.com/spiceai/spice-rs.git", rev = "4c63970cf1d78c71eb69e2f4346d5d4795631b47" } # branch: trunk
+
 [package]
 edition.workspace = true
 exclude.workspace = true
