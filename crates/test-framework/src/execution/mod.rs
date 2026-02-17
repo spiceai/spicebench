@@ -32,7 +32,7 @@ limitations under the License.
 //! Executes queries via Arrow Flight SQL protocol.
 //! - **Use when**: Testing Spice with the default Flight SQL interface
 //! - **Supports validation**: Yes (returns full Arrow batches)
-//! - **Supports explain plans**: Yes (via `as_spice_client()`)
+//! - **Supports explain plans**: Yes (via `as_flight_client()`)
 //!
 //! ## [`HttpExecutor`]
 //! Executes queries via synchronous HTTP `/v1/sql` endpoint.
@@ -87,6 +87,7 @@ limitations under the License.
 use anyhow::Result;
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
+use flight_client::FlightClient;
 use futures::TryStreamExt;
 use std::{sync::Arc, time::Duration};
 
@@ -118,9 +119,9 @@ pub trait QueryExecutor: Send + Sync {
         true
     }
 
-    /// Get the underlying `SpiceClient` if this is a Flight executor
+    /// Get the underlying `FlightClient` if this is a Flight executor
     /// Used for Flight-specific features like explain plan snapshots
-    fn as_spice_client(&self) -> Option<Arc<spiceai::Client>> {
+    fn as_flight_client(&self) -> Option<Arc<FlightClient>> {
         None
     }
 
@@ -141,12 +142,12 @@ impl Clone for Box<dyn QueryExecutor> {
 
 /// Flight SQL executor - executes queries via Arrow Flight SQL protocol
 pub struct FlightExecutor {
-    client: Arc<spiceai::Client>,
+    client: Arc<FlightClient>,
 }
 
 impl FlightExecutor {
     #[must_use]
-    pub fn new(client: Arc<spiceai::Client>) -> Self {
+    pub fn new(client: Arc<FlightClient>) -> Self {
         Self { client }
     }
 }
@@ -164,10 +165,7 @@ impl QueryExecutor for FlightExecutor {
     async fn execute(&self, query: &Query) -> Result<ExecutionResult> {
         let start = std::time::Instant::now();
 
-        let mut result_stream = self
-            .client
-            .sql_with_params(&query.sql, query.get_parameters_batch().transpose()?)
-            .await?;
+        let mut result_stream = self.client.query(query.to_sql_with_inlined_params().as_ref()).await?;
 
         let mut batches = Vec::new();
         let mut row_count = 0;
@@ -193,7 +191,7 @@ impl QueryExecutor for FlightExecutor {
         true
     }
 
-    fn as_spice_client(&self) -> Option<Arc<spiceai::Client>> {
+    fn as_flight_client(&self) -> Option<Arc<FlightClient>> {
         Some(Arc::clone(&self.client))
     }
 

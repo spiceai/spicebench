@@ -17,6 +17,11 @@ limitations under the License.
 use std::time::Duration;
 
 use crate::args::{CommonArgs, DatasetTestArgs, SystemAdapterExecutionMode};
+use datafusion::prelude::SessionContext;
+use datafusion_table_providers::flight::sql::{FlightSqlDriver, QUERY};
+use datafusion_table_providers::flight::FlightTableFactory;
+use std::collections::HashMap;
+use std::sync::Arc;
 use test_framework::{
     anyhow,
     anyhow::Context,
@@ -32,6 +37,7 @@ use test_framework::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
+    sync::Mutex,
 };
 
 pub(crate) mod load;
@@ -128,148 +134,146 @@ pub(crate) async fn get_app_and_start_request(
 }
 
 pub(crate) async fn maybe_dispatch_run_to_system_adapter(
-    raw_cli_args: &[String],
+    _raw_cli_args: &[String],
     common_args: &CommonArgs,
 ) -> anyhow::Result<bool> {
-    if !has_system_adapter_transport(common_args) {
-        return Ok(false);
-    }
-
-    let mut adapter = SystemAdapterClient::connect(common_args)
-        .await?
-        .context("System adapter transport was configured but could not be initialized")?;
-
-    let methods = adapter.rpc_methods().await?;
-
-    if common_args.system_adapter_execution_mode == SystemAdapterExecutionMode::DirectQuery {
-        println!(
-            "Connected to system adapter '{}' via {} in direct-query mode (spicebench executes query/load path directly)",
-            common_args.system_adapter_name,
-            adapter.transport_name(),
-        );
-        return Ok(false);
-    }
-
-    let Some(method) = resolve_system_adapter_method(raw_cli_args) else {
+    if common_args.system_adapter_execution_mode == SystemAdapterExecutionMode::AdapterCommand
+        && !has_system_adapter_transport(common_args)
+    {
         anyhow::bail!(
-            "No JSON-RPC adapter method mapping for current command invocation: {:?}",
-            raw_cli_args
-        );
-    };
-
-    if !methods.iter().any(|available| available == method) {
-        anyhow::bail!(
-            "System adapter '{}' via {} does not support required method '{method}'",
-            common_args.system_adapter_name,
-            adapter.transport_name(),
+            "Adapter-command mode requires one system adapter transport: --system-adapter-stdio-cmd or --system-adapter-http-url"
         );
     }
-
-    let adapter_args = adapter_cli_args_for_run(raw_cli_args);
-    let mut params = serde_json::Map::new();
-    params.insert("args".to_string(), serde_json::to_value(adapter_args)?);
-
-    for (key, value) in &common_args.system_adapter_param {
-        params.insert(key.clone(), serde_json::Value::String(value.clone()));
-    }
-
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": method,
-        "params": serde_json::Value::Object(params),
-    });
-
-    let response = adapter.call(request).await?;
-    handle_adapter_execution_response(&response)?;
-
-    Ok(true)
-}
-
-fn resolve_system_adapter_method(raw_cli_args: &[String]) -> Option<&'static str> {
-    match raw_cli_args.first().map(String::as_str) {
-        Some("run") => Some("run.load"),
-        _ => None,
-    }
+    Ok(false)
 }
 
 fn has_system_adapter_transport(args: &CommonArgs) -> bool {
     args.system_adapter_stdio_cmd.is_some() || args.system_adapter_http_url.is_some()
 }
 
-fn adapter_cli_args_for_run(raw_cli_args: &[String]) -> Vec<String> {
-    let mut filtered = Vec::new();
-    let mut skip_next = false;
 
-    for (index, arg) in raw_cli_args.iter().enumerate() {
-        if index == 0 && arg == "run" {
-            continue;
-        }
+const SYSTEM_ADAPTER_ASYNC_QUERY_METHOD: &str = "query.async";
 
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-
-        let takes_value = [
-            "--system-adapter-name",
-            "--system-adapter-execution-mode",
-            "--system-adapter-stdio-cmd",
-            "--system-adapter-stdio-args",
-            "--system-adapter-http-url",
-            "--system-adapter-param",
-            "--system-adapter-env",
-        ];
-
-        if takes_value.contains(&arg.as_str()) {
-            skip_next = true;
-            continue;
-        }
-
-        if takes_value
-            .iter()
-            .any(|flag| arg.starts_with(&format!("{flag}=")))
-        {
-            continue;
-        }
-
-        filtered.push(arg.clone());
-    }
-
-    filtered
+#[derive(Clone)]
+struct SystemAdapterAsyncQueryExecutor {
+    adapter: std::sync::Arc<Mutex<SystemAdapterClient>>,
+    base_params: serde_json::Map<String, serde_json::Value>,
 }
 
-fn handle_adapter_execution_response(response: &serde_json::Value) -> anyhow::Result<()> {
-    let result = response
-        .get("result")
-        .context("System adapter response missing JSON-RPC result payload")?;
+#[async_trait::async_trait]
+impl test_framework::execution::QueryExecutor for SystemAdapterAsyncQueryExecutor {
+    async fn execute(
+        &self,
+        query: &test_framework::queries::Query,
+    ) -> anyhow::Result<test_framework::execution::ExecutionResult> {
+        let start = std::time::Instant::now();
 
-    if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str())
-        && !stdout.is_empty()
-    {
-        print!("{stdout}");
+        let mut params = self.base_params.clone();
+        params.insert(
+            "sql".to_string(),
+            serde_json::Value::String(query.to_sql_with_inlined_params().to_string()),
+        );
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": SYSTEM_ADAPTER_ASYNC_QUERY_METHOD,
+            "params": serde_json::Value::Object(params),
+        });
+
+        let response = self.adapter.lock().await.call(request).await?;
+        let result = response
+            .get("result")
+            .context("System adapter async query response missing result payload")?;
+
+        if let Some(success) = result.get("success").and_then(|v| v.as_bool())
+            && !success
+        {
+            let message = result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .or_else(|| result.get("stderr").and_then(|v| v.as_str()))
+                .unwrap_or("unknown system adapter query error");
+            anyhow::bail!("System adapter async query failed: {message}");
+        }
+
+        let row_count = result
+            .get("row_count")
+            .or_else(|| result.get("stats").and_then(|s| s.get("row_count")))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        Ok(test_framework::execution::ExecutionResult {
+            duration: start.elapsed(),
+            row_count: row_count as usize,
+            batches: None,
+        })
     }
 
-    if let Some(stderr) = result.get("stderr").and_then(|v| v.as_str())
-        && !stderr.is_empty()
-    {
-        eprint!("{stderr}");
+    fn name(&self) -> &'static str {
+        "system-adapter-async"
     }
 
-    let success = result
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let exit_code = result
-        .get("exit_code")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(1);
-
-    if !success || exit_code != 0 {
-        anyhow::bail!("System adapter command failed (success={success}, exit_code={exit_code})");
+    fn supports_validation(&self) -> bool {
+        false
     }
 
-    Ok(())
+    fn clone_box(&self) -> Box<dyn test_framework::execution::QueryExecutor> {
+        Box::new(self.clone())
+    }
+}
+
+#[derive(Clone)]
+struct AdbcDirectQueryExecutor {
+    flight_sql_uri: String,
+}
+
+#[async_trait::async_trait]
+impl test_framework::execution::QueryExecutor for AdbcDirectQueryExecutor {
+    async fn execute(
+        &self,
+        query: &test_framework::queries::Query,
+    ) -> anyhow::Result<test_framework::execution::ExecutionResult> {
+        let start = std::time::Instant::now();
+
+        let ctx = SessionContext::new();
+        let flight_sql = FlightTableFactory::new(Arc::new(FlightSqlDriver::new()));
+        let table = flight_sql
+            .open_table(
+                self.flight_sql_uri.clone(),
+                HashMap::from([(
+                    QUERY.into(),
+                    query.to_sql_with_inlined_params().to_string(),
+                )]),
+            )
+            .await?;
+
+        ctx.register_table("spicebench_direct_query", Arc::new(table))?;
+        let batches = ctx
+            .sql("SELECT * FROM spicebench_direct_query")
+            .await?
+            .collect()
+            .await?;
+        let row_count = batches.iter().map(arrow::record_batch::RecordBatch::num_rows).sum();
+
+        Ok(test_framework::execution::ExecutionResult {
+            duration: start.elapsed(),
+            row_count,
+            batches: None,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "adbc-direct"
+    }
+
+    fn supports_validation(&self) -> bool {
+        false
+    }
+
+    fn clone_box(&self) -> Box<dyn test_framework::execution::QueryExecutor> {
+        Box::new(self.clone())
+    }
 }
 
 enum SystemAdapterClient {
@@ -439,30 +443,50 @@ pub(crate) async fn create_query_executor(
     args: &DatasetTestArgs,
     spiced_instance: &test_framework::spiced::SpicedInstance,
 ) -> anyhow::Result<Box<dyn test_framework::execution::QueryExecutor>> {
-    let executor: Box<dyn test_framework::execution::QueryExecutor> = if args.distributed {
-        let http_client = spiced_instance.http_client()?;
-        let base_url = spiced_instance.http_base_url().to_string();
-        Box::new(test_framework::execution::DistributedExecutor::new(
-            http_client,
-            base_url,
-        ))
-    } else if args.http_clients {
-        let http_client = spiced_instance.http_client()?;
-        let base_url = spiced_instance.http_base_url().to_string();
-        Box::new(test_framework::execution::HttpExecutor::new(
-            http_client,
-            base_url,
-        ))
-    } else {
-        let spice_client = spiced_instance
-            .spice_client(None, args.disable_caching)
-            .await?;
-        Box::new(test_framework::execution::FlightExecutor::new(
-            std::sync::Arc::new(spice_client),
-        ))
-    };
+    match args.common.system_adapter_execution_mode {
+        SystemAdapterExecutionMode::DirectQuery => {
+            let flight_sql_uri = if args.common.is_external_instance() {
+                args.common.spiced_path.clone()
+            } else {
+                let http_base = spiced_instance.http_base_url();
+                if let Some(last_colon) = http_base.rfind(':') {
+                    format!("{}:50051", &http_base[..last_colon])
+                } else {
+                    "http://127.0.0.1:50051".to_string()
+                }
+            };
 
-    Ok(executor)
+            Ok(Box::new(AdbcDirectQueryExecutor { flight_sql_uri }))
+        }
+        SystemAdapterExecutionMode::AdapterCommand => {
+            let mut adapter = SystemAdapterClient::connect(&args.common)
+                .await?
+                .context("System adapter transport was configured but could not be initialized")?;
+
+            let methods = adapter.rpc_methods().await?;
+            if !methods
+                .iter()
+                .any(|method| method == SYSTEM_ADAPTER_ASYNC_QUERY_METHOD)
+            {
+                anyhow::bail!(
+                    "System adapter '{}' does not support required async query method '{}'. Available methods: {:?}",
+                    args.common.system_adapter_name,
+                    SYSTEM_ADAPTER_ASYNC_QUERY_METHOD,
+                    methods
+                );
+            }
+
+            let mut base_params = serde_json::Map::new();
+            for (key, value) in &args.common.system_adapter_param {
+                base_params.insert(key.clone(), serde_json::Value::String(value.clone()));
+            }
+
+            Ok(Box::new(SystemAdapterAsyncQueryExecutor {
+                adapter: std::sync::Arc::new(Mutex::new(adapter)),
+                base_params,
+            }))
+        }
+    }
 }
 
 #[macro_export]

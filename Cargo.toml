@@ -61,7 +61,6 @@ serde = "1"
 serde_json = "1"
 sha2 = "0.10"
 snafu = "0.8"
-spiceai = { git = "https://github.com/spiceai/spice-rs.git", rev = "4c63970cf1d78c71eb69e2f4346d5d4795631b47" } # branch: trunk
 sysinfo = "0.37"
 tempfile = "3"
 tokio = "1"
@@ -93,6 +92,8 @@ aws-credential-types.workspace = true
 aws-sdk-dynamodb.workspace = true
 bollard = "0.18.1"
 clap.workspace = true
+datafusion.workspace = true
+datafusion-table-providers = { version = "0.9.3", features = ["flight"] }
 futures.workspace = true
 itertools.workspace = true
 hf-hub = { workspace = true }
@@ -100,7 +101,6 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 yaml = { path = "crates/yaml" }
-spiceai.workspace = true
 spicepod = { path = "crates/spicepod" }
 test-framework = { path = "crates/test-framework" }
 rand.workspace = true

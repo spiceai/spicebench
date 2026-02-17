@@ -120,15 +120,15 @@ impl SpiceTest<NotStarted> {
         // Create workers, each pulling from the shared channel
         let mut workers = Vec::with_capacity(self.state.parallel_count);
         for id in 0..self.state.parallel_count {
-            let spice_client = spiced_instance
-                .spice_client(self.api_key.clone(), true)
+            let flight_client = spiced_instance
+                .flight_client(self.api_key.clone(), true)
                 .await
-                .context("Failed to create Spice client")?;
+                .context("Failed to create Flight client")?;
             let http_client = spiced_instance.http_client()?;
             let http_base_url = spiced_instance.http_base_url().to_string();
 
             workers.push(
-                TextToSqlWorker::new(id, http_client, http_base_url, spice_client, rx.clone())
+                TextToSqlWorker::new(id, http_client, http_base_url, flight_client, rx.clone())
                     .start(),
             );
         }
