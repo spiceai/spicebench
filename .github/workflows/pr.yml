@@ -20,7 +20,7 @@ env:
 jobs:
   check:
     name: cargo check
-    runs-on: spiceai-dev-runners
+    runs-on: spiceai-macos-runners
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
