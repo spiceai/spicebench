@@ -18,9 +18,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
 
-mod append;
 mod dataset;
-pub use append::AppendTestArgs;
 pub use dataset::{DatasetTestArgs, LoadTestArgs};
 
 #[derive(Subcommand)]
