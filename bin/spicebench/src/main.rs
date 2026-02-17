@@ -14,15 +14,34 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use super::CommonArgs;
 use clap::Parser;
+use test_framework::{anyhow, rustls};
+
+mod args;
+mod commands;
+mod health;
+mod metrics;
+mod spiced_metrics;
+
+use args::Commands;
 
 #[derive(Parser)]
-pub struct SearchTestArgs {
-    #[clap(flatten)]
-    pub(crate) common: CommonArgs,
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    subcommand: Commands,
+}
 
-    /// Target test dataset to run the search test against.
-    #[arg(long)]
-    pub(crate) benchmark_dataset: Option<String>,
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let _ = rustls::crypto::CryptoProvider::install_default(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    );
+    let cli = Cli::parse();
+
+    match cli.subcommand {
+        Commands::Run(args) => commands::load::run(&args).await?,
+    }
+
+    Ok(())
 }
