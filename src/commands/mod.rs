@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::{BTreeMap, HashMap}, sync::Arc, time::Duration};
 
-use crate::args::{CommonArgs, DatasetTestArgs};
+use crate::args::{CommonArgs, DatasetTestArgs, SystemAdapterExecutionMode};
 use test_framework::{
     anyhow,
     app::{App, AppBuilder},
@@ -30,7 +30,7 @@ use test_framework::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout, Command},
+    process::{Child, ChildStdin, ChildStdout, Command},
 };
 
 #[cfg(feature = "append")]
@@ -103,16 +103,6 @@ pub(crate) async fn build_test_with_validation(
 pub(crate) async fn run_or_connect_spiced(
     args: &CommonArgs,
 ) -> anyhow::Result<(App, SpicedInstance)> {
-    if let Some(mut adapter) = SystemAdapterClient::connect(args).await? {
-        let methods = adapter.rpc_methods().await?;
-        println!(
-            "Connected to system adapter '{}' via {} ({} methods)",
-            args.system_adapter_name,
-            adapter.transport_name(),
-            methods.len()
-        );
-    }
-
     let (app, mut instance) = if args.is_external_instance() {
         println!(
             "Connecting to external spiced instance at: {}",
@@ -171,8 +161,153 @@ pub(crate) async fn get_app_and_start_request(
     Ok((app, start_request))
 }
 
+pub(crate) async fn maybe_dispatch_run_to_system_adapter(
+    raw_cli_args: &[String],
+    common_args: &CommonArgs,
+) -> anyhow::Result<bool> {
+    if !has_system_adapter_transport(common_args) {
+        return Ok(false);
+    }
+
+    let mut adapter = SystemAdapterClient::connect(common_args)
+        .await?
+        .context("System adapter transport was configured but could not be initialized")?;
+
+    let methods = adapter.rpc_methods().await?;
+
+    if common_args.system_adapter_execution_mode == SystemAdapterExecutionMode::DirectQuery {
+        println!(
+            "Connected to system adapter '{}' via {} in direct-query mode (spicebench executes query/load path directly)",
+            common_args.system_adapter_name,
+            adapter.transport_name(),
+        );
+        return Ok(false);
+    }
+
+    let Some(method) = resolve_system_adapter_method(raw_cli_args) else {
+        anyhow::bail!(
+            "No JSON-RPC adapter method mapping for current command invocation: {:?}",
+            raw_cli_args
+        );
+    };
+
+    if !methods.iter().any(|available| available == method) {
+        anyhow::bail!(
+            "System adapter '{}' via {} does not support required method '{method}'",
+            common_args.system_adapter_name,
+            adapter.transport_name(),
+        );
+    }
+
+    let adapter_args = adapter_cli_args_for_run(raw_cli_args);
+    let mut params = serde_json::Map::new();
+    params.insert("args".to_string(), serde_json::to_value(adapter_args)?);
+
+    for (key, value) in &common_args.system_adapter_param {
+        params.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
+
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": method,
+        "params": serde_json::Value::Object(params),
+    });
+
+    let response = adapter.call(request).await?;
+    handle_adapter_execution_response(&response)?;
+
+    Ok(true)
+}
+
+fn resolve_system_adapter_method(raw_cli_args: &[String]) -> Option<&'static str> {
+    match raw_cli_args.first().map(String::as_str) {
+        Some("run") => Some("run.load"),
+        _ => None,
+    }
+}
+
+fn has_system_adapter_transport(args: &CommonArgs) -> bool {
+    args.system_adapter_stdio_cmd.is_some() || args.system_adapter_http_url.is_some()
+}
+
+fn adapter_cli_args_for_run(raw_cli_args: &[String]) -> Vec<String> {
+    let mut filtered = Vec::new();
+    let mut skip_next = false;
+
+    for (index, arg) in raw_cli_args.iter().enumerate() {
+        if index == 0 && arg == "run" {
+            continue;
+        }
+
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        let takes_value = [
+            "--system-adapter-name",
+            "--system-adapter-execution-mode",
+            "--system-adapter-stdio-cmd",
+            "--system-adapter-stdio-args",
+            "--system-adapter-http-url",
+            "--system-adapter-param",
+            "--system-adapter-env",
+        ];
+
+        if takes_value.contains(&arg.as_str()) {
+            skip_next = true;
+            continue;
+        }
+
+        if takes_value.iter().any(|flag| arg.starts_with(&format!("{flag}="))) {
+            continue;
+        }
+
+        filtered.push(arg.clone());
+    }
+
+    filtered
+}
+
+fn handle_adapter_execution_response(response: &serde_json::Value) -> anyhow::Result<()> {
+    let result = response
+        .get("result")
+        .context("System adapter response missing JSON-RPC result payload")?;
+
+    if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str())
+        && !stdout.is_empty()
+    {
+        print!("{stdout}");
+    }
+
+    if let Some(stderr) = result.get("stderr").and_then(|v| v.as_str())
+        && !stderr.is_empty()
+    {
+        eprint!("{stderr}");
+    }
+
+    let success = result
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let exit_code = result
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1);
+
+    if !success || exit_code != 0 {
+        anyhow::bail!(
+            "System adapter command failed (success={success}, exit_code={exit_code})"
+        );
+    }
+
+    Ok(())
+}
+
 enum SystemAdapterClient {
     Stdio {
+        child: Child,
         stdin: ChildStdin,
         stdout: BufReader<ChildStdout>,
     },
@@ -239,9 +374,8 @@ impl SystemAdapterClient {
                 .take()
                 .context("System adapter stdio child missing stdout")?;
 
-            std::mem::forget(child);
-
             return Ok(Some(Self::Stdio {
+                child,
                 stdin,
                 stdout: BufReader::new(stdout),
             }));
@@ -284,7 +418,11 @@ impl SystemAdapterClient {
 
     async fn call(&mut self, request: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         match self {
-            Self::Stdio { stdin, stdout } => {
+            Self::Stdio {
+                child: _,
+                stdin,
+                stdout,
+            } => {
                 let payload = serde_json::to_string(&request)?;
                 stdin.write_all(payload.as_bytes()).await?;
                 stdin.write_all(b"\n").await?;

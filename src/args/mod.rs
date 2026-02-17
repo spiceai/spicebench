@@ -16,7 +16,7 @@ limitations under the License.
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 mod dataset;
 pub use dataset::{DatasetTestArgs, LoadTestArgs};
@@ -82,6 +82,12 @@ pub struct CommonArgs {
     #[arg(long, default_value = "system_adapter")]
     pub(crate) system_adapter_name: String,
 
+    /// How to execute when a system adapter transport is configured.
+    /// - adapter-command: dispatch spicebench run as a JSON-RPC command (e.g. run.load)
+    /// - direct-query: execute load/query path in spicebench directly
+    #[arg(long, value_enum, default_value = "adapter-command")]
+    pub(crate) system_adapter_execution_mode: SystemAdapterExecutionMode,
+
     /// Command to run for a stdio JSON-RPC system adapter.
     #[arg(long, conflicts_with = "system_adapter_http_url")]
     pub(crate) system_adapter_stdio_cmd: Option<String>,
@@ -123,4 +129,10 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
         .find('=')
         .ok_or_else(|| "expected KEY=VALUE formatted header".to_string())?;
     Ok((s[..pos].to_string(), s[pos + 1..].to_string()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SystemAdapterExecutionMode {
+    AdapterCommand,
+    DirectQuery,
 }
