@@ -137,7 +137,6 @@ aws-credential-types.workspace = true
 aws-sdk-dynamodb.workspace = true
 bollard = "0.18.1"
 clap.workspace = true
-duckdb = { workspace = true, features = ["bundled"] }
 futures.workspace = true
 itertools.workspace = true
 hf-hub = { workspace = true }
@@ -153,7 +152,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [features]
-default = ["append"]
+default = []
 anonymous_telemetry = []
 aws-secrets-manager = []
 clickhouse = []
@@ -161,7 +160,6 @@ databricks = []
 debezium = []
 delta_lake = []
 dremio = []
-duckdb = []
 flightsql = []
 ftp = []
 imap = []
@@ -176,8 +174,6 @@ snowflake = []
 spark = []
 sqlite = []
 turso = []
-
-append = ["test-framework/file_append"]
 
 [patch.crates-io]
 # Patch duckdb for direct dependencies and spiceai_duckdb_fork for datafusion-table-providers
