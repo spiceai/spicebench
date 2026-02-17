@@ -1,0 +1,74 @@
+name: data-generation run
+run-name: data-generation run - sf${{ github.event.inputs.scale_factor }} - ${{ github.event.inputs.num_steps }} steps
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale_factor:
+        description: 'TPC-H scale factor'
+        required: true
+        default: '1.0'
+        type: string
+      num_steps:
+        description: 'Number of data generation steps'
+        required: false
+        default: '100'
+        type: string
+      bucket:
+        description: 'S3 bucket name'
+        required: true
+        type: string
+      prefix:
+        description: 'S3 key prefix for generated files'
+        required: false
+        default: 'data-gen/tpch'
+        type: string
+      max_concurrency:
+        description: 'Maximum number of concurrent S3 writes'
+        required: true
+        default: '8'
+        type: string
+      region:
+        description: 'AWS region'
+        required: true
+        default: 'us-east-1'
+        type: string
+      skip_initial:
+        description: 'Skip data ingested by running --initial command'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  run-data-generation:
+    name: Run data generation
+    runs-on: ${{ github.event.inputs.runner_type }}
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build data-generation
+        run: cargo build --release -p data-generation
+
+      - name: Run data generation
+        run: |
+          ARGS="--scale-factor ${{ github.event.inputs.scale_factor }}"
+          ARGS="${ARGS} --num-steps ${{ github.event.inputs.num_steps }}"
+          ARGS="${ARGS} --bucket ${{ github.event.inputs.bucket }}"
+          ARGS="${ARGS} --prefix ${{ github.event.inputs.prefix }}"
+          ARGS="${ARGS} --max-concurrency ${{ github.event.inputs.max_concurrency }}"
+          ARGS="${ARGS} --region ${{ github.event.inputs.region }}"
+
+          if [ "${{ github.event.inputs.skip_initial }}" = "true" ]; then
+            ARGS="${ARGS} --skip-initial"
+          fi
+
+          echo "Running: data-generation run ${ARGS}"
+          ./target/release/data-generation run ${ARGS}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          RUST_LOG: info
