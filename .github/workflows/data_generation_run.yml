@@ -37,6 +37,11 @@ on:
         required: true
         default: 'us-east-1'
         type: string
+      skip_initial:
+        description: 'Skip data ingested by running --initial command'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   run-data-generation:
@@ -63,6 +68,10 @@ jobs:
 
           if [ -n "${{ github.event.inputs.total_batches }}" ]; then
             ARGS="${ARGS} --total-batches ${{ github.event.inputs.total_batches }}"
+          fi
+          
+          if [ "${{ github.event.inputs.skip_initial }}" = "true" ]; then
+            ARGS="${ARGS} --skip-initial"
           fi
 
           echo "Running: data-generation run ${ARGS}"
