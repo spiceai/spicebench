@@ -172,6 +172,11 @@ To benchmark a new platform, implement the adapter interface:
 
 - **stdio transport**: use `--system-adapter-stdio-cmd` (spicebench starts the child process).
 - **HTTP transport**: use `--system-adapter-http-url` (spicebench connects to a remote adapter endpoint).
+- **execution mode**: use `--system-adapter-execution-mode`:
+    - `adapter-command` (default): dispatches `spicebench run ...` to adapter JSON-RPC `run.load`
+    - `direct-query`: spicebench runs load/query path directly, while still connecting to adapter
+
+When adapter transport is configured, `spicebench run ...` is dispatched to spidapter method `run.load` over JSON-RPC and the adapter's `stdout`/`stderr` are streamed back.
 
 #### Stdio example (child process started by spicebench)
 
@@ -202,7 +207,18 @@ Notes:
 - Set **exactly one** of `--system-adapter-stdio-cmd` or `--system-adapter-http-url`.
 - `--system-adapter-stdio-args` passes CLI args to the stdio adapter command.
 - `--system-adapter-env` is only valid for stdio transport.
-- On connection, spicebench issues JSON-RPC `rpc.methods` to verify the adapter is reachable.
+- Spicebench validates the adapter supports JSON-RPC method `run.load` before dispatch.
+
+#### Direct-query example (run in spicebench, keep adapter connected)
+
+```bash
+spicebench run \
+    --query-set tpch \
+    --spicepod-path ./spicepod.yaml \
+    --system-adapter-name spidapter \
+    --system-adapter-execution-mode direct-query \
+    --system-adapter-http-url http://127.0.0.1:8080/jsonrpc
+```
 
 ## License
 
