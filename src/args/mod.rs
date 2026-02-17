@@ -78,7 +78,7 @@ pub struct CommonArgs {
 
     /// How to execute when a system adapter transport is configured.
     /// - adapter-command: dispatch spicebench run as a JSON-RPC command (e.g. run.load)
-    /// - direct-query: execute load/query path in spicebench directly
+    /// - direct-query: execute load/query path in spicebench directly (ADBC path)
     #[arg(long, value_enum, default_value = "adapter-command")]
     pub(crate) system_adapter_execution_mode: SystemAdapterExecutionMode,
 
