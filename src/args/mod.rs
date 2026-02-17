@@ -60,7 +60,7 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) metrics: bool,
 
-    /// Whether to enable scraping spiced metrics (automatically enables --metrics for spiced)
+    /// Whether to collect spiced runtime metrics via the system adapter JSON-RPC command.
     #[arg(long)]
     pub(crate) scrape_spiced_metrics: bool,
 

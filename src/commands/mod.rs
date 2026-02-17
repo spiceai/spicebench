@@ -14,11 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-    time::Duration,
-};
+use std::time::Duration;
 
 use crate::args::{CommonArgs, DatasetTestArgs, SystemAdapterExecutionMode};
 use test_framework::{
@@ -27,7 +23,7 @@ use test_framework::{
     app::{App, AppBuilder},
     opentelemetry_sdk::Resource,
     queries::QuerySet,
-    spiced::{SpicedInstance, StartRequest},
+    spiced::StartRequest,
     spicepod::Spicepod,
     spicepod_utils::from_app,
     spicetest::datasets::NotStarted,
@@ -39,7 +35,6 @@ use tokio::{
 };
 
 pub(crate) mod load;
-pub(crate) type RowCounts = BTreeMap<Arc<str>, usize>;
 
 /// Create telemetry with resource attributes known upfront.
 ///
@@ -103,32 +98,6 @@ pub(crate) async fn build_test_with_validation(
     Ok((query_set, test_builder))
 }
 
-pub(crate) async fn run_or_connect_spiced(
-    args: &CommonArgs,
-) -> anyhow::Result<(App, SpicedInstance)> {
-    let (app, mut instance) = if args.is_external_instance() {
-        println!(
-            "Connecting to external spiced instance at: {}",
-            args.spiced_path
-        );
-        let spicepod = Spicepod::load_exact(args.spicepod_path.clone()).await?;
-        let app = AppBuilder::new(spicepod.name.clone())
-            .with_spicepod(spicepod)
-            .build();
-        let instance = SpicedInstance::external(&args.spiced_path);
-        (app, instance)
-    } else {
-        let (app, start_request) = get_app_and_start_request(args).await?;
-        let instance = SpicedInstance::start(start_request).await?;
-        (app, instance)
-    };
-    instance
-        .wait_for_ready(std::time::Duration::from_secs(args.ready_wait))
-        .await?;
-
-    Ok((app, instance))
-}
-
 pub(crate) async fn get_app_and_start_request(
     args: &CommonArgs,
 ) -> anyhow::Result<(App, StartRequest)> {
@@ -153,12 +122,6 @@ pub(crate) async fn get_app_and_start_request(
 
     if let Some(ref data_dir) = args.data_dir {
         start_request = start_request.with_data_dir(data_dir.clone());
-    }
-
-    // If scrape_spiced_metrics is enabled, add --metrics flag to spiced
-    if args.scrape_spiced_metrics {
-        start_request = start_request
-            .with_additional_args(vec!["--metrics".to_string(), "0.0.0.0:9090".to_string()]);
     }
 
     Ok((app, start_request))
@@ -311,7 +274,7 @@ fn handle_adapter_execution_response(response: &serde_json::Value) -> anyhow::Re
 
 enum SystemAdapterClient {
     Stdio {
-        child: Child,
+        _child: Box<Child>,
         stdin: ChildStdin,
         stdout: BufReader<ChildStdout>,
     },
@@ -379,7 +342,7 @@ impl SystemAdapterClient {
                 .context("System adapter stdio child missing stdout")?;
 
             return Ok(Some(Self::Stdio {
-                child,
+                _child: Box::new(child),
                 stdin,
                 stdout: BufReader::new(stdout),
             }));
@@ -423,7 +386,7 @@ impl SystemAdapterClient {
     async fn call(&mut self, request: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         match self {
             Self::Stdio {
-                child: _,
+                _child: _,
                 stdin,
                 stdout,
             } => {
@@ -466,24 +429,6 @@ impl SystemAdapterClient {
             }
         }
     }
-}
-
-pub(crate) async fn env_export(args: &CommonArgs) -> anyhow::Result<()> {
-    let (_, mut start_request) = get_app_and_start_request(args).await?;
-
-    start_request.prepare()?;
-    let tempdir_path = start_request.get_tempdir_path();
-
-    println!(
-        "Exported spicepod environment to: {}",
-        tempdir_path.to_string_lossy()
-    );
-
-    // Wait for input before exiting
-    println!("Press Enter to exit...");
-    std::io::stdin().read_line(&mut String::new())?;
-
-    Ok(())
 }
 
 /// Create the appropriate query executor based on command-line arguments
@@ -533,65 +478,125 @@ macro_rules! wait_test_and_memory {
     };
 }
 
-/// Process and display metrics from the spiced metrics scraper
-///
-/// # Arguments
-/// * `scraper` - Optional metrics scraper to stop and process
-/// * `emit_to_telemetry` - Whether to emit metrics to OpenTelemetry
-/// * `attributes` - Optional attributes to attach to emitted metrics (e.g., test name)
-///
-/// # Returns
-/// The collected `SpicedMetrics` if scraper was present, None otherwise
+fn resolve_spiced_metrics_method(methods: &[String]) -> Option<&'static str> {
+    const CANDIDATES: &[&str] = &[
+        "spiced.metrics",
+        "metrics.spiced",
+        "metrics.scrape",
+        "run.metrics",
+    ];
+
+    CANDIDATES
+        .iter()
+        .copied()
+        .find(|candidate| methods.iter().any(|m| m == candidate))
+}
+
+fn metric_value(result: &serde_json::Value, metric_name: &str) -> Option<f64> {
+    let value = result
+        .get(metric_name)
+        .or_else(|| result.get("metrics").and_then(|m| m.get(metric_name)));
+
+    match value {
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+/// Process and display spiced runtime metrics fetched via system adapter JSON-RPC.
 pub(crate) async fn process_spiced_metrics(
-    scraper: Option<crate::spiced_metrics::MetricsScraper>,
+    common_args: &CommonArgs,
     emit_to_telemetry: bool,
     attributes: &[test_framework::opentelemetry::KeyValue],
-) -> Option<crate::spiced_metrics::SpicedMetrics> {
-    let scraper = scraper?;
+) {
+    if !common_args.scrape_spiced_metrics {
+        return;
+    }
 
-    match scraper.stop().await {
-        Ok(metrics) => {
-            println!("\n{}", vec!["="; 30].join(""));
-            println!("Spiced Runtime Metrics:");
-            println!("{}", vec!["="; 30].join(""));
+    if !has_system_adapter_transport(common_args) {
+        println!(
+            "Warning: --scrape-spiced-metrics requires a system adapter transport; skipping runtime metrics collection"
+        );
+        return;
+    }
 
-            // Display and optionally emit key metrics
-            // Note: Prometheus exporter appends _total to counter metrics
-            if let Some(query_count) = metrics.get_counter_value("query_executions_total") {
-                println!("Total Queries Executed: {query_count}");
+    let Ok(Some(mut adapter)) = SystemAdapterClient::connect(common_args).await else {
+        println!("Warning: Failed to initialize system adapter for runtime metrics collection");
+        return;
+    };
 
-                if emit_to_telemetry {
-                    crate::metrics::SPICED_QUERY_COUNT.record(query_count, attributes);
-                }
-            }
+    let methods = match adapter.rpc_methods().await {
+        Ok(methods) => methods,
+        Err(e) => {
+            println!("Warning: Failed to query system adapter methods for runtime metrics: {e}");
+            return;
+        }
+    };
 
-            if let Some(cache_hits) = metrics.get_counter_value("results_cache_hits_total")
-                && let Some(cache_requests) =
-                    metrics.get_counter_value("results_cache_requests_total")
-                && cache_requests > 0.0
-            {
-                let hit_rate = cache_hits / cache_requests;
-                println!("Cache Hit Rate: {:.2}%", hit_rate * 100.0);
+    let Some(method) = resolve_spiced_metrics_method(&methods) else {
+        println!(
+            "Warning: System adapter '{}' via {} does not expose a supported spiced metrics method",
+            common_args.system_adapter_name,
+            adapter.transport_name(),
+        );
+        return;
+    };
 
-                if emit_to_telemetry {
-                    crate::metrics::SPICED_CACHE_HIT_RATE.record(hit_rate, attributes);
-                }
-            }
+    let mut params = serde_json::Map::new();
+    for (key, value) in &common_args.system_adapter_param {
+        params.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
 
-            if let Some(active_conns) = metrics.get_gauge_max("query_active_count") {
-                println!("Peak Active Connections: {active_conns}");
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": method,
+        "params": serde_json::Value::Object(params),
+    });
 
-                if emit_to_telemetry {
-                    crate::metrics::SPICED_ACTIVE_CONNECTIONS.record(active_conns, attributes);
-                }
-            }
-
-            println!("{}", vec!["="; 30].join(""));
-            Some(metrics)
+    let result = match adapter.call(request).await {
+        Ok(response) => {
+            let Some(result) = response.get("result") else {
+                println!("Warning: System adapter metrics response missing result payload");
+                return;
+            };
+            result.clone()
         }
         Err(e) => {
-            println!("Warning: Failed to collect spiced metrics: {e}");
-            None
+            println!("Warning: Failed to fetch spiced runtime metrics from system adapter: {e}");
+            return;
+        }
+    };
+
+    println!("\n{}", vec!["="; 30].join(""));
+    println!("Spiced Runtime Metrics:");
+    println!("{}", vec!["="; 30].join(""));
+
+    if let Some(query_count) = metric_value(&result, "query_executions_total") {
+        println!("Total Queries Executed: {query_count}");
+        if emit_to_telemetry {
+            crate::metrics::SPICED_QUERY_COUNT.record(query_count, attributes);
         }
     }
+
+    if let Some(cache_hits) = metric_value(&result, "results_cache_hits_total")
+        && let Some(cache_requests) = metric_value(&result, "results_cache_requests_total")
+        && cache_requests > 0.0
+    {
+        let hit_rate = cache_hits / cache_requests;
+        println!("Cache Hit Rate: {:.2}%", hit_rate * 100.0);
+        if emit_to_telemetry {
+            crate::metrics::SPICED_CACHE_HIT_RATE.record(hit_rate, attributes);
+        }
+    }
+
+    if let Some(active_connections) = metric_value(&result, "query_active_count") {
+        println!("Peak Active Connections: {active_connections}");
+        if emit_to_telemetry {
+            crate::metrics::SPICED_ACTIVE_CONNECTIONS.record(active_connections, attributes);
+        }
+    }
+
+    println!("{}", vec!["="; 30].join(""));
 }

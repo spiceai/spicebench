@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use super::get_app_and_start_request;
-use crate::{args::BenchRunArgs, health::HealthMonitor, spiced_metrics::MetricsScraper};
+use crate::{args::BenchRunArgs, health::HealthMonitor};
 use std::time::Duration;
 use test_framework::{
     TestType, anyhow,
@@ -112,13 +112,6 @@ pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
     let telemetry = super::create_telemetry_with_resource(&args.test_args.common, load_resource);
 
     let health_monitor = HealthMonitor::spawn()?;
-
-    // Start metrics scraper if enabled
-    let metrics_scraper = if args.test_args.common.scrape_spiced_metrics {
-        Some(MetricsScraper::spawn()?)
-    } else {
-        None
-    };
 
     // Create the appropriate query executor based on args
     let executor = super::create_query_executor(&args.test_args, &spiced_instance).await?;
@@ -304,8 +297,9 @@ pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
 
     let health_report = health_monitor.stop().await;
 
-    // Stop and process metrics scraper if enabled
-    super::process_spiced_metrics(metrics_scraper, args.test_args.common.metrics, &[]).await;
+    // Fetch and process runtime metrics via system adapter JSON-RPC if enabled
+    super::process_spiced_metrics(&args.test_args.common, args.test_args.common.metrics, &[])
+        .await;
 
     // Shutdown streaming exporter before emitting final telemetry
     if let Some(exporter) = streaming_exporter {
