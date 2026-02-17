@@ -16,14 +16,22 @@ jobs:
           client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          toolchain: 1.91
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run spicebench
         run: |
-          cargo run -p spicebench -- \
-            --system-adapter-http-url http://localhost:8080/rpc \
-            --system-adapter-execution-mode direct-query \
-            --query-set tpch
+          docker run \
+            -e SPICEAI_API_KEY \
+            -v ${{ github.workspace }}/test/spicepods:/spicepods \
+            ghcr.io/spiceai/spidapter:latest \
+            run load \
+            --spiced-start-api-url https://dev-api.spice.ai \
+            --concurrency 2 \
+            --query-set tpch \
+            --spiced-start-mode spice-cloud \
+            -p /spicepods/s3-public\[parquet\].yaml
