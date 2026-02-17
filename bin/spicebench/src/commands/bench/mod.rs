@@ -87,18 +87,18 @@ pub(crate) async fn run(args: &DatasetTestArgs) -> anyhow::Result<RowCounts> {
     let spiced_version = spiced_instance.version().to_string();
     let spiced_commit_sha =
         std::env::var("SPICED_COMMIT").unwrap_or_else(|_| "unknown".to_string());
-    let testoperator_commit_sha = git::get_commit_sha();
+    let spicebench_commit_sha = git::get_commit_sha();
     let branch_name = git::get_branch_name();
 
     let query_set = args.load_query_set()?;
     let benchmark_resource = Resource::builder_empty()
         .with_attributes(vec![
-            KeyValue::new("service.name", "testoperator"),
+            KeyValue::new("service.name", "spicebench"),
             KeyValue::new("type", "benchmark_query"),
             KeyValue::new("name", app.name.clone()),
             KeyValue::new("spiced_version", spiced_version),
             KeyValue::new("query_set", query_set.to_string()),
-            KeyValue::new("testoperator_commit_sha", testoperator_commit_sha),
+            KeyValue::new("spicebench_commit_sha", spicebench_commit_sha),
             KeyValue::new("spiced_commit_sha", spiced_commit_sha),
             KeyValue::new("branch_name", branch_name),
             KeyValue::new("scale_factor", args.scale_factor.unwrap_or(1.0).to_string()),

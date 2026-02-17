@@ -116,11 +116,11 @@ pub(crate) async fn run(args: &EvalsTestArgs) -> anyhow::Result<()> {
     // This ensures the SdkMeterProvider is created with the correct resource.
     let benchmark_resource = Resource::builder_empty()
         .with_attributes(vec![
-            KeyValue::new("service.name", "testoperator"),
+            KeyValue::new("service.name", "spicebench"),
             KeyValue::new("type", "model_benchmark"),
             KeyValue::new("spiced_version", spiced_instance.version().to_string()),
             KeyValue::new("spiced_commit_sha", git::get_commit_sha()),
-            KeyValue::new("testoperator_commit_sha", git::get_commit_sha()),
+            KeyValue::new("spicebench_commit_sha", git::get_commit_sha()),
             KeyValue::new("branch_name", git::get_branch_name()),
         ])
         .build();

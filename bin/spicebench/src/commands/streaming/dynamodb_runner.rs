@@ -144,20 +144,20 @@ pub async fn run_dynamodb(args: &StreamingDynamodbTestArgs) -> Result<()> {
     let spiced_version = spiced_instance.version().to_string();
 
     // Build telemetry resource with benchmark attributes
-    let testoperator_commit_sha = git::get_commit_sha();
+    let spicebench_commit_sha = git::get_commit_sha();
     let spiced_commit_sha =
         std::env::var("SPICED_COMMIT").unwrap_or_else(|_| "unknown".to_string());
     let branch_name = git::get_branch_name();
 
     let benchmark_resource = Resource::builder_empty()
         .with_attributes(vec![
-            KeyValue::new("service.name", "testoperator"),
+            KeyValue::new("service.name", "spicebench"),
             KeyValue::new("type", "streaming_benchmark"),
             KeyValue::new("config_name", config_name.clone()),
             KeyValue::new("run_id", run_id.clone()),
             KeyValue::new("queryset", args.queryset.to_string()),
             KeyValue::new("scale_factor", args.scale_factor.to_string()),
-            KeyValue::new("testoperator_commit_sha", testoperator_commit_sha),
+            KeyValue::new("spicebench_commit_sha", spicebench_commit_sha),
             KeyValue::new("spiced_commit_sha", spiced_commit_sha),
             KeyValue::new("spiced_version", spiced_version),
             KeyValue::new("branch_name", branch_name),

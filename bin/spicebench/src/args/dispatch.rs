@@ -242,10 +242,10 @@ impl<'de> Deserialize<'de> for LoadArgs {
             helper.bench_args.scrape_spiced_metrics = Some(true);
         }
 
-        // Remove ready_wait parameter as it's not supported by testoperator_run_load workflow
+        // Remove ready_wait parameter as it's not supported by spicebench_run_load workflow
         if helper.bench_args.ready_wait.is_some() {
             eprintln!(
-                "Warning: ready_wait parameter (spicepod_path = {}) is not supported by testoperator_run_load workflow and will be ignored",
+                "Warning: ready_wait parameter (spicepod_path = {}) is not supported by spicebench_run_load workflow and will be ignored",
                 helper.bench_args.spicepod_path.display()
             );
             helper.bench_args.ready_wait = None;
@@ -275,7 +275,7 @@ pub enum RunnerType {
     DevLarge,
 }
 
-/// Payload sent to the GitHub Actions workflow request. Should match inputs in `.github/workflows/testoperator_run_texttosql.yml`.
+/// Payload sent to the GitHub Actions workflow request. Should match inputs in `.github/workflows/spicebench_run_texttosql.yml`.
 /// `spiced_commit` is not an eligible argument in the test files, as it is controlled by the environment.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TextToSqlArgs {
@@ -290,7 +290,7 @@ pub struct TextToSqlArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 
-    /// Unique name for the configured testoperator run. Used to identify/group runs in telemetry.
+    /// Unique name for the configured spicebench run. Used to identify/group runs in telemetry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub configuration_name: Option<String>,
 

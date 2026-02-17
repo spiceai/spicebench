@@ -46,7 +46,7 @@ pub(crate) async fn run(args: &TextToSqlArgs) -> anyhow::Result<()> {
     let telemetry = Telemetry::new_with_resource(
         &Resource::builder_empty()
             .with_attributes(vec![
-                KeyValue::new("service.name", "testoperator"),
+                KeyValue::new("service.name", "spicebench"),
                 KeyValue::new("type", "text_to_sql"),
                 KeyValue::new("name", run_name.clone()),
                 KeyValue::new("spiced_version", spiced_instance.version().to_string()),
@@ -55,7 +55,7 @@ pub(crate) async fn run(args: &TextToSqlArgs) -> anyhow::Result<()> {
                     std::env::var("SPICED_COMMIT").unwrap_or_else(|_| "unknown".to_string()),
                 ),
                 KeyValue::new("model_name", args.model.clone()),
-                KeyValue::new("testoperator_commit_sha", git::get_commit_sha()),
+                KeyValue::new("spicebench_commit_sha", git::get_commit_sha()),
                 KeyValue::new("branch_name", git::get_branch_name()),
             ])
             .build(),

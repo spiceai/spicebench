@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-//! Constants for test-framework and testoperator, including default URLs and endpoints
+//! Constants for test-framework and spicebench, including default URLs and endpoints
 
 /// Default HTTP endpoint for spiced runtime
 pub const HTTP_BASE_URL: &str = "http://localhost:8090";

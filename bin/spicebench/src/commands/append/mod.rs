@@ -109,7 +109,7 @@ pub(crate) async fn run(args: &AppendTestArgs) -> anyhow::Result<()> {
 
     let test_metrics = test_metrics
         .with_spiced_version(metrics.spiced_version.clone())
-        .with_testoperator_commit_sha(metrics.commit_sha.clone())
+        .with_spicebench_commit_sha(metrics.commit_sha.clone())
         .with_branch_name(metrics.branch_name.clone())
         .with_memory(max_memory, median_memory);
 
@@ -174,7 +174,7 @@ struct AppendTestMetrics {
     app_name: String,
     spiced_version: Option<String>,
     query_set: String,
-    testoperator_commit_sha: Option<String>,
+    spicebench_commit_sha: Option<String>,
     spiced_commit_sha: Option<String>,
     branch_name: Option<String>,
     max_memory: Option<f64>,
@@ -187,7 +187,7 @@ impl AppendTestMetrics {
             app_name: app_name.into(),
             query_set: query_set.into(),
             spiced_version: None,
-            testoperator_commit_sha: None,
+            spicebench_commit_sha: None,
             spiced_commit_sha: None,
             branch_name: None,
             max_memory: None,
@@ -200,8 +200,8 @@ impl AppendTestMetrics {
         self
     }
 
-    fn with_testoperator_commit_sha(mut self, sha: impl Into<String>) -> Self {
-        self.testoperator_commit_sha = Some(sha.into());
+    fn with_spicebench_commit_sha(mut self, sha: impl Into<String>) -> Self {
+        self.spicebench_commit_sha = Some(sha.into());
         self
     }
 
@@ -225,7 +225,7 @@ impl AppendTestMetrics {
     async fn emit(self, test_status: TestStatus) -> anyhow::Result<()> {
         let resource = Resource::builder_empty()
             .with_attributes(vec![
-                KeyValue::new("service.name", "testoperator"),
+                KeyValue::new("service.name", "spicebench"),
                 KeyValue::new("type", "append_test"),
                 KeyValue::new("name", self.app_name),
                 KeyValue::new(
@@ -234,8 +234,8 @@ impl AppendTestMetrics {
                 ),
                 KeyValue::new("query_set", self.query_set),
                 KeyValue::new(
-                    "testoperator_commit_sha",
-                    self.testoperator_commit_sha
+                    "spicebench_commit_sha",
+                    self.spicebench_commit_sha
                         .unwrap_or_else(|| "unknown".to_string()),
                 ),
                 KeyValue::new(

@@ -130,7 +130,7 @@ impl StreamingOtlpExporter {
             .build();
 
         let resource = Resource::builder()
-            .with_service_name("testoperator-streaming")
+            .with_service_name("spicebench-streaming")
             .build();
 
         let provider = SdkMeterProvider::builder()
@@ -141,25 +141,25 @@ impl StreamingOtlpExporter {
         // Set as global provider for this task
         global::set_meter_provider(provider.clone());
 
-        let meter: Meter = provider.meter("testoperator-streaming");
+        let meter: Meter = provider.meter("spicebench-streaming");
         let query_duration_histogram: Histogram<f64> = meter
-            .f64_histogram("testoperator.streaming.query.duration_ms")
+            .f64_histogram("spicebench.streaming.query.duration_ms")
             .with_description("Query execution duration in milliseconds (streaming)")
             .with_unit("ms")
             .build();
 
         let query_count = meter
-            .u64_counter("testoperator.streaming.query.count")
+            .u64_counter("spicebench.streaming.query.count")
             .with_description("Total number of queries executed (streaming)")
             .build();
 
         let query_success_count = meter
-            .u64_counter("testoperator.streaming.query.success_count")
+            .u64_counter("spicebench.streaming.query.success_count")
             .with_description("Number of successful queries (streaming)")
             .build();
 
         let query_failure_count = meter
-            .u64_counter("testoperator.streaming.query.failure_count")
+            .u64_counter("spicebench.streaming.query.failure_count")
             .with_description("Number of failed queries (streaming)")
             .build();
 

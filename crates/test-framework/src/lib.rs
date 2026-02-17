@@ -68,14 +68,14 @@ impl TestType {
     #[must_use]
     pub fn workflow(&self) -> &str {
         match self {
-            TestType::Throughput => "testoperator_run_throughput.yml",
-            TestType::Load => "testoperator_run_load.yml",
-            TestType::Benchmark => "testoperator_run_bench.yml",
-            TestType::Append => "testoperator_run_append.yml",
-            TestType::DataConsistency => "testoperator_run_data_consistency.yml",
-            TestType::Search => "testoperator_run_search.yml",
-            TestType::TextToSql => "testoperator_run_texttosql.yml",
-            TestType::Streaming => "testoperator_run_streaming_dynamodb.yml",
+            TestType::Throughput => "spicebench_run_throughput.yml",
+            TestType::Load => "spicebench_run_load.yml",
+            TestType::Benchmark => "spicebench_run_bench.yml",
+            TestType::Append => "spicebench_run_append.yml",
+            TestType::DataConsistency => "spicebench_run_data_consistency.yml",
+            TestType::Search => "spicebench_run_search.yml",
+            TestType::TextToSql => "spicebench_run_texttosql.yml",
+            TestType::Streaming => "spicebench_run_streaming_dynamodb.yml",
         }
     }
 }

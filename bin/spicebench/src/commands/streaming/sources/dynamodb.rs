@@ -46,13 +46,13 @@ const BATCH_SIZE: usize = 25;
 const CONCURRENT_BATCHES: usize = 20;
 
 /// Tag key for creation timestamp (Unix seconds).
-const TAG_CREATED_AT: &str = "testoperator:created_at";
+const TAG_CREATED_AT: &str = "spicebench:created_at";
 
 /// Tag key for run ID.
-const TAG_RUN_ID: &str = "testoperator:run_id";
+const TAG_RUN_ID: &str = "spicebench:run_id";
 
 /// Tag key for scale factor.
-const TAG_SCALE_FACTOR: &str = "testoperator:scale_factor";
+const TAG_SCALE_FACTOR: &str = "spicebench:scale_factor";
 
 /// Maximum age of tables before cleanup (24 hours).
 const STALE_TABLE_AGE_SECS: u64 = 24 * 60 * 60;
@@ -168,7 +168,7 @@ impl DynamoDbStreamsSource {
             config.secret_access_key.clone(),
             None,
             None,
-            "testoperator-aws-dynamodb",
+            "spicebench-aws-dynamodb",
         );
         sdk_config_builder =
             sdk_config_builder.credentials_provider(SharedCredentialsProvider::new(credentials));
@@ -331,12 +331,12 @@ impl DynamoDbStreamsSource {
         tags
     }
 
-    /// Clean up stale tables (older than 24 hours) created by testoperator.
+    /// Clean up stale tables (older than 24 hours) created by spicebench.
     ///
-    /// This scans all tables, checks for the `testoperator:created_at` tag,
+    /// This scans all tables, checks for the `spicebench:created_at` tag,
     /// and deletes tables older than `STALE_TABLE_AGE_SECS`.
     async fn cleanup_stale_tables(client: &Client) -> Result<()> {
-        println!("Scanning for stale testoperator tables (>24h old)...");
+        println!("Scanning for stale spicebench tables (>24h old)...");
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

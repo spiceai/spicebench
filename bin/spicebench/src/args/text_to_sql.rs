@@ -56,7 +56,7 @@ pub struct TextToSqlArgs {
     #[arg(short('n'), long)]
     pub(crate) limit: Option<usize>,
 
-    /// Unique name for the configured testoperator run. Used to identify/group runs in telemetry. If not provided, the `.name` from the spicepod will be used.
+    /// Unique name for the configured spicebench run. Used to identify/group runs in telemetry. If not provided, the `.name` from the spicepod will be used.
     #[arg(long)]
     pub(crate) configuration_name: Option<String>,
 }

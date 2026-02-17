@@ -1,6 +1,7 @@
 [workspace]
-default-members = ["tools/testoperator"]
+default-members = ["bin/spicebench"]
 members = [
+    "bin/spicebench",
     "crates/app",
     "crates/duration-parse",
     "crates/flight_client",
@@ -10,7 +11,6 @@ members = [
     "crates/test-framework",
     "crates/util",
     "crates/yaml",
-    "tools/testoperator",
 ]
 
 resolver = "2"

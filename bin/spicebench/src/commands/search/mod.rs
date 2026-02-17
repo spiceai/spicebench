@@ -77,12 +77,12 @@ pub(crate) async fn run(args: &SearchTestArgs) -> anyhow::Result<()> {
     let spiced_commit_sha =
         std::env::var("SPICED_COMMIT").unwrap_or_else(|_| git::get_commit_sha());
     let mut search_attributes = vec![
-        KeyValue::new("service.name", "testoperator"),
+        KeyValue::new("service.name", "spicebench"),
         KeyValue::new("type", "search"),
         KeyValue::new("name", app.name.clone()),
         KeyValue::new("spiced_version", spiced_instance.version().to_string()),
         KeyValue::new("spiced_commit_sha", spiced_commit_sha),
-        KeyValue::new("testoperator_commit_sha", git::get_commit_sha()),
+        KeyValue::new("spicebench_commit_sha", git::get_commit_sha()),
         KeyValue::new("branch_name", git::get_branch_name()),
         KeyValue::new("config_name", app.name.clone()),
         KeyValue::new(
