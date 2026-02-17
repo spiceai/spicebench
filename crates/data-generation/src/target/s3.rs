@@ -1,0 +1,115 @@
+/*
+Copyright 2024-2025 The Spice.ai OSS Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+use std::sync::Arc;
+
+use arrow::array::RecordBatch;
+use async_trait::async_trait;
+use object_store::aws::AmazonS3Builder;
+use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, PutPayload};
+use parquet::arrow::ArrowWriter;
+use parquet::basic::Compression;
+use parquet::file::properties::WriterProperties;
+use uuid::Uuid;
+
+use crate::config::TargetConfig;
+
+use super::{Target, WriteResult};
+
+#[derive(Clone)]
+pub struct S3Target {
+    store: Arc<dyn ObjectStore>,
+    bucket: String,
+    prefix: String,
+}
+
+impl S3Target {
+    pub fn new(config: &TargetConfig) -> anyhow::Result<Self> {
+        let mut builder = AmazonS3Builder::from_env().with_bucket_name(&config.bucket);
+
+        if let Some(region) = &config.region {
+            builder = builder.with_region(region);
+        }
+        if let Some(endpoint) = &config.endpoint
+            && !endpoint.is_empty()
+        {
+            builder = builder.with_endpoint(endpoint);
+            if endpoint.starts_with("http://") {
+                builder = builder.with_allow_http(true);
+            }
+        }
+
+        let store = Arc::new(builder.build()?);
+        Ok(Self {
+            store,
+            bucket: config.bucket.clone(),
+            prefix: config.prefix.clone(),
+        })
+    }
+
+    /// Returns the S3 URI for a given table name (e.g. `s3://bucket/prefix/customer/`).
+    pub fn table_s3_path(&self, table_name: &str) -> String {
+        if self.prefix.is_empty() {
+            format!("s3://{}/{table_name}/", self.bucket)
+        } else {
+            format!("s3://{}/{}/{table_name}/", self.bucket, self.prefix)
+        }
+    }
+}
+
+#[async_trait]
+impl Target for S3Target {
+    async fn write(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+        batch: RecordBatch,
+    ) -> anyhow::Result<WriteResult> {
+        let rows = batch.num_rows() as u64;
+        let schema = batch.schema();
+
+        // Serialize RecordBatch to Parquet bytes in memory
+        let props = WriterProperties::builder()
+            .set_compression(Compression::SNAPPY)
+            .build();
+
+        let mut buf = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props))?;
+        writer.write(&batch)?;
+        writer.close()?;
+
+        let bytes_written = buf.len() as u64;
+
+        // Upload to S3 with per-table directory structure
+        let uuid = Uuid::new_v4();
+        let path = if self.prefix.is_empty() {
+            ObjectPath::from(format!("{table_name}/batch-{batch_id:06}-{uuid}.parquet"))
+        } else {
+            ObjectPath::from(format!(
+                "{}/{table_name}/batch-{batch_id:06}-{uuid}.parquet",
+                self.prefix
+            ))
+        };
+
+        self.store.put(&path, PutPayload::from(buf)).await?;
+
+        Ok(WriteResult {
+            rows_written: rows,
+            bytes_written,
+        })
+    }
+}
