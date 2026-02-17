@@ -9,7 +9,6 @@ version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-aws-sdk-credential-bridge = { path = "../aws-sdk-credential-bridge", optional = true }
 byte-unit.workspace = true
 duration-parse.workspace = true
 futures.workspace = true
@@ -30,6 +29,6 @@ url.workspace = true
 tokio.workspace = true
 
 [features]
-default = ["object-store"]
+default = []
 schemars = ["dep:schemars"]
-object-store = ["dep:aws-sdk-credential-bridge", "dep:object_store"]
+object-store = ["dep:object_store"]
