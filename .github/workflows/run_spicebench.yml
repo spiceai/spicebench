@@ -16,9 +16,6 @@ jobs:
           client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
-      - run: echo "$SPICE_MANAGEMENT_TOKEN"
-      - run: exit 1
-
       - name: Install Rust
         run: |
           echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> $GITHUB_PATH
