@@ -37,7 +37,7 @@ runs:
         fi
 
         response=$(curl -sS -X POST "${{ inputs.token-url }}" -H "Content-Type: application/json" \
-          -d "$(jq -cn --arg client_id '${{ inputs.client-id }}' --arg client_secret '${{ inputs.client-secret }}' '{client_id: $client_id, client_secret: $client_secret, grant_type: \"client_credentials\"}')")
+          -d "$(jq -cn --arg client_id '${{ inputs.client-id }}' --arg client_secret '${{ inputs.client-secret }}' '{client_id: $client_id, client_secret: $client_secret, grant_type: "client_credentials"}')")
 
         value=$(echo "$response" | jq -er '.access_token')
 
