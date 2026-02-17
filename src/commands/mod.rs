@@ -14,7 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{collections::{BTreeMap, HashMap}, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::args::{CommonArgs, DatasetTestArgs, SystemAdapterExecutionMode};
 use test_framework::{
@@ -260,7 +264,10 @@ fn adapter_cli_args_for_run(raw_cli_args: &[String]) -> Vec<String> {
             continue;
         }
 
-        if takes_value.iter().any(|flag| arg.starts_with(&format!("{flag}="))) {
+        if takes_value
+            .iter()
+            .any(|flag| arg.starts_with(&format!("{flag}=")))
+        {
             continue;
         }
 
@@ -297,9 +304,7 @@ fn handle_adapter_execution_response(response: &serde_json::Value) -> anyhow::Re
         .unwrap_or(1);
 
     if !success || exit_code != 0 {
-        anyhow::bail!(
-            "System adapter command failed (success={success}, exit_code={exit_code})"
-        );
+        anyhow::bail!("System adapter command failed (success={success}, exit_code={exit_code})");
     }
 
     Ok(())
