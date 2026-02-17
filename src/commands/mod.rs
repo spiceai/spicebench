@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::time::Duration;
 
 use crate::args::{CommonArgs, DatasetTestArgs};
 use test_framework::{
@@ -29,10 +29,7 @@ use test_framework::{
     telemetry::{OtlpExporterConfig, Telemetry},
 };
 
-#[cfg(feature = "append")]
-pub(crate) mod append;
 pub(crate) mod load;
-pub(crate) type RowCounts = BTreeMap<Arc<str>, usize>;
 
 /// Create telemetry with resource attributes known upfront.
 ///
