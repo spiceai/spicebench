@@ -26,7 +26,7 @@ jobs:
 
       - name: Run spicebench
         run: |
-          cargo run -p spicebench -- run \
-            --ready-wait 180 \
-            --concurrency 2 \
+          cargo run -p spicebench -- \
+            --system-adapter-http-url http://localhost:8080/rpc \
+            --system-adapter-execution-mode direct-query \
             --query-set tpch

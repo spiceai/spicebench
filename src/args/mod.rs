@@ -16,16 +16,10 @@ limitations under the License.
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, ValueEnum};
 
 mod dataset;
-pub use dataset::{DatasetTestArgs, LoadTestArgs};
-
-#[derive(Subcommand)]
-pub enum Commands {
-    /// Run a load test against a spiced instance
-    Run(LoadTestArgs),
-}
+pub use dataset::{BenchRunArgs, DatasetTestArgs};
 
 /// Arguments Common to all [`TestCommands`].
 #[derive(Parser, Debug, Clone)]

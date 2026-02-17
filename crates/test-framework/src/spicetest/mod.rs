@@ -20,8 +20,6 @@ use anyhow::{Context, Result};
 
 use crate::spiced::SpicedInstance;
 
-#[cfg(feature = "file_append")]
-pub mod append;
 pub mod datasets;
 pub mod search;
 pub mod text_to_sql;

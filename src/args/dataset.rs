@@ -287,7 +287,7 @@ pub struct DataConsistencyArgs {
 }
 
 #[derive(Parser, Debug)]
-pub struct LoadTestArgs {
+pub struct BenchRunArgs {
     #[command(flatten)]
     pub(crate) test_args: DatasetTestArgs,
 

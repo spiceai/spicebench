@@ -23,13 +23,13 @@ mod health;
 mod metrics;
 mod spiced_metrics;
 
-use args::Commands;
+use args::BenchRunArgs;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    #[command(subcommand)]
-    subcommand: Commands,
+    #[command(flatten)]
+    args: BenchRunArgs,
 }
 
 #[tokio::main]
@@ -40,17 +40,13 @@ async fn main() -> anyhow::Result<()> {
     let raw_cli_args: Vec<String> = std::env::args().skip(1).collect();
     let cli = Cli::parse();
 
-    match cli.subcommand {
-        Commands::Run(args) => {
-            if commands::maybe_dispatch_run_to_system_adapter(&raw_cli_args, &args.test_args.common)
-                .await?
-            {
-                return Ok(());
-            }
-
-            commands::load::run(&args).await?
-        }
+    if commands::maybe_dispatch_run_to_system_adapter(&raw_cli_args, &cli.args.test_args.common)
+        .await?
+    {
+        return Ok(());
     }
+
+    commands::load::run(&cli.args).await?;
 
     Ok(())
 }

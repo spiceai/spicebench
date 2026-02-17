@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use super::get_app_and_start_request;
-use crate::{args::LoadTestArgs, health::HealthMonitor, spiced_metrics::MetricsScraper};
+use crate::{args::BenchRunArgs, health::HealthMonitor, spiced_metrics::MetricsScraper};
 use std::time::Duration;
 use test_framework::{
     TestType, anyhow,
@@ -38,7 +38,7 @@ use tokio::signal;
 use tokio_util::sync::CancellationToken;
 
 #[expect(clippy::too_many_lines)]
-pub(crate) async fn run(args: &LoadTestArgs) -> anyhow::Result<()> {
+pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
     if args.test_args.common.concurrency < 2 {
         return Err(anyhow::anyhow!(
             "Concurrency should be greater than 1 for a load test"

@@ -39,7 +39,6 @@ bytes = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 datafusion = "51"
-duckdb = "1.4"
 duration-parse = { path = "crates/duration-parse" }
 futures = "0.3"
 hf-hub = "0.4"
@@ -94,7 +93,6 @@ aws-credential-types.workspace = true
 aws-sdk-dynamodb.workspace = true
 bollard = "0.18.1"
 clap.workspace = true
-duckdb = { workspace = true, features = ["bundled"] }
 futures.workspace = true
 itertools.workspace = true
 hf-hub = { workspace = true }
@@ -110,7 +108,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [features]
-default = ["append"]
+default = []
 anonymous_telemetry = []
 aws-secrets-manager = []
 clickhouse = []
@@ -118,7 +116,6 @@ databricks = []
 debezium = []
 delta_lake = []
 dremio = []
-duckdb = []
 flightsql = []
 ftp = []
 imap = []
@@ -133,5 +130,3 @@ snowflake = []
 spark = []
 sqlite = []
 turso = []
-
-append = ["test-framework/file_append"]
