@@ -1,3 +1,80 @@
+[workspace]
+members = [
+    ".",
+    "crates/app",
+    "crates/duration-parse",
+    "crates/flight_client",
+    "crates/otel-arrow",
+    "crates/spicepod",
+    "crates/telemetry",
+    "crates/test-framework",
+    "crates/util",
+    "crates/yaml",
+]
+
+[workspace.package]
+edition = "2021"
+exclude = []
+homepage = "https://spice.ai"
+license = "Apache-2.0"
+repository = "https://github.com/spiceai/spicebench"
+rust-version = "1.81.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+arrow = "57"
+arrow-buffer = "57"
+arrow-flight = "57"
+arrow-json = "57"
+arrow-schema = "57"
+async-openai = "0.32"
+async-trait = "0.1"
+aws-config = "1"
+aws-credential-types = "1"
+aws-sdk-dynamodb = "1"
+base64 = "0.21"
+byte-unit = "5"
+bytes = "1"
+chrono = "0.4"
+clap = "4"
+datafusion = "51"
+duckdb = "1.4"
+duration-parse = { path = "crates/duration-parse" }
+futures = "0.3"
+hf-hub = "0.4"
+http = "1"
+humantime = "2"
+insta = "1"
+itertools = "0.14"
+object_store = "0.12"
+opentelemetry = "0.31"
+opentelemetry-otlp = "0.31"
+opentelemetry_sdk = "0.31"
+parking_lot = "0.12"
+rand = "0.8"
+regex = "1"
+reqwest = "0.12"
+rustls = "0.23"
+schemars = "0.9"
+secrecy = "0.10"
+serde = "1"
+serde_json = "1"
+sha2 = "0.10"
+snafu = "0.8"
+spiceai = "3.0"
+sysinfo = "0.37"
+tempfile = "3"
+tokio = "1"
+tokio-stream = "0.1"
+tokio-util = "0.7"
+tonic = "0.14"
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2"
+uuid = "1"
+
 [package]
 edition.workspace = true
 exclude.workspace = true
@@ -24,10 +101,10 @@ hf-hub = { workspace = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-yaml = { path = "../../crates/yaml" }
+yaml = { path = "crates/yaml" }
 spiceai.workspace = true
-spicepod = { path = "../../crates/spicepod" }
-test-framework = { path = "../../crates/test-framework" }
+spicepod = { path = "crates/spicepod" }
+test-framework = { path = "crates/test-framework" }
 rand.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

@@ -36,7 +36,7 @@ octocrab = "0.49.5"
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
-otel-arrow = { path = "../../crates/otel-arrow" }
+otel-arrow = { path = "../otel-arrow" }
 rand.workspace = true
 rcgen = { version = "0.14", features = ["x509-parser"] }
 regex.workspace = true
@@ -49,7 +49,7 @@ yaml = { path = "../yaml" }
 spiceai = { workspace = true }
 spicepod = { path = "../spicepod" }
 sysinfo = "0.37.2"
-telemetry = { path = "../../crates/telemetry" }
+telemetry = { path = "../telemetry" }
 tempfile.workspace = true
 time = "0.3"
 tokio.workspace = true
