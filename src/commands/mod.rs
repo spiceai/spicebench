@@ -28,6 +28,10 @@ use test_framework::{
     spicetest::datasets::NotStarted,
     telemetry::{OtlpExporterConfig, Telemetry},
 };
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{ChildStdin, ChildStdout, Command},
+};
 
 #[cfg(feature = "append")]
 pub(crate) mod append;
@@ -99,6 +103,16 @@ pub(crate) async fn build_test_with_validation(
 pub(crate) async fn run_or_connect_spiced(
     args: &CommonArgs,
 ) -> anyhow::Result<(App, SpicedInstance)> {
+    if let Some(mut adapter) = SystemAdapterClient::connect(args).await? {
+        let methods = adapter.rpc_methods().await?;
+        println!(
+            "Connected to system adapter '{}' via {} ({} methods)",
+            args.system_adapter_name,
+            adapter.transport_name(),
+            methods.len()
+        );
+    }
+
     let (app, mut instance) = if args.is_external_instance() {
         println!(
             "Connecting to external spiced instance at: {}",
@@ -129,6 +143,7 @@ pub(crate) async fn get_app_and_start_request(
     // remains unset and all metric operations are no-ops.
 
     let mut spicepod = Spicepod::load_exact(args.spicepod_path.clone()).await?;
+
     let mut app_builder = AppBuilder::new(spicepod.name.clone()).with_spicepod(spicepod.clone());
 
     if let Some(dependencies_root) = &args.spicepod_dependencies {
@@ -154,6 +169,161 @@ pub(crate) async fn get_app_and_start_request(
     }
 
     Ok((app, start_request))
+}
+
+enum SystemAdapterClient {
+    Stdio {
+        stdin: ChildStdin,
+        stdout: BufReader<ChildStdout>,
+    },
+    Http {
+        client: reqwest::Client,
+        endpoint: String,
+    },
+}
+
+impl SystemAdapterClient {
+    async fn connect(args: &CommonArgs) -> anyhow::Result<Option<Self>> {
+        let has_stdio = args.system_adapter_stdio_cmd.is_some();
+        let has_http = args.system_adapter_http_url.is_some();
+
+        if has_stdio && has_http {
+            anyhow::bail!(
+                "Set only one system adapter transport: --system-adapter-stdio-cmd or --system-adapter-http-url"
+            );
+        }
+
+        if !has_stdio && !has_http {
+            if args.system_adapter_stdio_args.is_some()
+                || !args.system_adapter_param.is_empty()
+                || !args.system_adapter_env.is_empty()
+            {
+                anyhow::bail!(
+                    "System adapter params were provided without a transport. Set either --system-adapter-stdio-cmd or --system-adapter-http-url."
+                );
+            }
+            return Ok(None);
+        }
+
+        if has_http && !args.system_adapter_env.is_empty() {
+            anyhow::bail!(
+                "--system-adapter-env is only valid with --system-adapter-stdio-cmd transport."
+            );
+        }
+
+        if let Some(command) = &args.system_adapter_stdio_cmd {
+            let mut cmd = Command::new(command);
+
+            if let Some(raw_args) = &args.system_adapter_stdio_args {
+                cmd.args(raw_args.split_whitespace());
+            }
+
+            for (key, value) in &args.system_adapter_env {
+                cmd.env(key, value);
+            }
+
+            cmd.stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit());
+
+            let mut child = cmd.spawn().map_err(|e| {
+                anyhow::anyhow!("Failed to start system adapter stdio command '{command}': {e}")
+            })?;
+
+            let stdin = child
+                .stdin
+                .take()
+                .context("System adapter stdio child missing stdin")?;
+            let stdout = child
+                .stdout
+                .take()
+                .context("System adapter stdio child missing stdout")?;
+
+            std::mem::forget(child);
+
+            return Ok(Some(Self::Stdio {
+                stdin,
+                stdout: BufReader::new(stdout),
+            }));
+        }
+
+        Ok(Some(Self::Http {
+            client: reqwest::Client::new(),
+            endpoint: args
+                .system_adapter_http_url
+                .clone()
+                .context("system adapter HTTP URL not provided")?,
+        }))
+    }
+
+    fn transport_name(&self) -> &'static str {
+        match self {
+            Self::Stdio { .. } => "stdio",
+            Self::Http { .. } => "http",
+        }
+    }
+
+    async fn rpc_methods(&mut self) -> anyhow::Result<Vec<String>> {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "rpc.methods"
+        });
+        let response = self.call(request).await?;
+
+        let methods = response
+            .get("result")
+            .and_then(|v| v.get("methods"))
+            .and_then(|v| v.as_array())
+            .context("System adapter response missing result.methods")?
+            .iter()
+            .filter_map(|v| v.as_str().map(ToString::to_string))
+            .collect();
+        Ok(methods)
+    }
+
+    async fn call(&mut self, request: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        match self {
+            Self::Stdio { stdin, stdout } => {
+                let payload = serde_json::to_string(&request)?;
+                stdin.write_all(payload.as_bytes()).await?;
+                stdin.write_all(b"\n").await?;
+                stdin.flush().await?;
+
+                let mut line = String::new();
+                let read = stdout.read_line(&mut line).await?;
+                if read == 0 {
+                    anyhow::bail!("System adapter stdio process closed stdout before responding");
+                }
+
+                let response: serde_json::Value = serde_json::from_str(line.trim_end())?;
+                if let Some(error) = response.get("error") {
+                    anyhow::bail!("System adapter returned JSON-RPC error: {error}");
+                }
+                Ok(response)
+            }
+            Self::Http { client, endpoint } => {
+                let response = client
+                    .post(endpoint)
+                    .json(&request)
+                    .send()
+                    .await
+                    .with_context(|| {
+                        format!("Failed to POST JSON-RPC request to system adapter at {endpoint}")
+                    })?;
+
+                let status = response.status();
+                let value: serde_json::Value = response.json().await.with_context(|| {
+                    format!("Failed to parse JSON-RPC response body from system adapter ({status})")
+                })?;
+
+                if let Some(error) = value.get("error") {
+                    anyhow::bail!("System adapter returned JSON-RPC error: {error}");
+                }
+                Ok(value)
+            }
+        }
+    }
 }
 
 pub(crate) async fn env_export(args: &CommonArgs) -> anyhow::Result<()> {
