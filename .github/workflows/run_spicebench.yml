@@ -20,7 +20,7 @@ on:
       etl_bucket:
         description: 'S3 bucket for ETL source and target data'
         required: true
-        default: "spiceai-public-datasets"
+        default: 'spiceai-public-datasets'
         type: string
       etl_source_prefix:
         description: 'S3 key prefix for ETL source data'
@@ -35,7 +35,7 @@ on:
       etl_region:
         description: 'AWS region for the ETL S3 bucket'
         required: false
-        default: "us-east-1"
+        default: 'us-east-1'
         type: string
       etl_endpoint:
         description: 'S3 endpoint URL for ETL bucket (for MinIO/LocalStack)'
@@ -180,6 +180,7 @@ jobs:
               exit 1
               ;;
           esac
+
       - name: Install ADBC driver
         env:
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
@@ -217,7 +218,7 @@ jobs:
           ETL_NUM_STEPS: ${{ github.event.inputs.etl_num_steps || '25' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          RUST_LOG: "info"
+          RUST_LOG: 'info'
         run: |
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-num-steps ${ETL_NUM_STEPS}"
           if [ -n "${ETL_SOURCE_PREFIX}" ]; then
@@ -232,7 +233,7 @@ jobs:
           if [ -n "${ETL_ENDPOINT}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
           fi
-          
+
           if [ "${SYSTEM_ADAPTER}" = "databricks" ]; then
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
@@ -254,8 +255,6 @@ jobs:
           ~/.spice/bin/spicebench \
             --concurrency 2  \
             --scenario "${SCENARIO}" \
-            --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
-            ${ETL_ARGS} \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \

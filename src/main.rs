@@ -84,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
         executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
+<<<<<<< HEAD
     let run_suffix = Uuid::new_v4().to_string();
     let target_prefix = if cli.common.etl_target_base_prefix.is_empty() {
         run_suffix.clone()
@@ -95,6 +96,11 @@ async fn main() -> anyhow::Result<()> {
     let target_config = TargetConfig {
         bucket: cli.common.etl_bucket.clone(),
         prefix: target_prefix,
+=======
+    let target_config = TargetConfig {
+        bucket: cli.common.etl_bucket.clone(),
+        prefix: cli.common.etl_target_prefix.clone(),
+>>>>>>> e4a9cfda (feat: Connect ETL to spicebench (#49))
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
         table_format: cli.common.table_format.clone(),

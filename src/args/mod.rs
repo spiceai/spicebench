@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use clap::{ArgAction, Parser, ValueEnum};
+use data_generation::config::TableFormat;
 
 mod dataset;
 use crate::scenario::Scenario;
@@ -105,6 +106,10 @@ pub struct CommonArgs {
     /// Number of ETL data generation steps (partitions)
     #[arg(long, default_value_t = 25)]
     pub(crate) etl_num_steps: u16,
+
+    /// Table format propagated through ETL dataset metadata and adapters.
+    #[arg(long, value_enum, default_value = "parquet")]
+    pub(crate) table_format: TableFormat,
 
     /// Scale factor for the ETL dataset
     #[arg(long, default_value_t = 1.0)]
