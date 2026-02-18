@@ -53,10 +53,11 @@ jobs:
         env:
           SPICEAI_API_KEY: ${{ secrets.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           RUSTFLAGS: "-A warnings"
         run: |
           ~/.spice/bin/spicebench \
             --concurrency 2  \
             --query-set tpch \
             --system-adapter-stdio-cmd docker \
-            --system-adapter-stdio-args "run ghcr.io/spiceai/spidapter:latest -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL run stdio --verbose"
+            --system-adapter-stdio-args "run ghcr.io/spiceai/spidapter:latest -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e SPICEAI_BENCHMARK_METRICS_KEY run stdio --verbose" \
