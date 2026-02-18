@@ -152,6 +152,10 @@ pub struct DatasetConfig {
     pub schema: SchemaRef,
     /// ETL-specific configuration parameters
     pub params: HashMap<String, serde_json::Value>,
+    /// The time column to use for append/change-stream capture for the dataset
+    pub time_column: String,
+    /// The table paritioning scheme to use for this dataset
+    pub partitions: Vec<String>,
 }
 
 /// Request to setup a benchmark run with ETL configuration

@@ -189,6 +189,8 @@ impl ETLPipeline {
                     etl_type: EtlType::S3,
                     schema: table.rehydrated_schema(),
                     params: self.target.table_params(&name),
+                    time_column: table.time_column.clone(),
+                    partitions: vec![], // TODO: support dynamically specifying partitioning schemes
                 };
                 (name, config)
             })
