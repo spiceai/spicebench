@@ -22,7 +22,10 @@ use datafusion_table_providers::flight::sql::{FlightSqlDriver, QUERY};
 use datafusion_table_providers::flight::FlightTableFactory;
 use std::collections::HashMap;
 use std::sync::Arc;
-use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder, JsonRpcRequest};
+use system_adapter_protocol::{
+    AdbcDriver, Client as SystemAdapterClient, ClientBuilder, JsonRpcRequest, QueryMethodRequest,
+    QueryMethodResponse, methods as adapter_methods,
+};
 use test_framework::{
     anyhow,
     anyhow::Context,
@@ -235,6 +238,42 @@ struct AdbcDirectQueryExecutor {
     flight_sql_uri: String,
 }
 
+fn parse_string_param(
+    params: &std::collections::HashMap<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter()
+        .find_map(|key| params.get(*key).and_then(serde_json::Value::as_str))
+        .map(ToString::to_string)
+}
+
+fn flight_sql_uri_from_query_method(
+    response: &QueryMethodResponse,
+    fallback_uri: Option<String>,
+) -> anyhow::Result<String> {
+    if response.driver != AdbcDriver::Flightsql {
+        anyhow::bail!(
+            "Direct ADBC query currently supports only flightsql driver from system adapter protocol, received '{:?}'",
+            response.driver
+        );
+    }
+
+    if let Some(uri) = parse_string_param(
+        &response.db_kwargs,
+        &["uri", "endpoint", "url", "flightsql_uri", "flight_sql_uri"],
+    ) {
+        return Ok(uri);
+    }
+
+    if let Some(uri) = fallback_uri {
+        return Ok(uri);
+    }
+
+    anyhow::bail!(
+        "System adapter query_method did not return a FlightSQL URI in db_kwargs (expected one of: uri, endpoint, url, flightsql_uri, flight_sql_uri)"
+    )
+}
+
 #[async_trait::async_trait]
 impl test_framework::execution::QueryExecutor for AdbcDirectQueryExecutor {
     async fn execute(
@@ -342,7 +381,7 @@ pub(crate) async fn create_query_executor(
 ) -> anyhow::Result<Box<dyn test_framework::execution::QueryExecutor>> {
     match args.common.system_adapter_execution_mode {
         SystemAdapterExecutionMode::DirectQuery => {
-            let flight_sql_uri = if args.common.is_external_instance() {
+            let fallback_flight_sql_uri = if args.common.is_external_instance() {
                 args.common.spiced_path.clone()
             } else {
                 let http_base = spiced_instance.http_base_url();
@@ -352,6 +391,42 @@ pub(crate) async fn create_query_executor(
                     "http://127.0.0.1:50051".to_string()
                 }
             };
+
+            let mut adapter = connect_system_adapter(&args.common)
+                .await?
+                .context(
+                    "Direct query mode requires system adapter transport to fetch ADBC parameters",
+                )?;
+
+            let methods = adapter.rpc_methods().await?;
+            if !methods
+                .iter()
+                .any(|method| method == adapter_methods::QUERY_METHOD)
+            {
+                anyhow::bail!(
+                    "System adapter '{}' does not support required method '{}'. Available methods: {:?}",
+                    args.common.system_adapter_name,
+                    adapter_methods::QUERY_METHOD,
+                    methods
+                );
+            }
+
+            let request = JsonRpcRequest::new(
+                4,
+                adapter_methods::QUERY_METHOD,
+                QueryMethodRequest {
+                    run_id: uuid::Uuid::new_v4(),
+                },
+            );
+
+            let response = adapter
+                .call_typed::<_, QueryMethodResponse>(request)
+                .await?
+                .result
+                .context("System adapter query_method response missing result payload")?;
+
+            let flight_sql_uri =
+                flight_sql_uri_from_query_method(&response, Some(fallback_flight_sql_uri))?;
 
             Ok(Box::new(AdbcDirectQueryExecutor { flight_sql_uri }))
         }

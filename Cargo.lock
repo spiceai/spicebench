@@ -6085,6 +6085,7 @@ dependencies = [
  "test-framework",
  "tokio",
  "tokio-util",
+ "uuid",
  "yaml",
 ]
 
