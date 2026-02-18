@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{collections::HashMap, fmt::Write, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -362,17 +362,24 @@ impl Handler for DatabricksAdapter {
                 .map_err(|e| format!("Invalid dataset '{dataset_name}' config: {e}"))?;
 
             let table_name = dataset_name;
-            let mut sql = String::new();
-            let _ = write!(
-                sql,
-                "CREATE OR REPLACE TABLE {}.{}.{} USING PARQUET LOCATION {}",
+            let fqn = format!(
+                "{}.{}.{}",
                 Self::quoted_identifier(&self.config.catalog),
                 Self::quoted_identifier(&self.config.schema),
                 Self::quoted_identifier(&table_name),
+            );
+
+            let drop_sql = format!("DROP TABLE IF EXISTS {fqn}");
+            self.execute_sql(&drop_sql)
+                .await
+                .map_err(|e| format!("Failed to drop existing table '{table_name}': {e}"))?;
+
+            let create_sql = format!(
+                "CREATE TABLE {fqn} USING PARQUET LOCATION {}",
                 Self::sql_string_literal(&location)
             );
 
-            self.execute_sql(&sql)
+            self.execute_sql(&create_sql)
                 .await
                 .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
 
