@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,7 +31,6 @@ pub struct Ingestor {
     target: Arc<dyn Target>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
-    batch_id: u64,
 }
 
 impl Ingestor {
@@ -40,7 +40,6 @@ impl Ingestor {
             target,
             metrics,
             semaphore: Arc::new(Semaphore::new(config.max_concurrency)),
-            batch_id: 0,
         }
     }
 
@@ -53,7 +52,7 @@ impl Ingestor {
     /// its connector and location, e.g.:
     /// `{"customer": {"connector": "s3", "location": "s3://bucket/prefix/customer/"}, ...}`
     pub async fn initialize(
-        &mut self,
+        &self,
         table_location_fn: Option<&dyn Fn(&str) -> String>,
     ) -> anyhow::Result<IngestResult> {
         // Print table locations as JSON
@@ -89,16 +88,22 @@ impl Ingestor {
 
         match self.dataset.next_batches().await {
             Ok(Some(batches)) => {
+                // Write all tables concurrently within this step.
+                let mut join_set = JoinSet::new();
                 for (table_name, batch) in batches {
                     self.metrics.record_generation();
 
-                    let start = Instant::now();
-                    let result = self
-                        .target
-                        .write(&table_name, self.batch_id, batch)
-                        .await?;
-                    self.metrics.record_write(&result, start.elapsed());
-                    self.batch_id += 1;
+                    let target = self.target.clone();
+                    let metrics = self.metrics.clone();
+                    join_set.spawn(async move {
+                        let start = Instant::now();
+                        let result = target.write(&table_name, 0, batch).await?;
+                        metrics.record_write(&result, start.elapsed());
+                        Ok::<_, anyhow::Error>(())
+                    });
+                }
+                while let Some(result) = join_set.join_next().await {
+                    result??;
                 }
             }
             Ok(None) => {
@@ -122,7 +127,7 @@ impl Ingestor {
     /// Consumes one round of batches (one per table) from the dataset without writing
     /// them to the target. This advances the dataset past the initialization records
     /// so that `run()` only processes new data.
-    pub async fn skip_initial_batches(&mut self) -> anyhow::Result<()> {
+    pub async fn skip_initial_batches(&self) -> anyhow::Result<()> {
         let table_count = self.dataset.tables().len();
 
         tracing::info!(
@@ -131,16 +136,14 @@ impl Ingestor {
         );
 
         match self.dataset.next_batches().await {
-            Ok(Some(batches)) => {
-                self.batch_id += batches.len() as u64;
-            }
+            Ok(Some(_)) => {}
             Ok(None) => {
                 tracing::warn!("Dataset exhausted before all tables were skipped");
             }
             Err(e) => return Err(e),
         }
 
-        tracing::info!(batches_skipped = self.batch_id, "Initial batches skipped");
+        tracing::info!("Initial batches skipped");
 
         Ok(())
     }
@@ -150,7 +153,7 @@ impl Ingestor {
     /// Pulls batches sequentially from the dataset and dispatches writes concurrently,
     /// bounded by the configured `max_concurrency`. This continues from wherever the
     /// dataset was left after `initialize()`.
-    pub async fn run(&mut self) -> anyhow::Result<IngestResult> {
+    pub async fn run(&self) -> anyhow::Result<IngestResult> {
         let mut join_set = JoinSet::new();
 
         // Spawn periodic metrics logger
@@ -162,6 +165,11 @@ impl Ingestor {
                 metrics_logger.log_progress();
             }
         });
+
+        let mut batch_ids = HashMap::new();
+        for table in self.dataset.tables().keys() {
+            batch_ids.insert(table.clone(), self.dataset.batch_ids(table));
+        }
 
         loop {
             let source_batches = match self.dataset.next_batches().await {
@@ -181,18 +189,23 @@ impl Ingestor {
 
                 let target = self.target.clone();
                 let metrics = self.metrics.clone();
-                let current_batch_id = self.batch_id;
-                self.batch_id += 1;
+                let next_batch_id = batch_ids
+                    .get_mut(&table_name)
+                    .and_then(|ids| ids.pop_front())
+                    .unwrap_or_else(|| {
+                        tracing::warn!(table = %table_name, "No more batch IDs available for this table");
+                        0
+                    });
 
                 join_set.spawn(async move {
                     let start = Instant::now();
-                    match target.write(&table_name, current_batch_id, batch).await {
+                    match target.write(&table_name, next_batch_id, batch).await {
                         Ok(result) => {
                             metrics.record_write(&result, start.elapsed());
                         }
                         Err(e) => {
                             metrics.record_error();
-                            tracing::error!(batch_id = current_batch_id, "Write failed: {e}");
+                            tracing::error!(batch_id = next_batch_id, "Write failed: {e}");
                         }
                     }
                     drop(permit);

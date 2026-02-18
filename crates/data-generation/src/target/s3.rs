@@ -41,6 +41,7 @@ impl S3Target {
         let mut builder = AmazonS3Builder::from_env().with_bucket_name(&config.bucket);
 
         if let Some(region) = &config.region {
+            tracing::info!("S3 Target with region: {region}");
             builder = builder.with_region(region);
         }
         if let Some(endpoint) = &config.endpoint

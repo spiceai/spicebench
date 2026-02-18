@@ -35,7 +35,7 @@ struct Cli {
     scale_factor: f64,
 
     /// Number of data generation steps (partitions)
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 25)]
     num_steps: u16,
 
     /// S3 bucket name (used for both source and target)

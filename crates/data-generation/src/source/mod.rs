@@ -32,7 +32,11 @@ pub trait Source: Send + Sync + 'static {
 
     /// Read a single batch from the source by its batch ID and table name.
     ///
+    /// Returns `Ok(None)` when the batch does not exist in the underlying
+    /// storage (e.g. the table has fewer batches than others). The caller
+    /// should treat this as the table having no more data.
+    ///
     /// The concrete implementation is responsible for mapping `(table_name,
     /// batch_id)` to the underlying storage path.
-    async fn read_batch(&self, table_name: &str, batch_id: u64) -> anyhow::Result<ReadResult>;
+    async fn read_batch(&self, table_name: &str, batch_id: u64) -> anyhow::Result<Option<ReadResult>>;
 }

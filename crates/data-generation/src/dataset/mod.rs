@@ -17,7 +17,7 @@ limitations under the License.
 pub mod tpch;
 pub mod simple_sequence;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,11 +66,41 @@ impl DatasetTable {
         }
 
         if batch.schema() != self.schema {
+            let mut diffs = Vec::new();
+            let expected_fields = self.schema.fields();
+            let actual_schema = batch.schema();
+            let actual_fields = actual_schema.fields();
+
+            for (i, expected) in expected_fields.iter().enumerate() {
+                match actual_fields.get(i) {
+                    Some(actual) if actual != expected => {
+                        if actual.name() != expected.name() {
+                            diffs.push(format!("  column {i}: expected name '{}', got '{}'", expected.name(), actual.name()));
+                        }
+                        if actual.data_type() != expected.data_type() {
+                            diffs.push(format!("  column '{}' (index {i}): expected type {:?}, got {:?}", expected.name(), expected.data_type(), actual.data_type()));
+                        }
+                        if actual.is_nullable() != expected.is_nullable() {
+                            diffs.push(format!("  column '{}' (index {i}): expected nullable={}, got nullable={}", expected.name(), expected.is_nullable(), actual.is_nullable()));
+                        }
+                    }
+                    None => {
+                        diffs.push(format!("  column '{}' (index {i}): missing from batch", expected.name()));
+                    }
+                    _ => {}
+                }
+            }
+            for i in expected_fields.len()..actual_fields.len() {
+                diffs.push(format!("  column '{}' (index {i}): unexpected extra column in batch", actual_fields[i].name()));
+            }
+            if expected_fields.len() != actual_fields.len() {
+                diffs.push(format!("  expected {} columns, got {}", expected_fields.len(), actual_fields.len()));
+            }
+
             anyhow::bail!(
-                "Schema mismatch for table '{}': expected {}, got {}",
+                "Schema mismatch for table '{}':\n{}",
                 self.name,
-                self.schema,
-                batch.schema()
+                diffs.join("\n")
             );
         }
 
@@ -113,7 +143,7 @@ pub trait Dataset: Send + Sync {
     ///
     /// The default implementation returns `0..num_batches(table)`, but
     /// implementations may override this to customise the ID scheme.
-    fn batch_ids(&self, table: &str) -> Vec<u64> {
+    fn batch_ids(&self, table: &str) -> VecDeque<u64> {
         (0..self.num_batches(table)).collect()
     }
 
@@ -144,9 +174,40 @@ pub trait Dataset: Send + Sync {
         };
 
         if batch.schema() != expected_schema {
+            let mut diffs = Vec::new();
+            let expected_fields = expected_schema.fields();
+            let actual_schema = batch.schema();
+            let actual_fields = actual_schema.fields();
+
+            for (i, expected) in expected_fields.iter().enumerate() {
+                match actual_fields.get(i) {
+                    Some(actual) if actual != expected => {
+                        if actual.name() != expected.name() {
+                            diffs.push(format!("  column {i}: expected name '{}', got '{}'", expected.name(), actual.name()));
+                        }
+                        if actual.data_type() != expected.data_type() {
+                            diffs.push(format!("  column '{}' (index {i}): expected type {:?}, got {:?}", expected.name(), expected.data_type(), actual.data_type()));
+                        }
+                        if actual.is_nullable() != expected.is_nullable() {
+                            diffs.push(format!("  column '{}' (index {i}): expected nullable={}, got nullable={}", expected.name(), expected.is_nullable(), actual.is_nullable()));
+                        }
+                    }
+                    None => {
+                        diffs.push(format!("  column '{}' (index {i}): missing from batch", expected.name()));
+                    }
+                    _ => {}
+                }
+            }
+            for i in expected_fields.len()..actual_fields.len() {
+                diffs.push(format!("  column '{}' (index {i}): unexpected extra column in batch", actual_fields[i].name()));
+            }
+            if expected_fields.len() != actual_fields.len() {
+                diffs.push(format!("  expected {} columns, got {}", expected_fields.len(), actual_fields.len()));
+            }
+
             anyhow::bail!(
-                "Schema mismatch for table '{table}': expected {expected_schema}, got {}",
-                batch.schema()
+                "Schema mismatch for table '{table}':\n{}",
+                diffs.join("\n")
             );
         }
 
@@ -188,7 +249,7 @@ pub trait Dataset: Send + Sync {
 
 #[async_trait]
 impl Dataset for Arc<dyn Dataset> {
-    fn batch_ids(&self, table: &str) -> Vec<u64> {
+    fn batch_ids(&self, table: &str) -> VecDeque<u64> {
         (**self).batch_ids(table)
     }
 

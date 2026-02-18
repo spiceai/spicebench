@@ -25,8 +25,9 @@ use data_generation::source::Source;
 use data_generation::target::Target;
 use system_adapter_protocol::{DatasetConfig as ProtocolDatasetConfig, EtlType};
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
+use std::collections::{BTreeMap, HashSet};
 use tracing::{error, info, warn};
 
 type DynSource = Arc<dyn Source>;
@@ -252,8 +253,8 @@ impl ETLPipeline {
 
 /// Core loop executed inside the spawned task.
 ///
-/// Processes `work` items sequentially, checking for cancellation between each
-/// batch.
+/// Groups work items by batch ID and processes all tables within each step
+/// concurrently, checking for cancellation between steps.
 async fn run_pipeline(
     dataset: Arc<dyn Dataset>,
     source: DynSource,
@@ -261,67 +262,126 @@ async fn run_pipeline(
     work: Vec<(String, u64)>,
     cancel: CancellationToken,
 ) -> StopReason {
-    let total = work.len();
-    info!(total_batches = total, "ETL pipeline started");
+    // Group work by batch_id so all tables in a step run in parallel.
+    let mut steps: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    for (table_name, batch_id) in &work {
+        steps.entry(*batch_id).or_default().push(table_name.clone());
+    }
 
-    for (idx, (table_name, batch_id)) in work.into_iter().enumerate() {
+    let total_steps = steps.len();
+    let total_batches = work.len();
+    info!(total_steps, total_batches, "ETL pipeline started");
+
+    // Tables whose data has been fully consumed (source returned `None`).
+    let mut finished_tables: HashSet<String> = HashSet::new();
+
+    for (step_idx, (batch_id, tables)) in steps.into_iter().enumerate() {
         if cancel.is_cancelled() {
-            warn!("ETL pipeline cancelled at batch {idx}/{total}");
+            warn!("ETL pipeline cancelled at step {step_idx}/{total_steps}");
             return StopReason::Cancelled;
         }
 
-        // 1. Read from source
-        let read_result = match source.read_batch(&table_name, batch_id).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!(
-                    table = %table_name,
-                    batch_id,
-                    error = %e,
-                    "Failed to read batch from source"
-                );
-                return StopReason::Error(format!(
-                    "read {table_name} batch {batch_id}: {e}"
-                ));
-            }
-        };
+        // Filter out tables that have already been fully consumed.
+        let active_tables: Vec<String> = tables
+            .into_iter()
+            .filter(|t| !finished_tables.contains(t))
+            .collect();
 
-        // 2. Rehydrate each record batch and write to target
-        for batch in read_result.batches {
-            let rehydrated = match dataset.rehydrate(&table_name, &batch) {
-                Ok(b) => b,
-                Err(e) => {
-                    error!(
-                        table = %table_name,
-                        batch_id,
-                        error = %e,
-                        "Failed to rehydrate batch"
-                    );
-                    return StopReason::Error(format!(
-                        "rehydrate {table_name} batch {batch_id}: {e}"
-                    ));
+        if active_tables.is_empty() {
+            continue;
+        }
+
+        // Process all tables for this batch_id concurrently.
+        let mut join_set: JoinSet<Result<(String, bool), String>> = JoinSet::new();
+        for table_name in active_tables {
+            let dataset = Arc::clone(&dataset);
+            let source = Arc::clone(&source);
+            let target = Arc::clone(&target);
+
+            join_set.spawn(async move {
+                // 1. Read from source
+                let read_result = match source.read_batch(&table_name, batch_id).await {
+                    Ok(Some(r)) => r,
+                    Ok(None) => {
+                        info!(
+                            table = %table_name,
+                            batch_id,
+                            "No more batches for table, marking as finished"
+                        );
+                        return Ok((table_name, true)); // mark as finished
+                    }
+                    Err(e) => {
+                        error!(
+                            table = %table_name,
+                            batch_id,
+                            error = %e,
+                            "Failed to read batch from source"
+                        );
+                        return Err(format!("read {table_name} batch {batch_id}: {e}"));
+                    }
+                };
+
+                // 2. Rehydrate each record batch and write to target
+                for batch in read_result.batches {
+                    let rehydrated = match dataset.rehydrate(&table_name, &batch) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            error!(
+                                table = %table_name,
+                                batch_id,
+                                error = %e,
+                                "Failed to rehydrate batch"
+                            );
+                            return Err(format!(
+                                "rehydrate {table_name} batch {batch_id}: {e}"
+                            ));
+                        }
+                    };
+
+                    // 3. Write to target
+                    if let Err(e) = target.write(&table_name, batch_id, rehydrated).await {
+                        error!(
+                            table = %table_name,
+                            batch_id,
+                            error = %e,
+                            "Failed to write batch to target"
+                        );
+                        return Err(format!(
+                            "write {table_name} batch {batch_id}: {e}"
+                        ));
+                    }
                 }
-            };
 
-            // 3. Write to target
-            if let Err(e) = target.write(&table_name, batch_id, rehydrated).await {
-                error!(
+                info!(
                     table = %table_name,
                     batch_id,
-                    error = %e,
-                    "Failed to write batch to target"
+                    "Table batch processed"
                 );
-                return StopReason::Error(format!(
-                    "write {table_name} batch {batch_id}: {e}"
-                ));
+                Ok((table_name, false)) // not finished
+            });
+        }
+
+        // Collect results from all concurrent table tasks in this step.
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok((table_name, is_finished))) => {
+                    if is_finished {
+                        finished_tables.insert(table_name);
+                    }
+                }
+                Ok(Err(err_msg)) => {
+                    return StopReason::Error(err_msg);
+                }
+                Err(e) => {
+                    return StopReason::Error(format!("Task panicked: {e}"));
+                }
             }
         }
 
         info!(
-            table = %table_name,
             batch_id,
-            progress = format!("{}/{}", idx + 1, total),
-            "Batch processed"
+            progress = format!("{}/{}", step_idx + 1, total_steps),
+            "Step completed"
         );
     }
 
