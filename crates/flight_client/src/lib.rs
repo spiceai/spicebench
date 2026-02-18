@@ -324,14 +324,11 @@ impl FlightClient {
         let descriptor = FlightDescriptor::new_path(path);
         let mut req = tonic::Request::new(descriptor);
 
-        let auth_header_value = match &token {
-            Some(token) => token.to_string().parse().context(InvalidMetadataSnafu)?,
-            None => {
-                return UnauthorizedSnafu.fail();
-            }
-        };
-        req.metadata_mut()
-            .insert("authorization", auth_header_value);
+        if let Some(token) = &token {
+            let auth_header_value = token.to_string().parse().context(InvalidMetadataSnafu)?;
+            req.metadata_mut()
+                .insert("authorization", auth_header_value);
+        }
         if let Some(metadata) = &self.metadata {
             for key_and_value in metadata.iter() {
                 if let tonic::metadata::KeyAndValueRef::Ascii(key, value) = key_and_value {
@@ -366,14 +363,11 @@ impl FlightClient {
         let descriptor = FlightDescriptor::new_cmd(sql.into_owned());
         let mut req = descriptor.into_request();
 
-        let auth_header_value = match &token {
-            Some(token) => token.to_string().parse().context(InvalidMetadataSnafu)?,
-            None => {
-                return UnauthorizedSnafu.fail();
-            }
-        };
-        req.metadata_mut()
-            .insert("authorization", auth_header_value);
+        if let Some(token) = &token {
+            let auth_header_value = token.to_string().parse().context(InvalidMetadataSnafu)?;
+            req.metadata_mut()
+                .insert("authorization", auth_header_value);
+        }
         if let Some(metadata) = &self.metadata {
             for key_and_value in metadata.iter() {
                 if let tonic::metadata::KeyAndValueRef::Ascii(key, value) = key_and_value {
@@ -408,14 +402,11 @@ impl FlightClient {
         let descriptor = FlightDescriptor::new_cmd(query.to_string());
         let mut req = descriptor.into_request();
 
-        let auth_header_value = match &token {
-            Some(token) => token.to_string().parse().context(InvalidMetadataSnafu)?,
-            None => {
-                return UnauthorizedSnafu.fail();
-            }
-        };
-        req.metadata_mut()
-            .insert("authorization", auth_header_value);
+        if let Some(token) = &token {
+            let auth_header_value = token.to_string().parse().context(InvalidMetadataSnafu)?;
+            req.metadata_mut()
+                .insert("authorization", auth_header_value);
+        }
         if let Some(metadata) = &self.metadata {
             for key_and_value in metadata.iter() {
                 if let tonic::metadata::KeyAndValueRef::Ascii(key, value) = key_and_value {
@@ -435,14 +426,11 @@ impl FlightClient {
         let ep = info.endpoint[0].clone();
         if let Some(ticket) = ep.ticket {
             let mut req = ticket.into_request();
-            let auth_header_value = match token {
-                Some(token) => token.to_string().parse().context(InvalidMetadataSnafu)?,
-                None => {
-                    return UnauthorizedSnafu.fail();
-                }
-            };
-            req.metadata_mut()
-                .insert("authorization", auth_header_value);
+            if let Some(token) = token {
+                let auth_header_value = token.to_string().parse().context(InvalidMetadataSnafu)?;
+                req.metadata_mut()
+                    .insert("authorization", auth_header_value);
+            }
             if let Some(metadata) = &self.metadata {
                 for key_and_value in metadata.iter() {
                     if let tonic::metadata::KeyAndValueRef::Ascii(key, value) = key_and_value {

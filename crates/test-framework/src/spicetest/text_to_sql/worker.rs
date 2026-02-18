@@ -19,6 +19,7 @@ use std::{collections::BTreeMap, time::Instant};
 use anyhow::Result;
 use arrow::datatypes::{Field, Schema};
 use async_channel::Receiver;
+use flight_client::FlightClient;
 use opentelemetry::trace::TraceId;
 use rand::RngCore;
 use reqwest::Client;
@@ -93,7 +94,7 @@ pub(crate) struct TextToSqlWorker {
     id: usize,
     http_client: Client,
     http_base_url: String,
-    spice_client: spiceai::Client,
+    flight_client: FlightClient,
     request_rx: Receiver<TextToSqlRequest>,
 }
 
@@ -102,14 +103,14 @@ impl TextToSqlWorker {
         id: usize,
         http_client: Client,
         http_base_url: impl Into<String>,
-        spice_client: spiceai::Client,
+        flight_client: FlightClient,
         request_rx: Receiver<TextToSqlRequest>,
     ) -> Self {
         Self {
             id,
             http_client,
             http_base_url: http_base_url.into(),
-            spice_client,
+            flight_client,
             request_rx,
         }
     }
@@ -163,7 +164,7 @@ impl TextToSqlWorker {
 
         let duration = start.elapsed();
 
-        let (sql, task_history_metrics) = find_task_history_metrics(&self.spice_client, &trace_id)
+        let (sql, task_history_metrics) = find_task_history_metrics(&self.flight_client, &trace_id)
             .await
             .map_err(|e| anyhow::anyhow!("could not find task history metrics. Error: {e}"))?;
 
