@@ -16,8 +16,7 @@ limitations under the License.
 
 use std::time::Duration;
 
-use crate::args::{CommonArgs, DatasetTestArgs};
-use adbc_client::AdbcConnection;
+use crate::{args::CommonArgs, scenario::Scenario};
 use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder};
 use test_framework::{
     anyhow,
@@ -63,33 +62,15 @@ pub(crate) fn create_telemetry_with_resource(common: &CommonArgs, resource: Reso
 /// Tuple of (`QuerySet`, `NotStarted` builder)
 #[allow(dead_code)]
 pub(crate) async fn build_test_with_validation(
-    args: &DatasetTestArgs,
+    scenario: &Scenario,
     test_builder: NotStarted,
 ) -> anyhow::Result<(QuerySet, NotStarted)> {
-    let query_set = args.load_query_set()?;
-    let query_overrides = args
-        .query_overrides
-        .clone()
-        .map(test_framework::queries::QueryOverrides::from);
-    let queries = query_set.get_queries(query_overrides, None, None).await?;
+    let query_set = scenario.load_query_set()?;
+    let queries = query_set.get_queries(None, None, None).await?;
 
-    let mut test_builder = test_builder
+    let test_builder = test_builder
         .with_query_set(queries)
-        .with_query_set_type(query_set.clone())
-        .with_query_overrides(query_overrides);
-
-    // Add validation data if this is a scenario query set with validation enabled
-    if args.validate
-        && let Some(validation_data) =
-            query_set.get_validation_data(args.scenario_query_file.as_deref())?
-    {
-        test_builder = test_builder.with_validation_data(validation_data);
-    }
-
-    // Add reference schema if provided for validation against known good tables
-    if let Some(ref_schema) = &args.reference_schema {
-        test_builder = test_builder.with_reference_schema(Some(ref_schema.clone()));
-    }
+        .with_query_set_type(query_set.clone());
 
     Ok((query_set, test_builder))
 }
@@ -124,40 +105,6 @@ pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemA
     Err(anyhow::anyhow!("No system adapter transport configured"))
 }
 
-#[allow(dead_code)]
-pub(crate) async fn create_query_executor(
-    args: &DatasetTestArgs,
-    spiced_instance: Option<&test_framework::spiced::SpicedInstance>,
-    adbc_conn: Option<AdbcConnection>,
-) -> anyhow::Result<Box<dyn test_framework::execution::QueryExecutor>> {
-    if let Some(conn) = adbc_conn {
-        println!("Using query executor: ADBC direct connection");
-        return Ok(Box::new(adbc_executor::AdbcDirectQueryExecutor::new(conn)));
-    }
-
-    let spiced_instance = spiced_instance.ok_or_else(|| {
-        anyhow::anyhow!("Spiced instance is required when ADBC connection is not provided")
-    })?;
-
-    let executor: Box<dyn test_framework::execution::QueryExecutor> = if args.distributed {
-        println!("Using query executor: distributed (http)");
-        let http_client = spiced_instance.http_client()?;
-        let base_url = spiced_instance.http_base_url().to_string();
-        Box::new(test_framework::execution::DistributedExecutor::new(
-            http_client,
-            base_url,
-        ))
-    } else {
-        println!("Using query executor: http");
-        let http_client = spiced_instance.http_client()?;
-        let base_url = spiced_instance.http_base_url().to_string();
-        Box::new(test_framework::execution::HttpExecutor::new(
-            http_client,
-            base_url,
-        ))
-    };
-    Ok(executor)
-}
 
 #[macro_export]
 macro_rules! wait_test_and_memory {
