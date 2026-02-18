@@ -133,26 +133,13 @@ version.workspace = true
 [dependencies]
 adbc_client = { path = "crates/adbc_client" }
 arrow.workspace = true
-arrow-json.workspace = true
 async-trait.workspace = true
-aws-config.workspace = true
-aws-credential-types.workspace = true
-aws-sdk-dynamodb.workspace = true
-bollard = "0.18.1"
 clap.workspace = true
-datafusion.workspace = true
-datafusion-table-providers = { version = "0.9.3", features = ["flight"] }
-futures.workspace = true
-itertools.workspace = true
-hf-hub = { workspace = true }
 reqwest.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-yaml = { path = "crates/yaml" }
 spicepod = { path = "crates/spicepod" }
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }
 test-framework = { path = "crates/test-framework" }
-rand.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
