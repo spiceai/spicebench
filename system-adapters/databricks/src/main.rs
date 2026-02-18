@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{collections::HashMap, fmt::Write, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -67,6 +67,11 @@ struct StdioArgs {
     #[arg(long, env = "DATABRICKS_SCHEMA", default_value = "tpch")]
     databricks_schema: String,
 
+    /// Storage credential name for accessing external S3 locations.
+    /// If set, CREATE TABLE statements will include WITH (CREDENTIAL <name>).
+    #[arg(long, env = "DATABRICKS_STORAGE_CREDENTIAL")]
+    databricks_storage_credential: Option<String>,
+
     /// Drop created tables during teardown
     #[arg(long, env = "DATABRICKS_DROP_TABLES_ON_TEARDOWN", default_value_t = false)]
     drop_tables_on_teardown: bool,
@@ -91,6 +96,7 @@ struct AdapterConfig {
     warehouse_id: String,
     catalog: String,
     schema: String,
+    storage_credential: Option<String>,
     drop_tables_on_teardown: bool,
 }
 
@@ -144,6 +150,7 @@ impl AdapterConfig {
             warehouse_id,
             catalog: args.databricks_catalog,
             schema: args.databricks_schema,
+            storage_credential: args.databricks_storage_credential,
             drop_tables_on_teardown: args.drop_tables_on_teardown,
         })
     }
@@ -362,17 +369,31 @@ impl Handler for DatabricksAdapter {
                 .map_err(|e| format!("Invalid dataset '{dataset_name}' config: {e}"))?;
 
             let table_name = dataset_name;
-            let mut sql = String::new();
-            let _ = write!(
-                sql,
-                "CREATE OR REPLACE TABLE {}.{}.{} USING PARQUET LOCATION {}",
+            let fqn = format!(
+                "{}.{}.{}",
                 Self::quoted_identifier(&self.config.catalog),
                 Self::quoted_identifier(&self.config.schema),
                 Self::quoted_identifier(&table_name),
+            );
+
+            let drop_sql = format!("DROP TABLE IF EXISTS {fqn}");
+            self.execute_sql(&drop_sql)
+                .await
+                .map_err(|e| format!("Failed to drop existing table '{table_name}': {e}"))?;
+
+            let mut create_sql = format!(
+                "CREATE TABLE {fqn} USING PARQUET LOCATION {}",
                 Self::sql_string_literal(&location)
             );
 
-            self.execute_sql(&sql)
+            if let Some(credential) = &self.config.storage_credential {
+                create_sql.push_str(&format!(
+                    " WITH (CREDENTIAL {})",
+                    Self::quoted_identifier(credential)
+                ));
+            }
+
+            self.execute_sql(&create_sql)
                 .await
                 .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
 

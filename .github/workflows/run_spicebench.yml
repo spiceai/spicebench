@@ -192,6 +192,7 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+          DATABRICKS_STORAGE_CREDENTIAL: ${{ secrets.DATABRICKS_STORAGE_CREDENTIAL }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
@@ -230,6 +231,10 @@ jobs:
 
             if [ -n "${DATABRICKS_SCHEMA}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
+            fi
+
+            if [ -n "${DATABRICKS_STORAGE_CREDENTIAL}" ]; then
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STORAGE_CREDENTIAL=${DATABRICKS_STORAGE_CREDENTIAL}"
             fi
           else
             ADAPTER_CMD="docker"
