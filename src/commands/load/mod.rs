@@ -18,6 +18,7 @@ limitations under the License.
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
 use std::sync::Arc;
 use std::time::Duration;
+use etl::ETLPipeline;
 use system_adapter_protocol::MetricsResponse;
 use test_framework::{
     TestType, anyhow,
@@ -116,6 +117,7 @@ pub(crate) async fn run(
     scenario: &Scenario,
     common_args: &CommonArgs,
     adbc_conn: adbc_client::AdbcConnection,
+    etl_pipeline: &mut ETLPipeline
 ) -> anyhow::Result<()> {
     scenario.load_query_set()?;
     // Create the appropriate query executor based on args
@@ -172,6 +174,11 @@ pub(crate) async fn run(
         .with_progress_bars(false)
         .start()?;
     let shutdown_token = throughput_test.cancellation_token();
+
+    // --- Start the ETL pipeline (remaining batches) ---
+    tracing::info!("Starting ETL pipeline (remaining batches)...");
+    etl_pipeline.start()?;
+
     let test_future = throughput_test.wait();
     tokio::pin!(test_future);
     let test = match tokio::select! {

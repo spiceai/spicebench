@@ -116,10 +116,6 @@ async fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
     }
 
-    // --- Start the ETL pipeline (remaining batches) ---
-    tracing::info!("Starting ETL pipeline (remaining batches)...");
-    pipeline.start()?;
-
     // --- Query method from system adapter ---
     let adbc_driver = match system_adapter_client.query_method(run_id).await {
         Ok(method) => method,
@@ -151,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("ADBC connection is required to run benchmarks"));
     };
 
-    commands::load::run(&cli.common.scenario, &cli.common, adbc_conn).await?;
+    commands::load::run(&cli.common.scenario, &cli.common, adbc_conn, &mut pipeline).await?;
 
     // --- Wait for ETL to finish ---
     let final_state = pipeline.wait().await;

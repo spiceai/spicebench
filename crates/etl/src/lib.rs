@@ -216,7 +216,7 @@ impl ETLPipeline {
         let first_batch_id = 0u64;
 
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
-        for (table_name, _) in &tables {
+        for table_name in tables.keys() {
             let dataset = Arc::clone(&self.dataset);
             let source = Arc::clone(&self.source);
             let target = Arc::clone(&self.target);
@@ -316,7 +316,7 @@ impl ETLPipeline {
         // batch_id so all tables advance together.
         let tables = dataset.tables();
         let mut work: Vec<(String, u64)> = Vec::new();
-        for (name, _) in &tables {
+        for name in tables.keys() {
             for id in dataset.batch_ids(name) {
                 // Skip batch 0 — it was already processed during initialize().
                 if id == 0 {
