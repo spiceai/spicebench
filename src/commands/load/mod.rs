@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+#![allow(dead_code)]
 
 use super::get_app_and_start_request;
 use crate::{args::BenchRunArgs, health::HealthMonitor};
@@ -118,7 +119,10 @@ fn spawn_sut_metrics_scraper(
 }
 
 #[expect(clippy::too_many_lines)]
-pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
+pub(crate) async fn run(
+    args: &BenchRunArgs,
+    adbc_conn: Option<adbc_client::AdbcConnection>,
+) -> anyhow::Result<()> {
     if args.test_args.common.concurrency < 2 {
         return Err(anyhow::anyhow!(
             "Concurrency should be greater than 1 for a load test"
@@ -194,7 +198,7 @@ pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
     let health_monitor = HealthMonitor::spawn()?;
 
     // Create the appropriate query executor based on args
-    let executor = super::create_query_executor(&args.test_args, &spiced_instance).await?;
+    let executor = super::create_query_executor(&args.test_args, &spiced_instance, adbc_conn).await?;
 
     // warm up run
     println!("Performing warm up");
