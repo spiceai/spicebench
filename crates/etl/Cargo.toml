@@ -12,11 +12,17 @@ version.workspace = true
 name = "etl"
 path = "src/lib.rs"
 
+[[bin]]
+name = "etl"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
 serde_json.workspace = true
+system-adapter-protocol = { path = "../system-adapter-protocol" }
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

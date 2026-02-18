@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
@@ -41,6 +42,7 @@ impl S3Target {
         let mut builder = AmazonS3Builder::from_env().with_bucket_name(&config.bucket);
 
         if let Some(region) = &config.region {
+            tracing::info!("S3 Target with region: {region}");
             builder = builder.with_region(region);
         }
         if let Some(endpoint) = &config.endpoint
@@ -89,6 +91,19 @@ impl Target for S3Target {
                 }
             })
             .collect()
+    }
+
+    fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert(
+            "connector".to_string(),
+            serde_json::Value::String("s3".to_string()),
+        );
+        params.insert(
+            "location".to_string(),
+            serde_json::Value::String(self.table_s3_path(table_name)),
+        );
+        params
     }
 
     async fn write(

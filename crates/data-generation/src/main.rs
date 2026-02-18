@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Initialize(args) => {
-            let (mut ingestor, target) = build(&args)?;
+            let (ingestor, target) = build(&args)?;
             let loc_fn = |table: &str| target.table_s3_path(table);
             let result = ingestor.initialize(Some(&loc_fn)).await?;
 
@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Run(run_args) => {
-            let (mut ingestor, _target) = build(&run_args.common)?;
+            let (ingestor, _target) = build(&run_args.common)?;
             if run_args.skip_initial {
                 ingestor.skip_initial_batches().await?;
             }

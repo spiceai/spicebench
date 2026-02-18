@@ -2125,7 +2125,9 @@ dependencies = [
  "clap",
  "data-generation",
  "serde_json",
+ "system-adapter-protocol",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

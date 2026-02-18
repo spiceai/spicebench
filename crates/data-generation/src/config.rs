@@ -52,7 +52,7 @@ pub struct CommonArgs {
     pub scale_factor: f64,
 
     /// Number of data generation steps (partitions for TPC-H dbgen)
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 25)]
     pub num_steps: u16,
 
     /// S3 bucket name
@@ -72,7 +72,7 @@ pub struct CommonArgs {
     pub endpoint: Option<String>,
 
     /// Maximum number of concurrent S3 writes
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 16)]
     pub max_concurrency: usize,
 }
 
