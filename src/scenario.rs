@@ -42,9 +42,7 @@ impl Scenario {
 
     pub fn end_condition(&self) -> test_framework::spicetest::datasets::EndCondition {
         match self {
-            Scenario::TPCH => test_framework::spicetest::datasets::EndCondition::Duration(
-                std::time::Duration::from_secs(60),
-            ),
+            Scenario::TPCH => test_framework::spicetest::datasets::EndCondition::Unlimited,
         }
     }
 }

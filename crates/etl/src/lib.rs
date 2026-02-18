@@ -24,11 +24,14 @@ use data_generation::dataset::tpch::TpchDataset;
 use data_generation::source::Source;
 use data_generation::target::Target;
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use system_adapter_protocol::{DatasetConfig as ProtocolDatasetConfig, EtlType};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 type DynSource = Arc<dyn Source>;
 type DynTarget = Arc<dyn Target>;
@@ -239,7 +242,7 @@ impl ETLPipeline {
                         .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
                 }
 
-                info!(
+                debug!(
                     table = %table_name,
                     batch_id = first_batch_id,
                     "Initial batch processed"
@@ -363,6 +366,46 @@ async fn run_pipeline(
     let total_batches = work.len();
     info!(total_steps, total_batches, "ETL pipeline started");
 
+    // Shared progress counters for periodic logging.
+    let steps_completed = StdArc::new(AtomicU64::new(0));
+    let batches_processed = StdArc::new(AtomicU64::new(0));
+    let tables_finished = StdArc::new(AtomicU64::new(0));
+    let pipeline_start = Instant::now();
+
+    // Spawn periodic progress logger (every 5 seconds).
+    let progress_logger = {
+        let steps_completed = StdArc::clone(&steps_completed);
+        let batches_processed = StdArc::clone(&batches_processed);
+        let tables_finished = StdArc::clone(&tables_finished);
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let elapsed = pipeline_start.elapsed();
+                        let secs = elapsed.as_secs_f64();
+                        if secs < 0.001 {
+                            continue;
+                        }
+                        let steps_done = steps_completed.load(Ordering::Relaxed);
+                        let batches_done = batches_processed.load(Ordering::Relaxed);
+                        let tables_done = tables_finished.load(Ordering::Relaxed);
+                        info!(
+                            elapsed_secs = format!("{secs:.1}"),
+                            steps = format!("{steps_done}/{total_steps}"),
+                            batches = format!("{batches_done}/{total_batches}"),
+                            tables_finished = tables_done,
+                            batches_per_sec = format!("{:.1}", batches_done as f64 / secs),
+                            "ETL progress"
+                        );
+                    }
+                    () = cancel.cancelled() => break,
+                }
+            }
+        })
+    };
+
     // Tables whose data has been fully consumed (source returned `None`).
     let mut finished_tables: HashSet<String> = HashSet::new();
 
@@ -394,7 +437,7 @@ async fn run_pipeline(
                 let read_result = match source.read_batch(&table_name, batch_id).await {
                     Ok(Some(r)) => r,
                     Ok(None) => {
-                        info!(
+                        debug!(
                             table = %table_name,
                             batch_id,
                             "No more batches for table, marking as finished"
@@ -439,7 +482,7 @@ async fn run_pipeline(
                     }
                 }
 
-                info!(
+                debug!(
                     table = %table_name,
                     batch_id,
                     "Table batch processed"
@@ -449,29 +492,43 @@ async fn run_pipeline(
         }
 
         // Collect results from all concurrent table tasks in this step.
+        let mut step_batch_count: u64 = 0;
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(Ok((table_name, is_finished))) => {
+                    step_batch_count += 1;
                     if is_finished {
                         finished_tables.insert(table_name);
+                        tables_finished.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 Ok(Err(err_msg)) => {
+                    progress_logger.abort();
                     return StopReason::Error(err_msg);
                 }
                 Err(e) => {
+                    progress_logger.abort();
                     return StopReason::Error(format!("Task panicked: {e}"));
                 }
             }
         }
 
-        info!(
+        steps_completed.fetch_add(1, Ordering::Relaxed);
+        batches_processed.fetch_add(step_batch_count, Ordering::Relaxed);
+
+        debug!(
             batch_id,
             progress = format!("{}/{}", step_idx + 1, total_steps),
             "Step completed"
         );
     }
 
-    info!("ETL pipeline completed successfully");
+    progress_logger.abort();
+    info!(
+        elapsed = ?pipeline_start.elapsed(),
+        steps = total_steps,
+        batches = total_batches,
+        "ETL pipeline completed successfully"
+    );
     StopReason::Completed
 }

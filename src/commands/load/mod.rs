@@ -16,7 +16,7 @@ limitations under the License.
 #![allow(dead_code)]
 
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
-use etl::ETLPipeline;
+use etl::{ETLPipeline, PipelineState, StopReason};
 use std::sync::Arc;
 use std::time::Duration;
 use system_adapter_protocol::MetricsResponse;
@@ -188,23 +188,59 @@ pub(crate) async fn run(
 
     // --- Start the ETL pipeline (remaining batches) ---
     tracing::info!("Starting ETL pipeline (remaining batches)...");
+    let mut etl_state_rx = etl_pipeline.state_watch();
     etl_pipeline.start()?;
 
     let test_future = throughput_test.wait();
     tokio::pin!(test_future);
-    let test = match tokio::select! {
-        res = &mut test_future => res,
-        _ = signal::ctrl_c() => {
-            println!("Interrupt received, stopping benchmark...");
-            shutdown_token.cancel();
-            test_future.await
+
+    // Wait for ETL pipeline completion, then cancel the test.
+    // If interrupted (ctrl-c), cancel both the test and the ETL pipeline.
+    let etl_error: Option<String> = loop {
+        tokio::select! {
+            // ETL state changed — check if stopped
+            _ = etl_state_rx.changed() => {
+                let state = etl_state_rx.borrow_and_update().clone();
+                match state {
+                    PipelineState::Stopped(StopReason::Completed) => {
+                        println!("ETL pipeline completed, stopping benchmark...");
+                        shutdown_token.cancel();
+                        break None;
+                    }
+                    PipelineState::Stopped(StopReason::Error(ref e)) => {
+                        eprintln!("ETL pipeline failed: {e}");
+                        shutdown_token.cancel();
+                        break Some(e.clone());
+                    }
+                    PipelineState::Stopped(StopReason::Cancelled) => {
+                        println!("ETL pipeline was cancelled, stopping benchmark...");
+                        shutdown_token.cancel();
+                        break None;
+                    }
+                    _ => { /* still running, keep waiting */ }
+                }
+            }
+            // ctrl-c: stop everything
+            _ = signal::ctrl_c() => {
+                println!("Interrupt received, stopping benchmark...");
+                shutdown_token.cancel();
+                etl_pipeline.cancel();
+                break None;
+            }
         }
-    } {
+    };
+
+    let test = match test_future.await {
         Ok(test) => test,
         Err(e) => {
             return Err(e);
         }
     };
+
+    // Propagate ETL error after collecting the test result
+    if let Some(etl_err) = etl_error {
+        return Err(anyhow::anyhow!("ETL pipeline failed: {etl_err}"));
+    }
     test.get_query_durations().statistical_set()?;
 
     // Get all query durations for overall statistics before ending the test
