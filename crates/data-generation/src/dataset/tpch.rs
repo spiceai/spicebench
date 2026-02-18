@@ -368,12 +368,12 @@ impl TpchDataset {
         );
 
         let key_sets: HashMap<String, Mutex<IndexedKeySet<PrimaryKeyValue>>> =
-            TPCH_TABLE_TIME_COLUMNS
+            TPCH_TABLES
                 .iter()
                 .map(|(name, _)| (name.to_string(), Mutex::new(IndexedKeySet::new())))
                 .collect();
 
-        let table_steps: HashMap<String, AtomicU16> = TPCH_TABLE_TIME_COLUMNS
+        let table_steps: HashMap<String, AtomicU16> = TPCH_TABLES
             .iter()
             .map(|(name, _)| (name.to_string(), AtomicU16::new(0)))
             .collect();
