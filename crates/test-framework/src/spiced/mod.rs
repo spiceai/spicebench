@@ -22,7 +22,8 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use spiceai::{Client as SpiceClient, ClientBuilder};
+use flight_client::{Credentials, FlightClient};
+use secrecy::SecretString;
 use spicepod::spec::SpicepodDefinition;
 use sysinfo::Pid;
 use tempfile::TempDir;
@@ -245,39 +246,45 @@ impl SpicedInstance {
         Ok(tempdir.path().to_path_buf())
     }
 
-    /// Get a spice client for the spiced instance
+    /// Get a flight client for the spiced instance
     ///
     /// # Errors
     ///
-    /// - If the spice client fails to be created
-    pub async fn spice_client(
+    /// - If the flight client fails to be created
+    pub async fn flight_client(
         &self,
         api_key: Option<String>,
         disable_caching: bool,
-    ) -> Result<SpiceClient> {
-        let mut spice_client = ClientBuilder::new();
-
-        if let Some(key) = api_key {
-            spice_client = spice_client.api_key(key.as_str());
-        }
-
-        if disable_caching {
-            spice_client = spice_client.cache_control("no-cache");
-        }
+    ) -> Result<FlightClient> {
+        let credentials = if let Some(key) = api_key {
+            Credentials::Bearer {
+                token: std::sync::Arc::new(SecretString::new(key.into())),
+                prefix: true,
+            }
+        } else {
+            Credentials::Anonymous
+        };
 
         let flight_url = match self {
             Self::External { flight_url, .. } => flight_url.as_str(),
             Self::Existing | Self::Owned { .. } => FLIGHT_URL,
         };
 
-        let spice_client = spice_client
-            .flight_url(flight_url)
-            .user_agent("spice-test-framework/1.0")
-            .build()
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        if disable_caching {
+            metadata.insert("cache-control", "no-cache".parse()?);
+        }
 
-        Ok(spice_client)
+        let flight_client = FlightClient::try_new(
+            std::sync::Arc::from(flight_url),
+            credentials,
+            Some(metadata),
+            None,
+        )
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+
+        Ok(flight_client)
     }
 
     /// Get an http client for the spiced instance

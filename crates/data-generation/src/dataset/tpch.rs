@@ -15,10 +15,12 @@ limitations under the License.
 */
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use async_trait::async_trait;
 use duckdb::Connection;
 use tracing::info;
 
@@ -140,15 +142,15 @@ fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
 ///
 /// Each call to `next_batch()` returns all rows from one table for the current step.
 pub struct TpchDataset {
-    conn: Connection,
+    conn: Mutex<Connection>,
     scale_factor: f64,
 
     /// Tables that have already been consumed in the current step.
-    consumed_tables: HashSet<String>,
+    consumed_tables: RwLock<HashSet<String>>,
 
     /// Step-based generation for continuous appends.
     /// Step 0 is the initial `dbgen` call; steps 1+ generate new non-overlapping data.
-    current_step: u16,
+    current_step: AtomicU16,
     /// Total number of step partitions for `dbgen(children=...)`.
     num_steps: u16,
 }
@@ -180,10 +182,10 @@ impl TpchDataset {
         );
 
         Ok(Self {
-            conn,
+            conn: Mutex::new(conn),
             scale_factor: config.scale_factor,
-            consumed_tables: HashSet::new(),
-            current_step: 0,
+            consumed_tables: RwLock::new(HashSet::new()),
+            current_step: AtomicU16::new(0),
             num_steps: config.num_steps,
         })
     }
@@ -191,9 +193,9 @@ impl TpchDataset {
     /// Advance to the next step of TPC-H data generation.
     /// Generates new data into `_new` tables (read by `next_batch`, dropped when exhausted).
     /// Returns `false` if all steps are exhausted.
-    fn advance_step(&mut self) -> anyhow::Result<bool> {
-        self.current_step += 1;
-        if self.current_step >= self.num_steps {
+    fn advance_step(&self) -> anyhow::Result<bool> {
+        let new_step = self.current_step.fetch_add(1, Ordering::SeqCst) + 1;
+        if new_step >= self.num_steps {
             return Ok(false);
         }
 
@@ -201,7 +203,7 @@ impl TpchDataset {
             "CALL dbgen(sf={sf}, children={num_steps}, step={step}, suffix='_new');",
             sf = self.scale_factor,
             num_steps = self.num_steps,
-            step = self.current_step,
+            step = new_step,
         );
 
         // Add time columns to _new tables
@@ -211,9 +213,10 @@ impl TpchDataset {
             ));
         }
 
-        self.conn.execute_batch(&sql)?;
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        conn.execute_batch(&sql)?;
 
-        info!(step = self.current_step, "Generated new TPC-H data step");
+        info!(step = new_step, "Generated new TPC-H data step");
 
         Ok(true)
     }
@@ -224,27 +227,37 @@ impl TpchDataset {
         for (table, _) in TPCH_TABLE_TIME_COLUMNS {
             sql.push_str(&format!("DROP TABLE IF EXISTS {table}_new;"));
         }
-        self.conn.execute_batch(&sql)?;
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        conn.execute_batch(&sql)?;
         Ok(())
     }
 }
 
+#[async_trait]
 impl Dataset for TpchDataset {
-    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+    async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
         // If all tables consumed for current step, advance to next step
-        if self.consumed_tables.len() >= TPCH_TABLE_TIME_COLUMNS.len() {
-            if self.current_step > 0 {
-                self.drop_step_tables()?;
+        {
+            let consumed = self.consumed_tables.read().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            if consumed.len() >= TPCH_TABLE_TIME_COLUMNS.len() {
+                drop(consumed);
+                if self.current_step.load(Ordering::SeqCst) > 0 {
+                    self.drop_step_tables()?;
+                }
+                if !self.advance_step()? {
+                    return Ok(None); // all steps exhausted
+                }
+                let mut consumed = self.consumed_tables.write().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+                consumed.clear();
             }
-            if !self.advance_step()? {
-                return Ok(None); // all steps exhausted
-            }
-            self.consumed_tables.clear();
         }
 
         // If this table was already consumed in the current step
-        if self.consumed_tables.contains(table) {
-            return Ok(None);
+        {
+            let consumed = self.consumed_tables.read().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            if consumed.contains(table) {
+                return Ok(None);
+            }
         }
 
         // Validate the table name
@@ -255,17 +268,25 @@ impl Dataset for TpchDataset {
             anyhow::bail!("Unknown TPC-H table: {table}");
         }
 
-        let source_table = if self.current_step == 0 {
+        let current_step = self.current_step.load(Ordering::SeqCst);
+        let source_table = if current_step == 0 {
             table.to_string()
         } else {
             format!("{table}_new")
         };
 
-        let sql = format!("SELECT * FROM {source_table}");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let batches: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
+        let batches = {
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            let sql = format!("SELECT * FROM {source_table}");
+            let mut stmt = conn.prepare(&sql)?;
+            let batches: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
+            batches
+        };
 
-        self.consumed_tables.insert(table.to_string());
+        {
+            let mut consumed = self.consumed_tables.write().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            consumed.insert(table.to_string());
+        }
 
         if batches.is_empty() || batches[0].num_rows() == 0 {
             return Ok(None);
