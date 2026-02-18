@@ -7,6 +7,7 @@ Runtime target: Python `3.x` (latest stable).
 Implemented methods:
 
 - `setup`
+- `create_tables`
 - `query_method`
 - `teardown`
 - `metrics`

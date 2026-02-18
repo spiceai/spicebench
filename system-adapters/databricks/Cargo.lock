@@ -182,6 +182,7 @@ name = "databricks-system-adapter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow-schema",
  "async-trait",
  "clap",
  "reqwest",

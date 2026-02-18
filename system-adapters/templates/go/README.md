@@ -7,6 +7,7 @@ Runtime target: Go `1.26`.
 Implemented methods:
 
 - `setup`
+- `create_tables`
 - `query_method`
 - `teardown`
 - `metrics`
