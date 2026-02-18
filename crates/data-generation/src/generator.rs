@@ -65,7 +65,7 @@ impl DataGenerator {
                 // Write all tables concurrently within this step.
                 let mut join_set = JoinSet::new();
                 for (table_name, batch) in batches {
-                    self.metrics.record_generation();
+                    self.metrics.record_generation(&batch);
 
                     let target = self.target.clone();
                     let metrics = self.metrics.clone();
@@ -153,7 +153,7 @@ impl DataGenerator {
             };
 
             for (table_name, batch) in source_batches {
-                self.metrics.record_generation();
+                self.metrics.record_generation(&batch);
 
                 // Acquire semaphore permit — creates backpressure if all write slots are busy
                 let permit = Arc::clone(&self.semaphore).acquire_owned().await?;
@@ -199,6 +199,9 @@ impl DataGenerator {
             batches_generated = summary.batches_generated,
             batches_written = summary.batches_written,
             rows = summary.rows_written,
+            creates = summary.rows_created,
+            updates = summary.rows_updated,
+            deletes = summary.rows_deleted,
             bytes = summary.bytes_written,
             errors = summary.write_errors,
             rows_per_sec = format!("{:.0}", summary.rows_per_sec),
