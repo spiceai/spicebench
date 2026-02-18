@@ -24,13 +24,13 @@ use data_generation::dataset::tpch::TpchDataset;
 use data_generation::source::Source;
 use data_generation::target::Target;
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use system_adapter_protocol::{DatasetConfig as ProtocolDatasetConfig, EtlType};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
-use std::sync::Arc as StdArc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 type DynSource = Arc<dyn Source>;
