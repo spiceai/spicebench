@@ -47,7 +47,6 @@ struct Cli {
     /// S3 key prefix for source data
     #[arg(long, default_value = "")]
     source_prefix: String,
-
     /// AWS region
     #[arg(long)]
     region: Option<String>,

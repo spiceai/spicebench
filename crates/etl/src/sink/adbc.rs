@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use adbc_client::AdbcConnection;
@@ -26,10 +26,11 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Schema};
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate};
-use data_generation::target::{Target, WriteResult};
 use tokio::sync::Mutex as TokioMutex;
 
-const DEFAULT_INSERT_ROWS_PER_STATEMENT: usize = 256;
+use super::{InsertOp, Sink};
+
+const DEFAULT_INSERT_ROWS_PER_STATEMENT: usize = 2048;
 
 /// ETL sink that writes transformed batches directly into the SUT via ADBC SQL.
 ///
@@ -79,35 +80,20 @@ impl AdbcSink {
         ))
     }
 
-    async fn execute_sql(&self, sql: String) -> anyhow::Result<()> {
+    async fn execute_sql_batch(&self, statements: Vec<String>) -> anyhow::Result<()> {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
             let mut guard = conn
                 .lock()
                 .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
-            guard
-                .query(&sql)
-                .map_err(|e| anyhow::anyhow!("ADBC SQL execution failed: {e}"))?;
+            for sql in statements {
+                guard
+                    .query(&sql)
+                    .map_err(|e| anyhow::anyhow!("ADBC SQL execution failed: {e}"))?;
+            }
             Ok::<_, anyhow::Error>(())
         })
         .await?
-    }
-
-    async fn ensure_table_created(&self, table_name: &str, schema: &Schema) -> anyhow::Result<()> {
-        {
-            let created = self.created_tables.lock().await;
-            if created.contains(table_name) {
-                return Ok(());
-            }
-        }
-
-        let sql = self.create_table_sql(table_name, schema)?;
-        self.execute_sql(sql).await?;
-
-        let mut created = self.created_tables.lock().await;
-        created.insert(table_name.to_string());
-
-        Ok(())
     }
 
     fn insert_sql_for_rows(
@@ -134,39 +120,178 @@ impl AdbcSink {
 }
 
 #[async_trait]
-impl Target for AdbcSink {
+impl Sink for AdbcSink {
     async fn write(
         &self,
         table_name: &str,
         _batch_id: u64,
         batch: RecordBatch,
-    ) -> anyhow::Result<WriteResult> {
-        self.ensure_table_created(table_name, &batch.schema()).await?;
+        op: InsertOp,
+    ) -> anyhow::Result<()> {
+        let mut preamble_statements: Vec<String> = Vec::new();
+        let should_ensure_table = matches!(op, InsertOp::Insert | InsertOp::Update { .. });
+        let mut newly_created = false;
 
-        let num_rows = batch.num_rows();
-        if num_rows > 0 {
-            let mut start = 0usize;
-            while start < num_rows {
-                let end = std::cmp::min(start + self.insert_rows_per_statement, num_rows);
-                let sql = self.insert_sql_for_rows(table_name, &batch, start..end)?;
-                self.execute_sql(sql).await?;
-                start = end;
+        if should_ensure_table {
+            let created = self.created_tables.lock().await;
+            if !created.contains(table_name) {
+                preamble_statements.push(self.create_table_sql(table_name, &batch.schema())?);
+                newly_created = true;
             }
         }
 
-        Ok(WriteResult {
-            rows_written: num_rows as u64,
-            bytes_written: batch.get_array_memory_size() as u64,
+        let num_rows = batch.num_rows();
+        let mut dml_statements: Vec<String> = Vec::new();
+        if num_rows > 0 {
+            match &op {
+                InsertOp::Insert => {
+                    let mut start = 0usize;
+                    while start < num_rows {
+                        let end = std::cmp::min(start + self.insert_rows_per_statement, num_rows);
+                        dml_statements
+                            .push(self.insert_sql_for_rows(table_name, &batch, start..end)?);
+                        start = end;
+                    }
+                }
+                InsertOp::Update { key_columns } => {
+                    let key_indexes = key_column_indexes(&batch, key_columns)?;
+                    for row_idx in 0..num_rows {
+                        dml_statements.push(self.update_sql_for_row(
+                            table_name,
+                            &batch,
+                            row_idx,
+                            &key_indexes,
+                        )?);
+                    }
+                }
+                InsertOp::Delete { key_columns } => {
+                    let key_indexes = key_column_indexes(&batch, key_columns)?;
+                    for row_idx in 0..num_rows {
+                        dml_statements.push(self.delete_sql_for_row(
+                            table_name,
+                            &batch,
+                            row_idx,
+                            &key_indexes,
+                        )?);
+                    }
+                }
+            }
+        }
+
+        if dml_statements.is_empty() {
+            if !preamble_statements.is_empty() {
+                self.execute_sql_batch(preamble_statements).await?;
+                if newly_created {
+                    let mut created = self.created_tables.lock().await;
+                    created.insert(table_name.to_string());
+                }
+            }
+            return Ok(());
+        }
+
+        let mut tx_statements = preamble_statements.clone();
+        tx_statements.push("BEGIN".to_string());
+        tx_statements.extend(dml_statements.clone());
+        tx_statements.push("COMMIT".to_string());
+
+        if self.execute_sql_batch(tx_statements).await.is_err() {
+            let mut fallback_statements = preamble_statements;
+            fallback_statements.extend(dml_statements);
+            self.execute_sql_batch(fallback_statements).await?;
+        }
+
+        if newly_created {
+            let mut created = self.created_tables.lock().await;
+            created.insert(table_name.to_string());
+        }
+
+        Ok(())
+    }
+}
+
+fn key_column_indexes(batch: &RecordBatch, key_columns: &[String]) -> anyhow::Result<Vec<usize>> {
+    if key_columns.is_empty() {
+        anyhow::bail!("Update/Delete requires at least one key column");
+    }
+
+    let schema = batch.schema();
+    key_columns
+        .iter()
+        .map(|col| {
+            schema
+                .index_of(col)
+                .map_err(|_| anyhow::anyhow!("Key column '{col}' not found in batch schema"))
         })
+        .collect()
+}
+
+impl AdbcSink {
+    fn update_sql_for_row(
+        &self,
+        table_name: &str,
+        batch: &RecordBatch,
+        row_idx: usize,
+        key_indexes: &[usize],
+    ) -> anyhow::Result<String> {
+        let schema = batch.schema();
+        let fields = schema.fields();
+        let mut set_clauses = Vec::new();
+        for col_idx in 0..batch.num_columns() {
+            if key_indexes.contains(&col_idx) {
+                continue;
+            }
+            let field = &fields[col_idx];
+            let value = sql_literal_for_value(&batch.columns()[col_idx], field.data_type(), row_idx)?;
+            set_clauses.push(format!("{} = {value}", quote_identifier(field.name())));
+        }
+
+        if set_clauses.is_empty() {
+            anyhow::bail!("Update requires at least one non-key column in batch schema");
+        }
+
+        let where_clause = where_clause_for_row(batch, row_idx, key_indexes)?;
+        Ok(format!(
+            "UPDATE {} SET {} WHERE {where_clause}",
+            self.table_identifier(table_name),
+            set_clauses.join(", ")
+        ))
     }
 
-    fn table_params(&self, _table_name: &str) -> HashMap<String, serde_json::Value> {
-        HashMap::new()
+    fn delete_sql_for_row(
+        &self,
+        table_name: &str,
+        batch: &RecordBatch,
+        row_idx: usize,
+        key_indexes: &[usize],
+    ) -> anyhow::Result<String> {
+        let where_clause = where_clause_for_row(batch, row_idx, key_indexes)?;
+        Ok(format!(
+            "DELETE FROM {} WHERE {where_clause}",
+            self.table_identifier(table_name)
+        ))
     }
+}
 
-    fn expected_files(&self, _table_name: &str, _batch_ids: &[u64]) -> Vec<String> {
-        Vec::new()
+fn where_clause_for_row(
+    batch: &RecordBatch,
+    row_idx: usize,
+    key_indexes: &[usize],
+) -> anyhow::Result<String> {
+    let schema = batch.schema();
+    let fields = schema.fields();
+    let mut predicates = Vec::with_capacity(key_indexes.len());
+    for &col_idx in key_indexes {
+        let field = &fields[col_idx];
+        let column = &batch.columns()[col_idx];
+        let col_ident = quote_identifier(field.name());
+        if column.is_null(row_idx) {
+            predicates.push(format!("{col_ident} IS NULL"));
+        } else {
+            let value = sql_literal_for_value(column, field.data_type(), row_idx)?;
+            predicates.push(format!("{col_ident} = {value}"));
+        }
     }
+    Ok(predicates.join(" AND "))
 }
 
 fn quote_identifier(value: &str) -> String {

@@ -33,7 +33,7 @@ use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
 
-use super::{ReadResult, WriteResult};
+use super::{BatchOperation, ReadResult, WriteResult};
 
 /// Unified S3 storage backend that implements both [`Source`] and [`Target`].
 ///
@@ -100,6 +100,87 @@ impl S3Storage {
             ObjectPath::from(format!("{table_name}/"))
         } else {
             ObjectPath::from(format!("{}/{table_name}/", self.prefix))
+        }
+    }
+
+    pub(crate) fn batch_metadata_object_path(&self, table_name: &str, batch_id: u64) -> ObjectPath {
+        if self.prefix.is_empty() {
+            ObjectPath::from(format!("{table_name}/batch-{batch_id:06}.metadata.json"))
+        } else {
+            ObjectPath::from(format!(
+                "{}/{table_name}/batch-{batch_id:06}.metadata.json",
+                self.prefix
+            ))
+        }
+    }
+
+    async fn read_batch_operation(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+    ) -> anyhow::Result<BatchOperation> {
+        let metadata_path = self.batch_metadata_object_path(table_name, batch_id);
+        let get_result = match self.store.get(&metadata_path).await {
+            Ok(r) => r,
+            Err(object_store::Error::NotFound { .. }) => return Ok(BatchOperation::Insert),
+            Err(e) => return Err(e.into()),
+        };
+
+        let bytes = get_result.bytes().await?;
+        let json: serde_json::Value = serde_json::from_slice(&bytes)?;
+
+        let op = json
+            .get("operation")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| json.get("op").and_then(serde_json::Value::as_str))
+            .unwrap_or("insert")
+            .to_ascii_lowercase();
+
+        let parse_key_columns = || -> anyhow::Result<Vec<String>> {
+            let Some(keys_value) = json.get("key_columns") else {
+                anyhow::bail!(
+                    "Missing 'key_columns' in metadata sidecar for {}",
+                    metadata_path
+                );
+            };
+            let Some(keys) = keys_value.as_array() else {
+                anyhow::bail!(
+                    "Invalid 'key_columns' (expected string array) in metadata sidecar for {}",
+                    metadata_path
+                );
+            };
+
+            let parsed = keys
+                .iter()
+                .map(|v| {
+                    v.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Invalid key column entry (expected string) in metadata sidecar for {}",
+                            metadata_path
+                        )
+                    })
+                })
+                .collect::<anyhow::Result<Vec<String>>>()?;
+
+            if parsed.is_empty() {
+                anyhow::bail!("'key_columns' cannot be empty in metadata sidecar for {}", metadata_path);
+            }
+
+            Ok(parsed)
+        };
+
+        match op.as_str() {
+            "insert" => Ok(BatchOperation::Insert),
+            "update" => Ok(BatchOperation::Update {
+                key_columns: parse_key_columns()?,
+            }),
+            "delete" => Ok(BatchOperation::Delete {
+                key_columns: parse_key_columns()?,
+            }),
+            other => anyhow::bail!(
+                "Unsupported operation '{other}' in metadata sidecar for {}",
+                metadata_path
+            ),
         }
     }
 }
@@ -179,6 +260,33 @@ impl DataStorage for S3Storage {
         })
     }
 
+    async fn write_batch_operation(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+        operation: &BatchOperation,
+    ) -> anyhow::Result<()> {
+        let path = self.batch_metadata_object_path(table_name, batch_id);
+
+        let value = match operation {
+            BatchOperation::Insert => serde_json::json!({
+                "operation": "insert"
+            }),
+            BatchOperation::Update { key_columns } => serde_json::json!({
+                "operation": "update",
+                "key_columns": key_columns,
+            }),
+            BatchOperation::Delete { key_columns } => serde_json::json!({
+                "operation": "delete",
+                "key_columns": key_columns,
+            }),
+        };
+
+        let bytes = serde_json::to_vec(&value)?;
+        self.store.put(&path, PutPayload::from(bytes)).await?;
+        Ok(())
+    }
+
     async fn list_batches(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
         let prefix = self.table_object_prefix(table_name);
 
@@ -218,10 +326,13 @@ impl DataStorage for S3Storage {
             batches.push(batch);
         }
 
+        let operation = self.read_batch_operation(table_name, batch_id).await?;
+
         Ok(Some(ReadResult {
             batches,
             rows_read,
             bytes_read,
+            operation,
         }))
     }
 }
