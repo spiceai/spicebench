@@ -34,39 +34,26 @@ pub struct DatasetTable {
     pub name: String,
     /// The Arrow schema for the table (without the time column).
     pub schema: SchemaRef,
-    /// The time column for the table, if any.
+    /// The time column for the table.
     ///
-    /// When set, this column is *not* included in [`schema`] — it is appended
+    /// This column is *not* included in [`schema`] — it is appended
     /// during rehydration via [`DatasetTable::rehydrate`].
-    pub time_column: Option<String>,
+    pub time_column: String,
 }
 
 impl DatasetTable {
-    /// Returns the full schema including the time column, if one is configured.
-    ///
-    /// If `time_column` is `None`, this returns the same schema as [`schema`].
+    /// Returns the full schema including the time column.
     pub fn rehydrated_schema(&self) -> SchemaRef {
-        let Some(ref time_col) = self.time_column else {
-            return Arc::clone(&self.schema);
-        };
-
         let ts_type = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
         let mut fields: Vec<_> = self.schema.fields().iter().cloned().collect();
-        fields.push(Arc::new(Field::new(time_col, ts_type, true)));
+        fields.push(Arc::new(Field::new(&self.time_column, ts_type, true)));
         Arc::new(arrow::datatypes::Schema::new(fields))
     }
 
     /// Rehydrate a batch by appending the time column with the current timestamp.
     ///
-    /// If this table has no `time_column`, the batch is returned unchanged.
     /// The batch schema must match [`schema`] (i.e. without the time column).
     pub fn rehydrate(&self, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
-        if self.time_column.is_none() {
-            anyhow::bail!(
-                "Cannot rehydrate table '{}' without a time column",
-                self.name
-            );
-        }
 
         if batch.schema() != self.schema {
             let mut diffs = Vec::new();
@@ -284,8 +271,7 @@ pub trait Dataset: Send + Sync {
     /// Rehydrate a batch for the given table by appending the time column.
     ///
     /// Uses the table metadata from [`tables()`] to look up the time column name
-    /// and delegates to [`DatasetTable::rehydrate`]. If the table has no time column,
-    /// a rehydration error is returned.
+    /// and delegates to [`DatasetTable::rehydrate`].
     fn rehydrate(&self, table: &str, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
         let tables = self.tables();
         let dataset_table = tables
