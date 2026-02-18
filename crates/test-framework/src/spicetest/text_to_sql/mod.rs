@@ -262,12 +262,11 @@ impl MetricCollector<TextToSqlMetric, TextToSqlRunMetric> for SpiceTest<Complete
     }
 
     fn spiced_version(&self) -> Result<&str> {
-        let spiced_instance = self.spiced_instance.as_ref().ok_or(
-            anyhow::anyhow!(
-                "Spiced instance is not available. SpiceTest must be started before metrics can be collected."
-            ))?;
-
-        Ok(spiced_instance.version())
+        Ok(self
+            .spiced_instance
+            .as_ref()
+            .map(|i| i.version())
+            .unwrap_or("unknown"))
     }
 
     fn metrics(&self) -> Result<Vec<QueryMetric<TextToSqlMetric>>> {

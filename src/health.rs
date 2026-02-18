@@ -29,20 +29,25 @@ use test_framework::{
     tokio_util::sync::CancellationToken,
 };
 
+#[allow(dead_code)]
 const ENDPOINTS: [&str; 2] = [HEALTH_ENDPOINT, READY_ENDPOINT];
+#[allow(dead_code)]
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 
 // Use a large latency threshold for health endpoints as latency can spike when the CPU is fully utilized during
 // intensive benchmark runs. This reduces noise from false positives. See <https://github.com/spiceai/spiceai/issues/7766>
+#[allow(dead_code)]
 const LATENCY_THRESHOLD: Duration = Duration::from_millis(125);
 
 #[derive(Debug, Default, Clone)]
+#[allow(dead_code)]
 pub(crate) struct EndpointStats {
     pub(crate) failure_count: u64,
     pub(crate) max_latency: Duration,
     pub(crate) last_error: Option<String>,
 }
 
+#[allow(dead_code)]
 impl EndpointStats {
     fn record_sample(&mut self, latency: Duration, failure: Option<String>) {
         if latency > self.max_latency {
@@ -57,10 +62,12 @@ impl EndpointStats {
 }
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub(crate) struct HealthCheckReport {
     pub endpoints: BTreeMap<&'static str, EndpointStats>,
 }
 
+#[allow(dead_code)]
 impl HealthCheckReport {
     pub(crate) fn failure_message(&self) -> Option<String> {
         let mut parts = Vec::new();
@@ -92,11 +99,13 @@ impl HealthCheckReport {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) struct HealthMonitor {
     cancel_token: CancellationToken,
     task: Option<tokio::task::JoinHandle<HealthCheckReport>>,
 }
 
+#[allow(dead_code)]
 impl HealthMonitor {
     pub(crate) fn spawn() -> anyhow::Result<Self> {
         let cancel_token = CancellationToken::new();

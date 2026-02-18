@@ -534,12 +534,11 @@ impl MetricCollector<DatasetMetrics, NoExtendedMetrics> for SpiceTest<Completed>
     }
 
     fn spiced_version(&self) -> Result<&str> {
-        let spiced_instance = self.spiced_instance.as_ref().ok_or(
-            anyhow::anyhow!(
-                "Spiced instance is not available. SpiceTest must be started before metrics can be collected."
-            ))?;
-
-        Ok(spiced_instance.version())
+        Ok(self
+            .spiced_instance
+            .as_ref()
+            .map(|i| i.version())
+            .unwrap_or("unknown"))
     }
 
     fn metrics(&self) -> Result<Vec<QueryMetric<DatasetMetrics>>> {
@@ -588,12 +587,11 @@ impl MetricCollector<NoExtendedMetrics, ThroughputMetrics> for SpiceTest<Complet
     }
 
     fn spiced_version(&self) -> Result<&str> {
-        let spiced_instance = self.spiced_instance.as_ref().ok_or(
-            anyhow::anyhow!(
-                "Spiced instance is not available. SpiceTest must be started before metrics can be collected."
-            ))?;
-
-        Ok(spiced_instance.version())
+        Ok(self
+            .spiced_instance
+            .as_ref()
+            .map(|i| i.version())
+            .unwrap_or("unknown"))
     }
 
     fn metrics(&self) -> Result<Vec<QueryMetric<NoExtendedMetrics>>> {

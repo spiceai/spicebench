@@ -108,6 +108,7 @@ pub struct CommonArgs {
     pub(crate) system_adapter_env: Vec<(String, String)>,
 }
 
+#[allow(dead_code)]
 impl CommonArgs {
     /// Check if `spiced_path` is a URL to an external instance
     #[must_use]
