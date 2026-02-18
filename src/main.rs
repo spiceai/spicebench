@@ -79,8 +79,6 @@ async fn main() -> anyhow::Result<()> {
         prefix: cli.common.etl_source_prefix.clone(),
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
-        table_format: cli.common.table_format.clone(),
-        executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
     let run_suffix = Uuid::new_v4().to_string();
@@ -96,8 +94,6 @@ async fn main() -> anyhow::Result<()> {
         prefix: target_prefix,
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
-        table_format: cli.common.table_format.clone(),
-        executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
     let source = Arc::new(S3Storage::new(&source_config)?);
@@ -124,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
     let setup_metadata = std::collections::HashMap::from([(
         "executor_instance_type".to_string(),
         serde_json::Value::String(cli.common.executor_instance_type.clone()),
-    )]);
+    ), ("table_format".to_string(), serde_json::Value::String(cli.common.table_format.to_string()))]);
 
     if let Err(e) = system_adapter_client
         .setup(run_id, datasets, setup_metadata)
