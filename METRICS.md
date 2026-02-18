@@ -5,7 +5,7 @@ This document tracks every benchmark metric listed in the README, its OTel instr
 ## Pipeline Overview
 
 ```
-spicebench (OTel instruments)
+SpiceBench (OTel instruments)
   ├─ Query Driver ──► per-query gauges ──► Telemetry.emit() ──► telemetry.spiceai.io
   ├─ StreamingOtlpExporter ──► real-time histograms/counters ──► --otlp-endpoint
   └─ SUT Adapter (JSON-RPC `metrics`) ──► scraped gauges ──► Telemetry.emit() ──► telemetry.spiceai.io
@@ -43,7 +43,7 @@ When `--otlp-endpoint` is configured, the following are exported every 5 seconds
 
 ## SUT Adapter `metrics` JSON-RPC Method
 
-The system adapter protocol now includes a `metrics` JSON-RPC method that spicebench scrapes periodically (every 5s) when `--scrape-sut-metrics` is enabled.
+The system adapter protocol now includes a `metrics` JSON-RPC method that SpiceBench scrapes periodically (every 5s) when `--scrape-sut-metrics` is enabled.
 
 ### Request
 

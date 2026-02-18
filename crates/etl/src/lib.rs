@@ -18,16 +18,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use data_generation::config::DatasetConfig as GenerationDatasetConfig;
+use data_generation::dataset::Dataset;
 use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
-use data_generation::dataset::Dataset;
 use data_generation::source::Source;
 use data_generation::target::Target;
+use std::collections::{BTreeMap, HashSet};
 use system_adapter_protocol::{DatasetConfig as ProtocolDatasetConfig, EtlType};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
-use std::collections::{BTreeMap, HashSet};
 use tracing::{error, info, warn};
 
 type DynSource = Arc<dyn Source>;
@@ -47,10 +47,7 @@ impl DatasetSource {
     /// configuration.
     ///
     /// Delegates to the [`Dataset::create`] factory method on the concrete type.
-    pub fn create(
-        &self,
-        config: &GenerationDatasetConfig,
-    ) -> anyhow::Result<Arc<dyn Dataset>> {
+    pub fn create(&self, config: &GenerationDatasetConfig) -> anyhow::Result<Arc<dyn Dataset>> {
         match self {
             DatasetSource::SimpleSequence => SimpleSequenceDataset::create(config),
             DatasetSource::Tpch => TpchDataset::create(config),
@@ -430,9 +427,7 @@ async fn run_pipeline(
                                 error = %e,
                                 "Failed to rehydrate batch"
                             );
-                            return Err(format!(
-                                "rehydrate {table_name} batch {batch_id}: {e}"
-                            ));
+                            return Err(format!("rehydrate {table_name} batch {batch_id}: {e}"));
                         }
                     };
 
@@ -444,9 +439,7 @@ async fn run_pipeline(
                             error = %e,
                             "Failed to write batch to target"
                         );
-                        return Err(format!(
-                            "write {table_name} batch {batch_id}: {e}"
-                        ));
+                        return Err(format!("write {table_name} batch {batch_id}: {e}"));
                     }
                 }
 
@@ -486,4 +479,3 @@ async fn run_pipeline(
     info!("ETL pipeline completed successfully");
     StopReason::Completed
 }
-

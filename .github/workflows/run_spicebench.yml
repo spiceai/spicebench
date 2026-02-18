@@ -5,10 +5,18 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: "Scenario/query set to run (e.g. tpch)"
+        description: 'Scenario/query set to run (e.g. tpch)'
         required: true
-        default: "tpch"
+        default: 'tpch'
         type: string
+      system_adapter:
+        description: 'System adapter to run (docker spidapter or local databricks adapter)'
+        required: true
+        default: spidapter
+        type: choice
+        options:
+          - spidapter
+          - databricks
       etl_bucket:
         description: 'S3 bucket for ETL source and target data'
         required: true
@@ -48,11 +56,13 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: ./.github/actions/management-login
+        if: ${{ github.event.inputs.system_adapter == 'spidapter' }}
         with:
           client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
+        if: ${{ github.event.inputs.system_adapter == 'spidapter' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -60,21 +70,131 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: pull spidapter image
+        if: ${{ github.event.inputs.system_adapter == 'spidapter' }}
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
       - uses: ./.github/actions/build-spicebench
 
-      - name: Install ADBC FlightSQL driver
+      - name: Restore databricks adapter cache
+        if: ${{ github.event.inputs.system_adapter == 'databricks' }}
+        id: cache-databricks-adapter
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.spice/bin/databricks-system-adapter
+          key: databricks-system-adapter-${{ runner.os }}-${{ hashFiles('system-adapters/databricks/Cargo.toml', 'system-adapters/databricks/Cargo.lock', 'system-adapters/databricks/src/**/*.rs', 'crates/system-adapter-protocol/Cargo.toml', 'crates/system-adapter-protocol/src/**/*.rs') }}
+          restore-keys: |
+            databricks-system-adapter-${{ runner.os }}-
+
+      - name: Build databricks adapter
+        if: ${{ github.event.inputs.system_adapter == 'databricks' && steps.cache-databricks-adapter.outputs.cache-hit != 'true' }}
+        id: build-databricks-adapter
         run: |
+          mkdir -p ~/.spice/bin
+          cargo build --manifest-path system-adapters/databricks/Cargo.toml
+          install -m 755 system-adapters/databricks/target/debug/databricks-system-adapter ~/.spice/bin/databricks-system-adapter
+
+      - name: Save databricks adapter cache
+        if: ${{ github.event.inputs.system_adapter == 'databricks' && steps.build-databricks-adapter.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.spice/bin/databricks-system-adapter
+          key: databricks-system-adapter-${{ runner.os }}-${{ hashFiles('system-adapters/databricks/Cargo.toml', 'system-adapters/databricks/Cargo.lock', 'system-adapters/databricks/src/**/*.rs', 'crates/system-adapter-protocol/Cargo.toml', 'crates/system-adapter-protocol/src/**/*.rs') }}
+
+      - name: Validate adapter configuration
+        env:
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
+          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
+          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          DATABRICKS_ENDPOINT: ${{ secrets.DATABRICKS_ENDPOINT }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
+          DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
+          DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SCENARIO}" ]; then
+            echo "SCENARIO must not be empty"
+            exit 1
+          fi
+
+          case "${SYSTEM_ADAPTER}" in
+            spidapter)
+              if [ -z "${SPICEAI_API_KEY:-}" ]; then
+                echo "SPICEAI_API_KEY must be set for spidapter"
+                exit 1
+              fi
+
+              if ! command -v docker >/dev/null 2>&1; then
+                echo "docker is required for spidapter mode"
+                exit 1
+              fi
+
+              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
+                echo "spidapter docker image not found locally; pull step may have failed"
+                exit 1
+              }
+              ;;
+
+            databricks)
+              for required_var in DATABRICKS_ENDPOINT DATABRICKS_TOKEN DATABRICKS_HTTP_PATH DATABRICKS_SQL_WAREHOUSE_ID; do
+                if [ -z "${!required_var:-}" ]; then
+                  echo "${required_var} must be set for databricks adapter mode"
+                  exit 1
+                fi
+              done
+
+              if echo "${DATABRICKS_ENDPOINT}" | grep -qE '^https?://'; then
+                echo "DATABRICKS_ENDPOINT should be a hostname only (no http/https scheme)"
+                exit 1
+              fi
+
+              if echo "${DATABRICKS_HTTP_PATH}" | grep -qE '^/'; then
+                echo "DATABRICKS_HTTP_PATH should not start with '/'"
+                exit 1
+              fi
+
+              if [ ! -x "${HOME}/.spice/bin/databricks-system-adapter" ]; then
+                echo "Local databricks adapter binary is missing or not executable at ${HOME}/.spice/bin/databricks-system-adapter"
+                exit 1
+              fi
+
+              "${HOME}/.spice/bin/databricks-system-adapter" --help >/dev/null
+              ;;
+
+            *)
+              echo "Unsupported system_adapter value: ${SYSTEM_ADAPTER}"
+              exit 1
+              ;;
+          esac
+      - name: Install ADBC driver
+        env:
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
+        run: |
+          set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          dbc install flightsql
+
+          if [ "${SYSTEM_ADAPTER}" = "databricks" ]; then
+            dbc install databricks
+          else
+            dbc install flightsql
+          fi
 
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          DATABRICKS_ENDPOINT: ${{ secrets.DATABRICKS_ENDPOINT }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
+          DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
+          DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_SOURCE_PREFIX: ${{ github.event.inputs.etl_source_prefix }}
           ETL_TARGET_PREFIX: ${{ github.event.inputs.etl_target_prefix }}
@@ -98,10 +218,29 @@ jobs:
           if [ -n "${ETL_ENDPOINT}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
           fi
+          
+          if [ "${SYSTEM_ADAPTER}" = "databricks" ]; then
+            ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
+            ADAPTER_ARGS="stdio"
+            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID}"
+
+            if [ -n "${DATABRICKS_CATALOG}" ]; then
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"
+            fi
+
+            if [ -n "${DATABRICKS_SCHEMA}" ]; then
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
+            fi
+          else
+            ADAPTER_CMD="docker"
+            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            ADAPTER_ENVS=""
+          fi
 
           ~/.spice/bin/spicebench \
             --concurrency 2  \
             --scenario "${SCENARIO}" \
             ${ETL_ARGS} \
-            --system-adapter-stdio-cmd docker \
-            --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
+            --system-adapter-stdio-args "${ADAPTER_ARGS}" \
+            ${ADAPTER_ENVS}

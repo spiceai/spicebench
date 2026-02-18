@@ -62,13 +62,18 @@ impl QueryExecutor for AdbcDirectQueryExecutor {
         // so we run it on the blocking thread pool to avoid stalling the tokio runtime.
         let (duration, batches) = tokio::task::spawn_blocking(move || {
             let start = std::time::Instant::now();
-            let mut guard = conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
+            let mut guard = conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
             let batches = guard.query(&sql).map_err(|e| anyhow::anyhow!("{e}"))?;
             Ok::<_, anyhow::Error>((start.elapsed(), batches))
         })
         .await??;
 
-        let row_count: usize = batches.iter().map(arrow::array::RecordBatch::num_rows).sum();
+        let row_count: usize = batches
+            .iter()
+            .map(arrow::array::RecordBatch::num_rows)
+            .sum();
 
         Ok(ExecutionResult {
             duration,

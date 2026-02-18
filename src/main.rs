@@ -144,7 +144,9 @@ async fn main() -> anyhow::Result<()> {
         };
 
     let Some(adbc_conn) = adbc_conn else {
-        return Err(anyhow::anyhow!("ADBC connection is required to run benchmarks"));
+        return Err(anyhow::anyhow!(
+            "ADBC connection is required to run benchmarks"
+        ));
     };
 
     commands::load::run(&cli.common.scenario, &cli.common, adbc_conn, &mut pipeline).await?;

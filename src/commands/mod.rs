@@ -105,7 +105,6 @@ pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemA
     Err(anyhow::anyhow!("No system adapter transport configured"))
 }
 
-
 #[macro_export]
 macro_rules! wait_test_and_memory {
     ($test:expr, $memory_token:expr, $memory_readings:expr) => {

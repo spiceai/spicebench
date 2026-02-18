@@ -19,7 +19,7 @@ pub mod databricks;
 use std::collections::HashMap;
 
 use adbc_core::options::{AdbcVersion, OptionDatabase, OptionValue};
-use adbc_core::{Connection, Database, Driver, Statement, LOAD_FLAG_DEFAULT};
+use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Statement};
 use adbc_driver_manager::ManagedDriver;
 use arrow_array::RecordBatch;
 use snafu::prelude::*;

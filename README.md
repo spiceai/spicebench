@@ -1,6 +1,6 @@
-# Spicebench
+# SpiceBench
 
-A benchmark for data & AI platforms focused on operational data. Unlike static benchmarks such as ClickBench or TPC-H that run queries on pre-created datasets, Spicebench measures end-to-end performance across dynamic real-time data generation, ingestion, indexing/acceleration/materialization, and query execution — all running concurrently.
+A benchmark for data & AI platforms focused on operational data. Unlike static benchmarks such as ClickBench or TPC-H that run queries on pre-created datasets, SpiceBench measures end-to-end performance across dynamic real-time data generation, ingestion, indexing/acceleration/materialization, and query execution — all running concurrently.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ flowchart TB
         trigger --> orchestrator
     end
 
-    subgraph run["Spicebench Run"]
+    subgraph run["SpiceBench Run"]
         direction TB
 
         subgraph setup_phase["1 · Setup (JSON-RPC)"]
@@ -96,7 +96,7 @@ flowchart TB
         otel_endpoint["OTLP Endpoint\n(--otlp-endpoint)"]
     end
 
-    subgraph website["spicebench.com"]
+    subgraph website["SpiceBench.com"]
         leaderboard["Leaderboard\n(ranked by E2E benchmark duration)"]
         run_details["Run Details\n(per-query breakdown,\nresource usage, latency)"]
         leaderboard --> run_details
@@ -116,7 +116,7 @@ flowchart TB
     arrow_endpoint -->|"run results"| website
 ```
 
-### Spicebench Run
+### SpiceBench Run
 
 A **Run** is a single end-to-end execution of the benchmark for one system. Each Run proceeds through three phases:
 
@@ -142,7 +142,7 @@ The **E2E benchmark duration** (phase 2, load test stage) is the primary ranking
 | **Telemetry**               | Emits final metrics via Arrow Flight to `telemetry.spiceai.io`, or via OTLP to a custom endpoint (`--otlp-endpoint`).                                         |
 | **StreamingOtlpExporter**   | Optional real-time metrics export every 5s (query duration histogram, success/failure counters) to `--otlp-endpoint`.                                         |
 | **Health Monitor**          | Samples `/health` and `/v1/ready` every 100ms, tracks failures and max latency (threshold: 125ms).                                                            |
-| **spicebench.com**          | Public results site with leaderboard (ranked by E2E benchmark duration) and per-Run detail views.                                                             |
+| **SpiceBench.com**          | Public results site with leaderboard (ranked by E2E benchmark duration) and per-Run detail views.                                                             |
 
 ### Metrics
 
@@ -189,9 +189,9 @@ The **E2E benchmark duration** (phase 2, load test stage) is the primary ranking
 
 SQL dialect overrides are supported via `--query-overrides` (sqlite, postgresql, mysql, dremio, spark, duckdb, snowflake, oracle, etc.).
 
-### spicebench.com
+### SpiceBench.com
 
-Results from every Run are published to [spicebench.com](https://spicebench.com), inspired by [ClickBench](https://clickbench.com/) and [Vortex Bench](https://bench.vortex.dev/). The site provides:
+Results from every Run are published to [SpiceBench.com](https://spicebench.com), inspired by [ClickBench](https://clickbench.com/) and [Vortex Bench](https://bench.vortex.dev/). The site provides:
 
 - **Leaderboard** — Systems ranked by E2E benchmark duration (phase 2 wall-clock time). Secondary sort by query latency and ingestion throughput.
 - **Run details** — Per-query latency breakdown, ingestion rates over time, resource utilization charts, and E2E event latency distributions.
@@ -202,23 +202,30 @@ Results from every Run are published to [spicebench.com](https://spicebench.com)
 To benchmark a new platform, implement the JSON-RPC 2.0 adapter with these methods:
 
 1. **`setup(run_id, datasets)`** — Provision infrastructure and configure the target system.
-2. **`query_method(run_id)`** — Return the ADBC driver type (`flightsql` or `databricks`) and connection kwargs so spicebench can establish a direct query connection.
+2. **`query_method(run_id)`** — Return the ADBC driver type (`flightsql` or `databricks`) and connection kwargs so SpiceBench can establish a direct query connection.
 3. **`teardown(run_id)`** — Clean up provisioned resources.
 4. **`metrics(run_id)`** *(optional)* — Return current resource usage (CPU, memory, disk, IOPS) and ingestion progress (rows, bytes, rows/s, active connections).
 
 The adapter can run as a **stdio** child process or as an **HTTP** server.
 
+Starter templates are available in:
+
+- [Python template](system-adapters/templates/python/README.md)
+- [Node.js template](system-adapters/templates/nodejs/README.md)
+- [Rust template](system-adapters/templates/rust/README.md)
+- [Go template](system-adapters/templates/go/README.md)
+- [Java template](system-adapters/templates/java/README.md)
+
 ### System Adapter Transport (stdio or HTTP)
 
-`spicebench` connects to a system adapter using JSON-RPC 2.0 over either stdio or HTTP.
+The `spicebench` CLI connects to a system adapter using JSON-RPC 2.0 over either stdio or HTTP.
 
-- **stdio transport**: use `--system-adapter-stdio-cmd` (spicebench starts the child process).
-- **HTTP transport**: use `--system-adapter-http-url` (spicebench connects to a remote adapter endpoint).
-- **execution mode**: use `--system-adapter-execution-mode`:
-    - `adapter-command` (default): dispatches `spicebench run ...` to adapter JSON-RPC `run.load`
-    - `direct-query`: spicebench runs the load/query path directly via ADBC, using the adapter only for setup/teardown/metrics
+- **stdio transport**: use `--system-adapter-stdio-cmd` (SpiceBench starts the child process).
+- **HTTP transport**: use `--system-adapter-http-url` (SpiceBench connects to a remote adapter endpoint).
+- **execution mode**: `adapter-command` (default) dispatches `spicebench run ...` to adapter JSON-RPC `run.load`.
+- **execution mode**: `direct-query` runs the load/query path directly via ADBC, using the adapter only for setup/teardown/metrics.
 
-#### Stdio example (child process started by spicebench)
+#### Stdio example (child process started by SpiceBench)
 
 ```bash
 spicebench \
@@ -258,6 +265,37 @@ spicebench \
     --system-adapter-execution-mode direct-query \
     --system-adapter-http-url http://127.0.0.1:8080/jsonrpc \
     --scrape-sut-metrics
+```
+
+#### Databricks adapter example (local stdio binary)
+
+Build the adapter:
+
+```bash
+cargo build --manifest-path system-adapters/databricks/Cargo.toml
+```
+
+Install the Databricks ADBC driver used by `spicebench` query execution:
+
+```bash
+curl -LsSf https://dbc.columnar.tech/install.sh | sh
+dbc install databricks
+```
+
+Run `spicebench` with the adapter over stdio:
+
+```bash
+spicebench \
+    --query-set tpch \
+    --system-adapter-name databricks \
+    --system-adapter-stdio-cmd system-adapters/databricks/target/debug/databricks-system-adapter \
+    --system-adapter-stdio-args "stdio" \
+    --system-adapter-env DATABRICKS_ENDPOINT=$DATABRICKS_ENDPOINT \
+    --system-adapter-env DATABRICKS_TOKEN=$DATABRICKS_TOKEN \
+    --system-adapter-env DATABRICKS_HTTP_PATH=$DATABRICKS_HTTP_PATH \
+    --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=$DATABRICKS_SQL_WAREHOUSE_ID \
+    --system-adapter-env DATABRICKS_CATALOG=spiceai_sandbox \
+    --system-adapter-env DATABRICKS_SCHEMA=tpch
 ```
 
 ### Crate Overview

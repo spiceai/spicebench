@@ -64,7 +64,9 @@ impl Cli {
         match self.dataset.as_str() {
             "tpch" => Ok(DatasetSource::Tpch),
             "simple_sequence" => Ok(DatasetSource::SimpleSequence),
-            other => anyhow::bail!("Unknown dataset type: {other}. Use 'tpch' or 'simple_sequence'."),
+            other => {
+                anyhow::bail!("Unknown dataset type: {other}. Use 'tpch' or 'simple_sequence'.")
+            }
         }
     }
 

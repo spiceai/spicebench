@@ -81,10 +81,7 @@ impl Target for S3Target {
             .iter()
             .map(|id| {
                 if self.prefix.is_empty() {
-                    format!(
-                        "s3://{}/{table_name}/batch-{id:06}.parquet",
-                        self.bucket
-                    )
+                    format!("s3://{}/{table_name}/batch-{id:06}.parquet", self.bucket)
                 } else {
                     format!(
                         "s3://{}/{}/{table_name}/batch-{id:06}.parquet",

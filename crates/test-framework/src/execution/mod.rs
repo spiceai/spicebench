@@ -165,7 +165,10 @@ impl QueryExecutor for FlightExecutor {
     async fn execute(&self, query: &Query) -> Result<ExecutionResult> {
         let start = std::time::Instant::now();
 
-        let mut result_stream = self.client.query(query.to_sql_with_inlined_params().as_ref()).await?;
+        let mut result_stream = self
+            .client
+            .query(query.to_sql_with_inlined_params().as_ref())
+            .await?;
 
         let mut batches = Vec::new();
         let mut row_count = 0;

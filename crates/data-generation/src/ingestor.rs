@@ -34,7 +34,12 @@ pub struct Ingestor {
 }
 
 impl Ingestor {
-    pub fn new(dataset: Arc<dyn Dataset>, target: Arc<dyn Target>, config: &IngestorConfig, metrics: Metrics) -> Self {
+    pub fn new(
+        dataset: Arc<dyn Dataset>,
+        target: Arc<dyn Target>,
+        config: &IngestorConfig,
+        metrics: Metrics,
+    ) -> Self {
         Self {
             dataset,
             target,
@@ -130,10 +135,7 @@ impl Ingestor {
     pub async fn skip_initial_batches(&self) -> anyhow::Result<()> {
         let table_count = self.dataset.tables().len();
 
-        tracing::info!(
-            table_count,
-            "Skipping initial batches for all tables"
-        );
+        tracing::info!(table_count, "Skipping initial batches for all tables");
 
         match self.dataset.next_batches().await {
             Ok(Some(_)) => {}
