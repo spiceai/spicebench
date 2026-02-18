@@ -50,8 +50,9 @@ bytes = "1.10.0"
 chrono = "0.4.42"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 datafusion = "51.0.0"
-duckdb = "1.4.4"
 duration-parse = { path = "crates/duration-parse" }
+tpchgen = "2.0.2"
+tpchgen-arrow = "2.0.2"
 futures = "0.3.30"
 hf-hub = { version = "0.4", features = ["tokio"] }
 http = "1.3.1"
@@ -174,9 +175,6 @@ sqlite = []
 turso = []
 
 [patch.crates-io]
-# Patch duckdb for direct dependencies and spiceai_duckdb_fork for datafusion-table-providers
-duckdb = { git = "https://github.com/spiceai/duckdb-rs.git", rev = "f4096c7592ed46b9e68755a49252d69783dece96" } # spiceai-1.4.4
-
 # arrow-rs 57.2 with spice patches
 arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "ca671dd37d73b730938f77f7a7ad76545280a4a8" }        # spiceai-57.2
 arrow-array = { git = "https://github.com/spiceai/arrow-rs.git", rev = "ca671dd37d73b730938f77f7a7ad76545280a4a8" }  # spiceai-57.2
