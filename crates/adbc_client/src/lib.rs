@@ -16,7 +16,11 @@ limitations under the License.
 
 pub mod databricks;
 
-use adbc_core::{Connection, Statement};
+use std::collections::HashMap;
+
+use adbc_core::options::{AdbcVersion, OptionDatabase, OptionValue};
+use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Statement};
+use adbc_driver_manager::ManagedDriver;
 use arrow_array::RecordBatch;
 use snafu::prelude::*;
 
@@ -52,6 +56,42 @@ impl AdbcConnection {
     #[must_use]
     pub fn new(conn: adbc_driver_manager::ManagedConnection) -> Self {
         Self { conn }
+    }
+
+    /// Create an `AdbcConnection` from a driver name and a map of string key-value options.
+    ///
+    /// Each key in `kwargs` is converted to an [`OptionDatabase`] variant
+    /// (matching canonical keys like `"uri"`, `"username"`, `"password"`,
+    /// or falling back to [`OptionDatabase::Other`]), and each value becomes
+    /// an [`OptionValue::String`].
+    pub fn create(driver_name: &str, kwargs: HashMap<String, String>) -> Result<Self> {
+        let mut driver = ManagedDriver::load_from_name(
+            driver_name,
+            None,
+            AdbcVersion::default(),
+            LOAD_FLAG_DEFAULT,
+            None,
+        )
+        .map_err(|e| Error::LoadDriver {
+            reason: e.to_string(),
+        })?;
+
+        let opts: Vec<(OptionDatabase, OptionValue)> = kwargs
+            .into_iter()
+            .map(|(k, v)| (OptionDatabase::from(k.as_str()), OptionValue::from(v)))
+            .collect();
+
+        let db = driver
+            .new_database_with_opts(opts)
+            .map_err(|e| Error::CreateDatabase {
+                reason: e.to_string(),
+            })?;
+
+        let conn = db.new_connection().map_err(|e| Error::CreateConnection {
+            reason: e.to_string(),
+        })?;
+
+        Ok(Self::new(conn))
     }
 
     /// Execute a SQL query and collect all result batches.

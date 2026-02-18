@@ -102,6 +102,8 @@ pub fn connect(config: DatabricksConnectionConfig<'_>) -> Result<AdbcConnection>
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     /// Requires `DATABRICKS_ENDPOINT`, `DATABRICKS_TOKEN`, and `DATABRICKS_HTTP_PATH` env vars.
@@ -138,6 +140,54 @@ mod tests {
         assert!(total_rows <= 5, "Expected at most 5 rows, got {total_rows}");
 
         // Verify schema has the expected columns
+        let schema = batches[0].schema();
+        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(
+            col_names.contains(&"n_nationkey"),
+            "Missing n_nationkey column, got: {col_names:?}"
+        );
+        assert!(
+            col_names.contains(&"n_name"),
+            "Missing n_name column, got: {col_names:?}"
+        );
+        assert!(
+            col_names.contains(&"n_regionkey"),
+            "Missing n_regionkey column, got: {col_names:?}"
+        );
+    }
+
+    /// Requires `DATABRICKS_ENDPOINT`, `DATABRICKS_TOKEN`, and `DATABRICKS_HTTP_PATH` env vars.
+    #[test]
+    #[ignore = "requires Databricks credentials in env"]
+    fn test_tpch_query_via_create() {
+        let endpoint =
+            std::env::var("DATABRICKS_ENDPOINT").expect("DATABRICKS_ENDPOINT must be set");
+        let token = std::env::var("DATABRICKS_TOKEN").expect("DATABRICKS_TOKEN must be set");
+        let http_path =
+            std::env::var("DATABRICKS_HTTP_PATH").expect("DATABRICKS_HTTP_PATH must be set");
+
+        let uri = format!("databricks://token:{token}@{endpoint}:443/{http_path}");
+        let kwargs = HashMap::from([("uri".to_string(), uri)]);
+
+        let mut conn =
+            AdbcConnection::create("databricks", kwargs).expect("Failed to connect via create");
+
+        let batches = conn
+            .query(
+                "SELECT n_nationkey, n_name, n_regionkey \
+                 FROM spiceai_sandbox.tpch.nation \
+                 ORDER BY n_nationkey \
+                 LIMIT 5",
+            )
+            .expect("Failed to execute TPC-H query");
+
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert!(
+            total_rows > 0,
+            "Expected at least one row from nation table"
+        );
+        assert!(total_rows <= 5, "Expected at most 5 rows, got {total_rows}");
+
         let schema = batches[0].schema();
         let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
         assert!(

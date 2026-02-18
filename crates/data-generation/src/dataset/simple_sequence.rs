@@ -16,10 +16,12 @@ limitations under the License.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow::array::{Int64Array, RecordBatch, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use async_trait::async_trait;
 
 use crate::config::DatasetConfig;
 
@@ -31,8 +33,8 @@ use super::{Dataset, DatasetTable};
 /// and `value = id * 10`. After `num_steps` batches the dataset is exhausted.
 pub struct SimpleSequenceDataset {
     batch_size: usize,
-    current_offset: i64,
-    remaining_steps: u16,
+    current_offset: AtomicI64,
+    remaining_steps: AtomicU16,
 }
 
 impl SimpleSequenceDataset {
@@ -40,8 +42,8 @@ impl SimpleSequenceDataset {
         let batch_size = (config.scale_factor * 1000.0) as usize;
         Self {
             batch_size,
-            current_offset: 0,
-            remaining_steps: config.num_steps,
+            current_offset: AtomicI64::new(0),
+            remaining_steps: AtomicU16::new(config.num_steps),
         }
     }
 
@@ -59,27 +61,30 @@ impl SimpleSequenceDataset {
     }
 }
 
+#[async_trait]
 impl Dataset for SimpleSequenceDataset {
-    fn raw_next_batch(&mut self, _table: &str) -> anyhow::Result<Option<RecordBatch>> {
-        if self.remaining_steps == 0 {
+    async fn raw_next_batch(&self, _table: &str) -> anyhow::Result<Option<RecordBatch>> {
+        let prev = self.remaining_steps.fetch_sub(1, Ordering::SeqCst);
+        if prev == 0 {
+            // Was already 0, restore it
+            self.remaining_steps.store(0, Ordering::SeqCst);
             return Ok(None);
         }
-        self.remaining_steps -= 1;
 
         let now_us = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time before UNIX epoch")
             .as_micros() as i64;
 
-        let ids: Int64Array = (self.current_offset..self.current_offset + self.batch_size as i64)
+        let offset = self.current_offset.fetch_add(self.batch_size as i64, Ordering::SeqCst);
+
+        let ids: Int64Array = (offset..offset + self.batch_size as i64)
             .collect();
-        let values: Int64Array = (self.current_offset..self.current_offset + self.batch_size as i64)
+        let values: Int64Array = (offset..offset + self.batch_size as i64)
             .map(|id| id * 10)
             .collect();
         let timestamps = TimestampMicrosecondArray::from(vec![Some(now_us); self.batch_size])
             .with_timezone("UTC");
-
-        self.current_offset += self.batch_size as i64;
 
         let batch = RecordBatch::try_new(
             Self::schema(),

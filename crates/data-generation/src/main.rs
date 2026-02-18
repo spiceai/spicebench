@@ -17,6 +17,8 @@ limitations under the License.
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+use std::sync::Arc;
+
 use data_generation::config::{Cli, Command, CommonArgs};
 use data_generation::dataset;
 use data_generation::dataset::tpch::TpchDataset;
@@ -49,7 +51,7 @@ fn print_summary(result: &IngestResult) {
 
 fn build(
     args: &CommonArgs,
-) -> anyhow::Result<(Ingestor<Box<dyn dataset::Dataset>, S3Target>, S3Target)> {
+) -> anyhow::Result<(Ingestor<Arc<dyn dataset::Dataset>, S3Target>, S3Target)> {
     let dataset_config = args.dataset_config();
     let target_config = args.target_config();
     let ingestor_config = args.ingestor_config();
@@ -63,8 +65,8 @@ fn build(
         "Configuration"
     );
 
-    let dataset: Box<dyn dataset::Dataset> = match dataset_config.dataset_type.as_str() {
-        "tpch" => Box::new(TpchDataset::new(&dataset_config)?),
+    let dataset: Arc<dyn dataset::Dataset> = match dataset_config.dataset_type.as_str() {
+        "tpch" => Arc::new(TpchDataset::new(&dataset_config)?),
         other => anyhow::bail!("Unknown dataset type: {other}. Supported: tpch"),
     };
 
@@ -96,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Run(run_args) => {
             let (mut ingestor, _target) = build(&run_args.common)?;
             if run_args.skip_initial {
-                ingestor.skip_initial_batches()?;
+                ingestor.skip_initial_batches().await?;
             }
             let result = ingestor.run().await?;
 

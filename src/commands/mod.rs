@@ -17,10 +17,9 @@ limitations under the License.
 use std::time::Duration;
 
 use crate::args::{CommonArgs, DatasetTestArgs};
-use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder, JsonRpcRequest};
+use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder};
 use test_framework::{
     anyhow,
-    anyhow::Context,
     app::{App, AppBuilder},
     opentelemetry_sdk::Resource,
     queries::QuerySet,
@@ -124,51 +123,13 @@ pub(crate) async fn get_app_and_start_request(
     Ok((app, start_request))
 }
 
-pub(crate) async fn maybe_dispatch_run_to_system_adapter(
-    common_args: &CommonArgs,
-) -> anyhow::Result<Option<SystemAdapterClient>> {
-    if !has_system_adapter_transport(common_args) {
-        return Ok(None);
-    }
-
-    connect_system_adapter(common_args)
-        .await
-        .context("System adapter transport was configured but could not be initialized")
-}
-
-fn has_system_adapter_transport(args: &CommonArgs) -> bool {
-    args.system_adapter_stdio_cmd.is_some() || args.system_adapter_http_url.is_some()
-}
-
 /// Connect to a system adapter based on command-line arguments
-async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<Option<SystemAdapterClient>> {
-    let has_stdio = args.system_adapter_stdio_cmd.is_some();
-    let has_http = args.system_adapter_http_url.is_some();
-
-    if has_stdio && has_http {
-        anyhow::bail!(
-            "Set only one system adapter transport: --system-adapter-stdio-cmd or --system-adapter-http-url"
-        );
-    }
-
-    if !has_stdio && !has_http {
-        if args.system_adapter_stdio_args.is_some()
-            || !args.system_adapter_param.is_empty()
-            || !args.system_adapter_env.is_empty()
-        {
-            anyhow::bail!(
-                "System adapter params were provided without a transport. Set either --system-adapter-stdio-cmd or --system-adapter-http-url."
-            );
-        }
-        return Ok(None);
-    }
-
-    if has_http && !args.system_adapter_env.is_empty() {
-        anyhow::bail!(
-            "--system-adapter-env is only valid with --system-adapter-stdio-cmd transport."
-        );
-    }
-
+///
+/// All validation is handled by clap:
+/// - `conflicts_with` ensures stdio and http aren't both set
+/// - `requires` ensures params/args/env need a transport
+/// - `group` allows either stdio or http transport
+pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemAdapterClient> {
     if let Some(command) = &args.system_adapter_stdio_cmd {
         let args_vec = args
             .system_adapter_stdio_args
@@ -176,29 +137,22 @@ async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<Option<Syst
             .map(|s| s.split_whitespace().map(String::from).collect())
             .unwrap_or_default();
 
-        let client = ClientBuilder::stdio(command)
+        return ClientBuilder::stdio(command)
             .with_args(args_vec)
             .with_env(args.system_adapter_env.clone().into_iter().collect())
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create stdio client: {e}"))?;
-
-        return Ok(Some(client));
+            .map_err(|e| anyhow::anyhow!("Failed to create stdio client: {e}"));
     }
 
     if let Some(endpoint) = &args.system_adapter_http_url {
-        let client = ClientBuilder::http(endpoint)
+        return ClientBuilder::http(endpoint)
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?;
-        return Ok(Some(client));
+            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"));
     }
 
-    Ok(None)
+    Err(anyhow::anyhow!("No system adapter transport configured"))
 }
 
-/// Create the appropriate query executor based on command-line arguments
-///
-/// This helper function centralizes the executor creation logic to avoid duplication
-/// across different test commands (bench, throughput, load, query).
 pub(crate) async fn create_query_executor(
     args: &DatasetTestArgs,
     spiced_instance: &test_framework::spiced::SpicedInstance,
@@ -210,22 +164,14 @@ pub(crate) async fn create_query_executor(
             http_client,
             base_url,
         ))
-    } else if args.http_clients {
+    } else {
         let http_client = spiced_instance.http_client()?;
         let base_url = spiced_instance.http_base_url().to_string();
         Box::new(test_framework::execution::HttpExecutor::new(
             http_client,
             base_url,
         ))
-    } else {
-        let spice_client = spiced_instance
-            .spice_client(None, args.disable_caching)
-            .await?;
-        Box::new(test_framework::execution::FlightExecutor::new(
-            std::sync::Arc::new(spice_client),
-        ))
     };
-
     Ok(executor)
 }
 
@@ -240,124 +186,4 @@ macro_rules! wait_test_and_memory {
             }
         }
     };
-}
-
-fn resolve_sut_metrics_method(methods: &[String]) -> Option<&'static str> {
-    const CANDIDATES: &[&str] = &[
-        "sut.metrics",
-        "metrics.sut",
-        "system.metrics",
-        "metrics.system",
-        "metrics.scrape",
-        "run.metrics",
-    ];
-
-    CANDIDATES
-        .iter()
-        .copied()
-        .find(|candidate| methods.iter().any(|m| m == candidate))
-}
-
-fn metric_value(result: &serde_json::Value, metric_name: &str) -> Option<f64> {
-    let value = result
-        .get(metric_name)
-        .or_else(|| result.get("metrics").and_then(|m| m.get(metric_name)));
-
-    match value {
-        Some(serde_json::Value::Number(n)) => n.as_f64(),
-        Some(serde_json::Value::String(s)) => s.parse::<f64>().ok(),
-        _ => None,
-    }
-}
-
-/// Process and display SUT metrics fetched via system adapter JSON-RPC.
-pub(crate) async fn process_sut_metrics(
-    common_args: &CommonArgs,
-    emit_to_telemetry: bool,
-    attributes: &[test_framework::opentelemetry::KeyValue],
-) {
-    if !common_args.scrape_sut_metrics {
-        return;
-    }
-
-    if !has_system_adapter_transport(common_args) {
-        println!(
-            "Warning: --scrape-sut-metrics requires a system adapter transport; skipping SUT metrics collection"
-        );
-        return;
-    }
-
-    let Ok(Some(mut adapter)) = connect_system_adapter(common_args).await else {
-        println!("Warning: Failed to initialize system adapter for SUT metrics collection");
-        return;
-    };
-
-    let methods = match adapter.rpc_methods().await {
-        Ok(methods) => methods,
-        Err(e) => {
-            println!("Warning: Failed to query system adapter methods for SUT metrics: {e}");
-            return;
-        }
-    };
-
-    let Some(method) = resolve_sut_metrics_method(&methods) else {
-        println!(
-            "Warning: System adapter '{}' via {} does not expose a supported SUT metrics method",
-            common_args.system_adapter_name,
-            adapter.transport_name(),
-        );
-        return;
-    };
-
-    let mut params = serde_json::Map::new();
-    for (key, value) in &common_args.system_adapter_param {
-        params.insert(key.clone(), serde_json::Value::String(value.clone()));
-    }
-
-    let request = JsonRpcRequest::new(3, method, serde_json::Value::Object(params));
-
-    let result = match adapter.call_typed::<_, serde_json::Value>(request).await {
-        Ok(response) => {
-            let Some(result) = response.result else {
-                println!("Warning: System adapter metrics response missing result payload");
-                return;
-            };
-            result
-        }
-        Err(e) => {
-            println!("Warning: Failed to fetch SUT metrics from system adapter: {e}");
-            return;
-        }
-    };
-
-    println!("\n{}", vec!["="; 30].join(""));
-    println!("SUT Metrics:");
-    println!("{}", vec!["="; 30].join(""));
-
-    if let Some(query_count) = metric_value(&result, "query_executions_total") {
-        println!("Total Queries Executed: {query_count}");
-        if emit_to_telemetry {
-            crate::metrics::SUT_QUERY_COUNT.record(query_count, attributes);
-        }
-    }
-
-    if let Some(cache_hits) = metric_value(&result, "results_cache_hits_total")
-        && let Some(cache_requests) = metric_value(&result, "results_cache_requests_total")
-        && cache_requests > 0.0
-    {
-        let hit_rate = cache_hits / cache_requests;
-        println!("Cache Hit Rate: {:.2}%", hit_rate * 100.0);
-        if emit_to_telemetry {
-            crate::metrics::SUT_CACHE_HIT_RATE.record(hit_rate, attributes);
-        }
-    }
-
-    if let Some(active_connections) = metric_value(&result, "query_active_count") {
-        println!("Peak Active Connections: {active_connections}");
-        if emit_to_telemetry {
-            crate::metrics::SUT_ACTIVE_CONNECTIONS.record(active_connections, attributes);
-        }
-    }
-
-    println!("{}", vec!["="; 30].join(""));
 }

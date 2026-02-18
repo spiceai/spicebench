@@ -16,6 +16,7 @@ limitations under the License.
 
 use clap::Parser;
 use test_framework::{anyhow, rustls};
+use uuid::Uuid;
 
 mod args;
 mod commands;
@@ -23,6 +24,8 @@ mod health;
 mod metrics;
 
 use args::BenchRunArgs;
+
+use crate::commands::connect_system_adapter;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -38,18 +41,33 @@ async fn main() -> anyhow::Result<()> {
     );
     let cli = Cli::parse();
 
-    if let Ok(Some(system_adapter_client)) =
-        commands::maybe_dispatch_run_to_system_adapter(&cli.args.test_args.common)
-            .await
-    {
-        println!(
-            "Configured to run on system adapter across {}",
-            system_adapter_client.transport_name()
-        );
-        return Ok(());
+    let mut system_adapter_client = match connect_system_adapter(&cli.args.test_args.common).await {
+        Ok(system_adapter_client) => system_adapter_client,
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to connect to system adapter: {e}"));
+        }
+    };
+
+    let run_id = Uuid::new_v4();
+    let datasets: std::collections::HashMap<String, system_adapter_protocol::DatasetConfig> =
+        [].into_iter().collect();
+
+    if let Err(e) = system_adapter_client.setup(run_id, datasets).await {
+        return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
     }
 
+    let _adbc_driver = match system_adapter_client.query_method(run_id).await {
+        Ok(method) => method,
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to query system adapter: {e}"));
+        }
+    };
+
     commands::load::run(&cli.args).await?;
+
+    if let Err(e) = system_adapter_client.teardown(run_id).await {
+        return Err(anyhow::anyhow!("Failed to teardown system adapter: {e}"));
+    }
 
     Ok(())
 }

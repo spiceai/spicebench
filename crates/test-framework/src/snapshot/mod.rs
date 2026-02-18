@@ -17,7 +17,7 @@ limitations under the License.
 use std::{panic, sync::Arc};
 
 use crate::{flight::query_to_batches, queries::Query};
-use spiceai::Client as SpiceClient;
+use flight_client::FlightClient;
 
 pub const CAYENNE_PATH_FILTER_PATTERN: &str =
     r"(/data/[A-Za-z0-9_\-\[\]=]+)(?:/[A-Za-z0-9_\-\.\[\]=]+)+\.vortex";
@@ -30,16 +30,17 @@ fn make_tmpdir_regex_pattern(tempdir: &str) -> String {
 }
 
 pub async fn record_explain_plan(
-    spice_client: Arc<SpiceClient>,
+    flight_client: Arc<FlightClient>,
     name: &str,
     query: &Query,
     scale_factor: f64,
 ) -> anyhow::Result<()> {
     // Check the plan
-    let sql = Arc::clone(&query.sql);
     let query_name = Arc::clone(&query.name);
-    let parameters = query.get_parameters_batch().transpose()?;
-    let plan_results = query_to_batches(spice_client, &format!("EXPLAIN {sql}"), parameters)
+    let plan_results = query_to_batches(
+        flight_client,
+        &format!("EXPLAIN {}", query.to_sql_with_inlined_params()),
+    )
         .await
         .map_err(|e| anyhow::anyhow!("query `{query_name}` to plan: {e}"))?;
 

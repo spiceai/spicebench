@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
+use async_trait::async_trait;
 
 /// Metadata about a table in a dataset.
 #[derive(Debug, Clone)]
@@ -34,25 +35,26 @@ pub struct DatasetTable {
     pub time_column: Option<String>,
 }
 
-pub trait Dataset: Send {
+#[async_trait]
+pub trait Dataset: Send + Sync {
     /// Returns the next raw batch of data for the given table, or `None` if exhausted.
     ///
     /// Most callers should use [`next_batch`]
     /// instead, which validates the table name and output schema.
-    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>>;
+    async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>>;
 
     /// Returns the next batch of data for the given table, or `None` if exhausted.
     ///
     /// Validates that `table` is a known table for this dataset, delegates to
     /// [`raw_next_batch`], and verifies the returned batch matches the expected schema.
-    fn next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+    async fn next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
         let tables = self.tables();
         let dataset_table = tables
             .get(table)
             .ok_or_else(|| anyhow::anyhow!("Unknown table: {table}"))?;
         let expected_schema = Arc::clone(&dataset_table.schema);
 
-        let Some(batch) = self.raw_next_batch(table)? else {
+        let Some(batch) = self.raw_next_batch(table).await? else {
             return Ok(None);
         };
 
@@ -67,11 +69,11 @@ pub trait Dataset: Send {
     }
 
     /// Returns a batch for every table. Returns `None` if all tables are exhausted.
-    fn next_batches(&mut self) -> anyhow::Result<Option<HashMap<String, RecordBatch>>> {
+    async fn next_batches(&self) -> anyhow::Result<Option<HashMap<String, RecordBatch>>> {
         let tables = self.tables();
         let mut batches = HashMap::new();
         for (name, _) in &tables {
-            if let Some(batch) = self.next_batch(name)? {
+            if let Some(batch) = self.next_batch(name).await? {
                 batches.insert(name.clone(), batch);
             }
         }
@@ -86,17 +88,18 @@ pub trait Dataset: Send {
     fn tables(&self) -> HashMap<String, DatasetTable>;
 }
 
-impl Dataset for Box<dyn Dataset> {
-    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
-        (**self).raw_next_batch(table)
+#[async_trait]
+impl Dataset for Arc<dyn Dataset> {
+    async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+        (**self).raw_next_batch(table).await
     }
 
-    fn next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
-        (**self).next_batch(table)
+    async fn next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+        (**self).next_batch(table).await
     }
 
-    fn next_batches(&mut self) -> anyhow::Result<Option<HashMap<String, RecordBatch>>> {
-        (**self).next_batches()
+    async fn next_batches(&self) -> anyhow::Result<Option<HashMap<String, RecordBatch>>> {
+        (**self).next_batches().await
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {

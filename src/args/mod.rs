@@ -78,12 +78,12 @@ pub struct CommonArgs {
 
     /// How to execute when a system adapter transport is configured.
     /// - adapter-command: dispatch spicebench run as a JSON-RPC command (e.g. run.load)
-    /// - direct-query: execute load/query path in spicebench directly
+    /// - direct-query: execute load/query path in spicebench directly (ADBC path)
     #[arg(long, value_enum, default_value = "adapter-command")]
     pub(crate) system_adapter_execution_mode: SystemAdapterExecutionMode,
 
     /// Command to run for a stdio JSON-RPC system adapter.
-    #[arg(long, conflicts_with = "system_adapter_http_url")]
+    #[arg(long, group = "system_adapter_option")]
     pub(crate) system_adapter_stdio_cmd: Option<String>,
 
     /// Space-delimited argument string passed to the stdio system adapter command.
@@ -91,12 +91,16 @@ pub struct CommonArgs {
     pub(crate) system_adapter_stdio_args: Option<String>,
 
     /// HTTP URL for a remote JSON-RPC system adapter.
-    #[arg(long, conflicts_with = "system_adapter_stdio_cmd")]
+    #[arg(
+        long,
+        conflicts_with = "system_adapter_stdio_cmd",
+        group = "system_adapter_option"
+    )]
     pub(crate) system_adapter_http_url: Option<String>,
 
     /// Additional system adapter parameters in key=value form. Can be repeated.
     /// Reserved for adapter-specific JSON-RPC usage.
-    #[arg(long, value_parser = parse_key_val, action = ArgAction::Append, value_name = "KEY=VALUE")]
+    #[arg(long, value_parser = parse_key_val, action = ArgAction::Append, value_name = "KEY=VALUE", requires = "system_adapter_option")]
     pub(crate) system_adapter_param: Vec<(String, String)>,
 
     /// Environment variables for stdio system adapter in key=value form. Can be repeated.
