@@ -19,10 +19,50 @@ limitations under the License.
 //! This crate defines the request/response types for the system adapter
 //! JSON-RPC protocol, which allows spicebench to communicate with external
 //! benchmark execution environments.
+//!
+//! # Features
+//!
+//! - **Protocol types**: Request/response types for setup, query_method, and teardown
+//! - **Client**: Ready-to-use client with Stdio and HTTP transports (requires `client` feature)
+//! - **JSON-RPC**: Standard JSON-RPC 2.0 envelope types
+//!
+//! # Example
+//!
+//! ```no_run
+//! # #[cfg(feature = "client")]
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! use system_adapter_protocol::{Client, JsonRpcRequest, SetupRequest, SetupResponse};
+//! use std::collections::HashMap;
+//! use uuid::Uuid;
+//!
+//! // Create an HTTP client
+//! let mut client = Client::http("http://localhost:8080");
+//!
+//! // Make a setup request
+//! let request = JsonRpcRequest::new(
+//!     1,
+//!     "setup",
+//!     SetupRequest {
+//!         run_id: Uuid::new_v4(),
+//!         datasets: HashMap::new(),
+//!     }
+//! );
+//!
+//! let response: system_adapter_protocol::JsonRpcResponse<SetupResponse> =
+//!     client.call_typed(request).await?;
+//! # Ok(())
+//! # }
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
+
+#[cfg(feature = "client")]
+pub mod client;
+
+#[cfg(feature = "client")]
+pub use client::{Client, ClientBuilder, ClientError};
 
 /// ETL type for data ingestion configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
