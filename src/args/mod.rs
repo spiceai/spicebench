@@ -14,51 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::path::PathBuf;
-
 use clap::{ArgAction, Parser, ValueEnum};
 
 mod dataset;
-pub use dataset::{BenchRunArgs, DatasetTestArgs};
+use crate::scenario::Scenario;
 
 /// Arguments Common to all [`TestCommands`].
 #[derive(Parser, Debug, Clone)]
 pub struct CommonArgs {
-    /// Path to the spicepod.yaml file
-    #[arg(short('p'), long, default_value = "spicepod.yaml")]
-    pub(crate) spicepod_path: PathBuf,
-
-    #[arg(short('z'), long)]
-    pub(crate) spicepod_dependencies: Option<PathBuf>,
+    /// The scenario to use for the benchmark run, which determines the query set and other parameters.
+    #[arg(long)]
+    pub(crate) scenario: Scenario,
 
     /// The number of clients to run simultaneously. Each client will send a query, wait for a response, then send another query.
     #[arg(long, default_value = "1")]
     pub(crate) concurrency: usize,
-
-    /// Path to the spiced binary, or URL to an already-running spiced instance's Flight endpoint
-    /// (e.g., `http://localhost:50051` to connect to an external instance)
-    #[arg(short, long, default_value = "spiced")]
-    pub(crate) spiced_path: String,
-
-    /// The number of seconds to wait for the spiced instance to become ready
-    #[arg(long, default_value = "30")]
-    pub(crate) ready_wait: u64,
-
-    /// The duration of the test in seconds
-    #[arg(long, default_value = "60")]
-    pub(crate) duration: u64,
-
-    /// Whether to disable progress bars, for CI or non-interactive environments
-    #[arg(long)]
-    pub(crate) disable_progress_bars: bool,
-
-    /// An optional data directory, to symlink into the spiced instance
-    #[arg(short, long)]
-    pub(crate) data_dir: Option<PathBuf>,
-
-    /// Whether to enable metrics collection
-    #[arg(long)]
-    pub(crate) metrics: bool,
 
     /// Whether to collect SUT metrics via the system adapter JSON-RPC command.
     #[arg(long)]
@@ -106,22 +76,6 @@ pub struct CommonArgs {
     /// Environment variables for stdio system adapter in key=value form. Can be repeated.
     #[arg(long, value_parser = parse_key_val, action = ArgAction::Append, value_name = "KEY=VALUE", requires = "system_adapter_stdio_cmd")]
     pub(crate) system_adapter_env: Vec<(String, String)>,
-}
-
-impl CommonArgs {
-    /// Check if `spiced_path` is a URL to an external instance
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn is_external_instance(&self) -> bool {
-        self.spiced_path.starts_with("http://") || self.spiced_path.starts_with("https://")
-    }
-
-    /// Get the spiced path as a `PathBuf` (only valid when not an external instance)
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn spiced_path_buf(&self) -> PathBuf {
-        PathBuf::from(&self.spiced_path)
-    }
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {

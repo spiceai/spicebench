@@ -16,6 +16,8 @@ limitations under the License.
 
 pub mod s3;
 
+use std::collections::HashMap;
+
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
 
@@ -32,6 +34,8 @@ pub trait Target: Send + Sync + 'static {
         batch_id: u64,
         batch: RecordBatch,
     ) -> anyhow::Result<WriteResult>;
+
+    fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value>;
 
     /// Returns the list of file paths/URIs that would exist after a successful
     /// generation for the given table and batch IDs.

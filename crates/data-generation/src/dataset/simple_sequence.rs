@@ -62,6 +62,13 @@ impl SimpleSequenceDataset {
 
 #[async_trait]
 impl Dataset for SimpleSequenceDataset {
+    fn create(config: &DatasetConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    where
+        Self: Sized + 'static,
+    {
+        Ok(Arc::new(Self::new(config)))
+    }
+
     fn num_batches(&self, _table: &str) -> u64 {
         // One batch per step for the single table.
         u64::from(self.num_steps)

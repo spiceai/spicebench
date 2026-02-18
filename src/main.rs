@@ -21,10 +21,8 @@ use uuid::Uuid;
 
 mod args;
 mod commands;
-mod health;
 mod metrics;
-
-use args::BenchRunArgs;
+mod scenario;
 
 use crate::commands::connect_system_adapter;
 
@@ -32,7 +30,13 @@ use crate::commands::connect_system_adapter;
 #[command(author, version, about, long_about = None)]
 struct Cli {
     #[command(flatten)]
-    args: BenchRunArgs,
+    common: args::CommonArgs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SystemAdapterExecutionMode {
+    AdapterCommand,
+    DirectQuery,
 }
 
 #[tokio::main]
@@ -42,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let cli = Cli::parse();
 
-    let mut system_adapter_client = match connect_system_adapter(&cli.args.test_args.common).await {
+    let mut system_adapter_client = match connect_system_adapter(&cli.common).await {
         Ok(system_adapter_client) => system_adapter_client,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to connect to system adapter: {e}"));
@@ -64,26 +68,31 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    #[expect(unused_variables)]
-    let adbc_conn =
+    let adbc_conn: Option<AdbcConnection> =
         match AdbcConnection::create(&adbc_driver.driver.to_string(), adbc_driver.db_kwargs) {
             Ok(conn) => {
                 println!(
                     "ADBC connection established (driver: {})",
                     adbc_driver.driver
                 );
-                conn
+                Some(conn)
             }
             Err(e) => {
-                return Err(anyhow::anyhow!(
+                eprintln!(
                     "Failed to create ADBC connection for driver {}: {e}",
                     adbc_driver.driver
-                ));
+                );
+                None
             }
         };
 
-    // TODO: Add back when `load::run` is only responsible for running query load and measuring latency.
-    // commands::load::run(&cli.args, Some(adbc_conn)).await?;
+    let Some(adbc_conn) = adbc_conn else {
+        return Err(anyhow::anyhow!(
+            "ADBC connection is required to run benchmarks"
+        ));
+    };
+
+    commands::load::run(&cli.common.scenario, &cli.common, adbc_conn).await?;
 
     if let Err(e) = system_adapter_client.teardown(run_id).await {
         return Err(anyhow::anyhow!("Failed to teardown system adapter: {e}"));

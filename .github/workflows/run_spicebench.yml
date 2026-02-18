@@ -89,33 +89,19 @@ jobs:
       - name: pull spidapter image
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
-      - name: Cache spicebench binary
-        id: cache-spicebench
-        uses: actions/cache@v4
-        with:
-          path: ~/.spice/bin/spicebench
-          key: spicebench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
-          restore-keys: |
-            spicebench-${{ runner.os }}-
+      - uses: ./.github/actions/build-spicebench
 
-      - name: Setup Rust toolchain
-        if: steps.cache-spicebench.outputs.cache-hit != 'true'
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: 1.91
-          cache: true
-
-      - name: Build spicebench
-        if: steps.cache-spicebench.outputs.cache-hit != 'true'
+      - name: Install ADBC FlightSQL driver
         run: |
-          mkdir -p ~/.spice/bin
-          cargo build -p spicebench
-          install -m 755 target/debug/spicebench ~/.spice/bin/spicebench
+          curl -LsSf https://dbc.columnar.tech/install.sh | sh
+          dbc install flightsql
+
 
       - name: Run spicebench
         env:
-          SPICEAI_API_KEY: ${{ secrets.SPICEAI_API_KEY }}
+          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           RUSTFLAGS: '-A warnings'
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
         run: |
@@ -123,4 +109,4 @@ jobs:
             --concurrency 2  \
             --query-set "${SCENARIO}" \
             --system-adapter-stdio-cmd docker \
-            --system-adapter-stdio-args "run ghcr.io/spiceai/spidapter:latest -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL run stdio --verbose"
+            --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL ghcr.io/spiceai/spidapter:latest stdio --verbose"

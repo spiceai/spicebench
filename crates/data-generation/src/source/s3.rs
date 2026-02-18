@@ -82,7 +82,11 @@ impl Source for S3Source {
         Ok(paths)
     }
 
-    async fn read_batch(&self, table_name: &str, batch_id: u64) -> anyhow::Result<ReadResult> {
+    async fn read_batch(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+    ) -> anyhow::Result<Option<ReadResult>> {
         let location = if self.prefix.is_empty() {
             ObjectPath::from(format!("{table_name}/batch-{batch_id:06}.parquet"))
         } else {
@@ -92,7 +96,11 @@ impl Source for S3Source {
             ))
         };
 
-        let get_result = self.store.get(&location).await?;
+        let get_result = match self.store.get(&location).await {
+            Ok(r) => r,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
         let bytes = get_result.bytes().await?;
         let bytes_read = bytes.len() as u64;
 
@@ -106,10 +114,10 @@ impl Source for S3Source {
             batches.push(batch);
         }
 
-        Ok(ReadResult {
+        Ok(Some(ReadResult {
             batches,
             rows_read,
             bytes_read,
-        })
+        }))
     }
 }
