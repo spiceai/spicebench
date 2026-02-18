@@ -9,66 +9,38 @@ on:
         required: true
         default: "tpch"
         type: string
-      run_data_generation:
-        description: "Run data-generation before spicebench"
-        required: false
-        default: false
-        type: boolean
-      data_generation_runner_type:
-        description: "Runner label for data-generation job"
-        required: false
-        default: "ubuntu-latest"
+      etl_bucket:
+        description: 'S3 bucket for ETL source and target data'
+        required: true
         type: string
-      data_generation_scale_factor:
-        description: "Data-generation scale factor"
+      etl_source_prefix:
+        description: 'S3 key prefix for ETL source data'
         required: false
-        default: "1.0"
+        default: ''
         type: string
-      data_generation_bucket:
-        description: "S3 bucket for generated data (required if run_data_generation=true)"
+      etl_target_prefix:
+        description: 'S3 key prefix for ETL target (rehydrated) data'
         required: false
+        default: ''
         type: string
-      data_generation_prefix:
-        description: "Base S3 prefix for generated data (scenario appended automatically)"
-        required: false
-        default: "data-gen"
-        type: string
-      data_generation_max_concurrency:
-        description: "Data-generation max concurrent S3 writes"
-        required: false
-        default: "8"
-        type: string
-      data_generation_region:
-        description: "AWS region for data-generation"
+      etl_region:
+        description: 'AWS region for the ETL S3 bucket'
         required: false
         default: "us-east-1"
         type: string
-      data_generation_skip_initial:
-        description: "Skip data-generation initial ingest"
+      etl_endpoint:
+        description: 'S3 endpoint URL for ETL bucket (for MinIO/LocalStack)'
         required: false
-        default: false
-        type: boolean
+        type: string
+      etl_num_steps:
+        description: 'Number of ETL data generation steps (partitions)'
+        required: false
+        default: '25'
+        type: string
 
 jobs:
-  data-generation:
-    name: Run data generation
-    if: ${{ github.event.inputs.run_data_generation == 'true' }}
-    uses: ./.github/workflows/data_generation_run.yml
-    with:
-      scenario: ${{ github.event.inputs.scenario }}
-      runner_type: ${{ github.event.inputs.data_generation_runner_type }}
-      scale_factor: ${{ github.event.inputs.data_generation_scale_factor }}
-      bucket: ${{ github.event.inputs.data_generation_bucket }}
-      prefix: ${{ github.event.inputs.data_generation_prefix }}
-      max_concurrency: ${{ github.event.inputs.data_generation_max_concurrency }}
-      region: ${{ github.event.inputs.data_generation_region }}
-      skip_initial: ${{ github.event.inputs.data_generation_skip_initial == 'true' }}
-    secrets: inherit
-
   run-spicebench:
     name: Run spicebench
-    needs: [data-generation]
-    if: ${{ always() && (needs.data-generation.result == 'success' || needs.data-generation.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 600
     steps:
@@ -102,9 +74,30 @@ jobs:
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
+          ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
+          ETL_SOURCE_PREFIX: ${{ github.event.inputs.etl_source_prefix }}
+          ETL_TARGET_PREFIX: ${{ github.event.inputs.etl_target_prefix }}
+          ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
+          ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
+          ETL_NUM_STEPS: ${{ github.event.inputs.etl_num_steps || '25' }}
         run: |
+          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-num-steps ${ETL_NUM_STEPS}"
+          if [ -n "${ETL_SOURCE_PREFIX}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-source-prefix ${ETL_SOURCE_PREFIX}"
+          fi
+          if [ -n "${ETL_TARGET_PREFIX}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-target-prefix ${ETL_TARGET_PREFIX}"
+          fi
+          if [ -n "${ETL_REGION}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"
+          fi
+          if [ -n "${ETL_ENDPOINT}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
+          fi
+
           ~/.spice/bin/spicebench \
             --concurrency 2  \
             --scenario "${SCENARIO}" \
+            ${ETL_ARGS} \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL ghcr.io/spiceai/spidapter:latest stdio --verbose"
