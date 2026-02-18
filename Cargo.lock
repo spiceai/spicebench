@@ -2122,8 +2122,11 @@ name = "etl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow",
+ "async-trait",
  "clap",
  "data-generation",
+ "serde_json",
  "system-adapter-protocol",
  "tokio",
  "tokio-util",

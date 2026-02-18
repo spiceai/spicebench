@@ -24,11 +24,11 @@ use tokio::task::JoinSet;
 use super::config::IngestorConfig;
 use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
-use super::target::Target;
+use super::storage::DataStorage;
 
 pub struct DataGenerator {
     dataset: Arc<dyn Dataset>,
-    target: Arc<dyn Target>,
+    target: Arc<dyn DataStorage>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
 }
@@ -36,7 +36,7 @@ pub struct DataGenerator {
 impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
-        target: Arc<dyn Target>,
+        target: Arc<dyn DataStorage>,
         config: &IngestorConfig,
         metrics: Metrics,
     ) -> Self {
