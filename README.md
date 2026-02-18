@@ -128,6 +128,20 @@ A **Run** is a single end-to-end execution of the benchmark for one system. Each
 
 The **E2E benchmark duration** (phase 2, load test stage) is the primary ranking metric. After the load test, each query's p99 latency is compared against the baseline: >20% increase = FAIL, 10–20% = WARN, ≥3 WARNs = FAIL.
 
+### Run Metadata
+
+SpiceBench supports two run-level metadata knobs to keep cross-system comparisons consistent:
+
+| Field                    | Default                                                    | Purpose                                                                            | Propagation                                                                                                             |
+| ------------------------ | ---------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `table_format`           | `parquet`                                                  | Declares the dataset table format used for creation/registration.                  | Passed through data-generation/ETL dataset params and consumed by adapters (for example, Databricks UC table creation). |
+| `executor_instance_type` | `unknown` (CLI) / `github-hosted-ubuntu-latest` (workflow) | Identifies the benchmark executor hardware class for apples-to-apples comparisons. | Sent in adapter `setup` metadata and attached as an OpenTelemetry metric attribute for dashboard filtering.             |
+
+Common CLI/workflow usage:
+
+- `spicebench --executor-instance-type "c6i.4xlarge" ...`
+- `data-generation run --table-format parquet --executor-instance-type "c6i.4xlarge" ...`
+
 ### Component Overview
 
 | Component                   | Responsibility                                                                                                                                                |

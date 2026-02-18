@@ -80,6 +80,8 @@ async fn main() -> anyhow::Result<()> {
         prefix: cli.common.etl_source_prefix.clone(),
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
+        table_format: cli.common.table_format.clone(),
+        executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
     let run_suffix = Uuid::new_v4().to_string();
@@ -95,6 +97,8 @@ async fn main() -> anyhow::Result<()> {
         prefix: target_prefix,
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
+        table_format: cli.common.table_format.clone(),
+        executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
     let source = Arc::new(S3Source::new(&source_config)?);
@@ -118,8 +122,15 @@ async fn main() -> anyhow::Result<()> {
     // --- Setup the system adapter (target already has initial data) ---
     let run_id = Uuid::new_v4();
     let datasets = pipeline.setup_request_datasets();
+    let setup_metadata = std::collections::HashMap::from([(
+        "executor_instance_type".to_string(),
+        serde_json::Value::String(cli.common.executor_instance_type.clone()),
+    )]);
 
-    if let Err(e) = system_adapter_client.setup(run_id, datasets).await {
+    if let Err(e) = system_adapter_client
+        .setup(run_id, datasets, setup_metadata)
+        .await
+    {
         return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
     }
 

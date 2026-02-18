@@ -30,6 +30,10 @@ pub struct CommonArgs {
     #[arg(long, default_value = "1")]
     pub(crate) concurrency: usize,
 
+    /// Executor instance type used for this run (for cross-run comparison and dashboarding).
+    #[arg(long, default_value = "unknown")]
+    pub(crate) executor_instance_type: String,
+
     /// Whether to collect SUT metrics via the system adapter JSON-RPC command.
     #[arg(long)]
     pub(crate) scrape_sut_metrics: bool,

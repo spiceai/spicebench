@@ -46,6 +46,16 @@ on:
         required: false
         default: '25'
         type: string
+      table_format:
+        description: 'Table format across generation and adapter setup (iceberg, parquet, delta)'
+        required: false
+        default: 'parquet'
+        type: string
+      executor_instance_type:
+        description: 'Executor instance type label for benchmark comparison and dashboarding'
+        required: false
+        default: 'github-hosted-ubuntu-latest'
+        type: string
 
 jobs:
   run-spicebench:
@@ -112,6 +122,7 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+          DATABRICKS_TABLE_FORMAT: ${{ github.event.inputs.table_format || 'parquet' }}
         run: |
           set -euo pipefail
 
@@ -172,6 +183,7 @@ jobs:
       - name: Install ADBC driver
         env:
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
+          EXECUTOR_INSTANCE_TYPE: ${{ github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
@@ -192,9 +204,11 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+          DATABRICKS_TABLE_FORMAT: ${{ github.event.inputs.table_format || 'parquet' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
+          EXECUTOR_INSTANCE_TYPE: ${{ github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_SOURCE_PREFIX: ${{ github.event.inputs.etl_source_prefix }}
           ETL_TARGET_BASE_PREFIX: ${{ github.event.inputs.etl_target_base_prefix }}
@@ -222,7 +236,7 @@ jobs:
           if [ "${SYSTEM_ADAPTER}" = "databricks" ]; then
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
-            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID}"
+            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
 
             if [ -n "${DATABRICKS_CATALOG}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"
@@ -240,6 +254,9 @@ jobs:
           ~/.spice/bin/spicebench \
             --concurrency 2  \
             --scenario "${SCENARIO}" \
+            --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
+            ${ETL_ARGS} \
+            --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \

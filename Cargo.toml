@@ -140,6 +140,7 @@ data-generation = { path = "crates/data-generation" }
 etl = { path = "crates/etl" }
 reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }
 test-framework = { path = "crates/test-framework" }
 tokio.workspace = true

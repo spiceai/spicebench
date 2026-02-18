@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(about = "Spice.ai data generation tool - generates Arrow data and writes to S3")]
@@ -63,6 +63,14 @@ pub struct CommonArgs {
     #[arg(long, default_value = "")]
     pub prefix: String,
 
+    /// Logical table format propagated to system adapters
+    #[arg(long, value_enum, default_value = "parquet")]
+    pub table_format: TableFormat,
+
+    /// Executor instance type label propagated to adapters for dashboarding
+    #[arg(long, default_value = "unknown")]
+    pub executor_instance_type: String,
+
     /// AWS region
     #[arg(long)]
     pub region: Option<String>,
@@ -85,8 +93,29 @@ pub struct DatasetConfig {
 pub struct TargetConfig {
     pub bucket: String,
     pub prefix: String,
+    pub table_format: TableFormat,
+    pub executor_instance_type: String,
     pub region: Option<String>,
     pub endpoint: Option<String>,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum TableFormat {
+    Iceberg,
+    Parquet,
+    Delta,
+}
+
+impl std::fmt::Display for TableFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Iceberg => "iceberg",
+            Self::Parquet => "parquet",
+            Self::Delta => "delta",
+        };
+        write!(f, "{value}")
+    }
 }
 
 pub struct IngestorConfig {
@@ -106,6 +135,8 @@ impl CommonArgs {
         TargetConfig {
             bucket: self.bucket.clone(),
             prefix: self.prefix.clone(),
+            table_format: self.table_format.clone(),
+            executor_instance_type: self.executor_instance_type.clone(),
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }
