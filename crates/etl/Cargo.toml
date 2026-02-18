@@ -12,10 +12,6 @@ version.workspace = true
 name = "etl"
 path = "src/lib.rs"
 
-[[bin]]
-name = "data-generation"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }

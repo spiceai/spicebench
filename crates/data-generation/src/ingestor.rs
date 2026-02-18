@@ -20,21 +20,21 @@ use std::time::Instant;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use data_generation::config::IngestorConfig;
-use data_generation::dataset::Dataset;
-use data_generation::metrics::{IngestResult, Metrics};
-use data_generation::target::Target;
+use super::config::IngestorConfig;
+use super::dataset::Dataset;
+use super::metrics::{IngestResult, Metrics};
+use super::target::Target;
 
-pub struct Ingestor<S: Dataset, T: Target> {
-    dataset: S,
-    target: T,
+pub struct Ingestor {
+    dataset: Arc<dyn Dataset>,
+    target: Arc<dyn Target>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
     batch_id: u64,
 }
 
-impl<S: Dataset, T: Target> Ingestor<S, T> {
-    pub fn new(dataset: S, target: T, config: &IngestorConfig, metrics: Metrics) -> Self {
+impl Ingestor {
+    pub fn new(dataset: Arc<dyn Dataset>, target: Arc<dyn Target>, config: &IngestorConfig, metrics: Metrics) -> Self {
         Self {
             dataset,
             target,

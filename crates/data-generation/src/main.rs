@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use clap::Parser;
+use data_generation::target::Target;
 use tracing_subscriber::EnvFilter;
 
 use std::sync::Arc;
@@ -24,7 +25,7 @@ use data_generation::dataset;
 use data_generation::dataset::tpch::TpchDataset;
 use data_generation::metrics::{IngestResult, Metrics};
 use data_generation::target::s3::S3Target;
-use etl::ingestor::Ingestor;
+use data_generation::ingestor::Ingestor;
 
 fn print_summary(result: &IngestResult) {
     println!("  Duration:          {:?}", result.elapsed);
@@ -51,7 +52,7 @@ fn print_summary(result: &IngestResult) {
 
 fn build(
     args: &CommonArgs,
-) -> anyhow::Result<(Ingestor<Arc<dyn dataset::Dataset>, S3Target>, S3Target)> {
+) -> anyhow::Result<(Ingestor, Arc<S3Target>)> {
     let dataset_config = args.dataset_config();
     let target_config = args.target_config();
     let ingestor_config = args.ingestor_config();
@@ -70,10 +71,10 @@ fn build(
         other => anyhow::bail!("Unknown dataset type: {other}. Supported: tpch"),
     };
 
-    let target = S3Target::new(&target_config)?;
+    let target = Arc::new(S3Target::new(&target_config)?);
     let metrics = Metrics::new();
 
-    let ingestor = Ingestor::new(dataset, target.clone(), &ingestor_config, metrics);
+    let ingestor = Ingestor::new(dataset, Arc::clone(&target) as Arc<dyn Target>, &ingestor_config, metrics);
     Ok((ingestor, target))
 }
 

@@ -19,9 +19,10 @@ pub mod simple_sequence;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::SchemaRef;
+use arrow::array::{RecordBatch, TimestampMicrosecondArray};
+use arrow::datatypes::{DataType, Field, SchemaRef, TimeUnit};
 use async_trait::async_trait;
 
 /// Metadata about a table in a dataset.
@@ -29,14 +30,81 @@ use async_trait::async_trait;
 pub struct DatasetTable {
     /// The name of the table.
     pub name: String,
-    /// The Arrow schema for the table.
+    /// The Arrow schema for the table (without the time column).
     pub schema: SchemaRef,
     /// The time column for the table, if any.
+    ///
+    /// When set, this column is *not* included in [`schema`] — it is appended
+    /// during rehydration via [`DatasetTable::rehydrate`].
     pub time_column: Option<String>,
+}
+
+impl DatasetTable {
+    /// Returns the full schema including the time column, if one is configured.
+    ///
+    /// If `time_column` is `None`, this returns the same schema as [`schema`].
+    pub fn rehydrated_schema(&self) -> SchemaRef {
+        let Some(ref time_col) = self.time_column else {
+            return Arc::clone(&self.schema);
+        };
+
+        let ts_type = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let mut fields: Vec<_> = self.schema.fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new(time_col, ts_type, true)));
+        Arc::new(arrow::datatypes::Schema::new(fields))
+    }
+
+    /// Rehydrate a batch by appending the time column with the current timestamp.
+    ///
+    /// If this table has no `time_column`, the batch is returned unchanged.
+    /// The batch schema must match [`schema`] (i.e. without the time column).
+    pub fn rehydrate(&self, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
+        if self.time_column.is_none() {
+            anyhow::bail!("Cannot rehydrate table '{}' without a time column", self.name);
+        }
+
+        if batch.schema() != self.schema {
+            anyhow::bail!(
+                "Schema mismatch for table '{}': expected {}, got {}",
+                self.name,
+                self.schema,
+                batch.schema()
+            );
+        }
+
+        let now_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before UNIX epoch")
+            .as_micros() as i64;
+
+        let num_rows = batch.num_rows();
+        let timestamps = TimestampMicrosecondArray::from(vec![Some(now_us); num_rows])
+            .with_timezone("UTC");
+
+        let rehydrated_schema = self.rehydrated_schema();
+        let mut columns: Vec<_> = batch.columns().to_vec();
+        columns.push(Arc::new(timestamps));
+
+        Ok(RecordBatch::try_new(rehydrated_schema, columns)?)
+    }
 }
 
 #[async_trait]
 pub trait Dataset: Send + Sync {
+    /// Returns the batch IDs that would be produced for a given table after a
+    /// successful generation run.
+    ///
+    /// The default implementation returns `0..num_batches(table)`, but
+    /// implementations may override this to customise the ID scheme.
+    fn batch_ids(&self, table: &str) -> Vec<u64> {
+        (0..self.num_batches(table)).collect()
+    }
+
+    /// Returns the total number of batches this dataset will produce for the
+    /// given table. Implementations must provide this so that [`batch_ids`]
+    /// and downstream planning (e.g. `Target::expected_files`) can work.
+    fn num_batches(&self, table: &str) -> u64;
+
     /// Returns the next raw batch of data for the given table, or `None` if exhausted.
     ///
     /// Most callers should use [`next_batch`]
@@ -86,10 +154,31 @@ pub trait Dataset: Send + Sync {
 
     /// Returns the tables this dataset produces, including metadata, keyed by table name.
     fn tables(&self) -> HashMap<String, DatasetTable>;
+
+    /// Rehydrate a batch for the given table by appending the time column.
+    ///
+    /// Uses the table metadata from [`tables()`] to look up the time column name
+    /// and delegates to [`DatasetTable::rehydrate`]. If the table has no time column,
+    /// a rehydration error is returned.
+    fn rehydrate(&self, table: &str, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
+        let tables = self.tables();
+        let dataset_table = tables
+            .get(table)
+            .ok_or_else(|| anyhow::anyhow!("Unknown table: {table}"))?;
+        dataset_table.rehydrate(batch)
+    }
 }
 
 #[async_trait]
 impl Dataset for Arc<dyn Dataset> {
+    fn batch_ids(&self, table: &str) -> Vec<u64> {
+        (**self).batch_ids(table)
+    }
+
+    fn num_batches(&self, table: &str) -> u64 {
+        (**self).num_batches(table)
+    }
+
     async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
         (**self).raw_next_batch(table).await
     }
@@ -104,5 +193,9 @@ impl Dataset for Arc<dyn Dataset> {
 
     fn tables(&self) -> HashMap<String, DatasetTable> {
         (**self).tables()
+    }
+
+    fn rehydrate(&self, table: &str, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
+        (**self).rehydrate(table, batch)
     }
 }
