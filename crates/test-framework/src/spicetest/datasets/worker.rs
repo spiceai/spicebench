@@ -344,7 +344,7 @@ impl SpiceTestQueryWorker {
 
                         if self.explain_plan_snapshot
                             && self.id == 0
-                            && let Some(client) = self.executor.as_spice_client()
+                            && let Some(client) = self.executor.as_flight_client()
                         {
                             println!("Worker {} - Query '{}' - Explain plan", self.id, query.name);
                             if let Err(e) = record_explain_plan(
@@ -554,7 +554,7 @@ impl SpiceTestQueryWorker {
         {
             // Execute reference query if reference_schema is provided
             if let Some(ref_schema) = &self.reference_schema
-                && let Some(spice_client) = self.executor.as_spice_client()
+                && let Some(flight_client) = self.executor.as_flight_client()
             {
                 let reference_query = query.rewrite_with_reference_schema(ref_schema)?;
                 println!(
@@ -562,11 +562,8 @@ impl SpiceTestQueryWorker {
                     self.id, query.name, ref_schema
                 );
 
-                let mut ref_result_stream = spice_client
-                    .sql_with_params(
-                        &reference_query.sql,
-                        reference_query.get_parameters_batch().transpose()?,
-                    )
+                let mut ref_result_stream = flight_client
+                    .query(reference_query.to_sql_with_inlined_params().as_ref())
                     .await?;
 
                 let mut ref_batches = vec![];
