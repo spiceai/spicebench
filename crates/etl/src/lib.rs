@@ -16,16 +16,12 @@ limitations under the License.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow::array::{RecordBatch, TimestampMicrosecondArray};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use data_generation::config::DatasetConfig as GenerationDatasetConfig;
 use data_generation::dataset::Dataset;
 use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
-use data_generation::source::Source;
-use data_generation::target::Target;
+use data_generation::storage::DataStorage;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,40 +32,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-/// Column name appended by the ETL pipeline to every batch.
-const CREATED_AT_COLUMN: &str = "__created_at";
+use crate::sink::{InsertOp, Sink};
 
-/// Returns a new schema with the `__created_at` timestamp column appended.
-fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
-    let mut fields: Vec<_> = schema.fields().iter().cloned().collect();
-    fields.push(Arc::new(Field::new(
-        CREATED_AT_COLUMN,
-        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-        true,
-    )));
-    Arc::new(Schema::new(fields))
-}
-
-/// Appends a `__created_at` column (current wall-clock time, microsecond UTC)
-/// to the given batch.
-fn append_created_at(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
-    let now_us = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before UNIX epoch")
-        .as_micros() as i64;
-
-    let timestamps =
-        TimestampMicrosecondArray::from(vec![Some(now_us); batch.num_rows()]).with_timezone("UTC");
-
-    let new_schema = schema_with_created_at(&batch.schema());
-    let mut columns: Vec<_> = batch.columns().to_vec();
-    columns.push(Arc::new(timestamps));
-
-    Ok(RecordBatch::try_new(new_schema, columns)?)
-}
-
-type DynSource = Arc<dyn Source>;
-type DynTarget = Arc<dyn Target>;
+pub mod sink;
 
 /// Specifies which dataset implementation to use for the ETL pipeline.
 #[derive(Debug, Clone)]
@@ -140,8 +105,8 @@ pub enum StopReason {
 pub struct ETLPipeline {
     dataset_source: DatasetSource,
     dataset: Arc<dyn Dataset>,
-    source: DynSource,
-    target: DynTarget,
+    data_storage: Arc<dyn DataStorage>,
+    data_sink: Arc<dyn Sink>,
     state_rx: watch::Receiver<PipelineState>,
     state_tx: Arc<watch::Sender<PipelineState>>,
     cancel_token: CancellationToken,
@@ -157,16 +122,16 @@ impl ETLPipeline {
     pub fn new(
         dataset_source: DatasetSource,
         config: &GenerationDatasetConfig,
-        source: DynSource,
-        target: DynTarget,
+        data_storage: Arc<dyn DataStorage>,
+        data_sink: Arc<dyn Sink>,
     ) -> anyhow::Result<Self> {
         let dataset = dataset_source.create(config)?;
         let (state_tx, state_rx) = watch::channel(PipelineState::NotStarted);
         Ok(Self {
             dataset_source,
             dataset,
-            source,
-            target,
+            data_storage,
+            data_sink,
             state_rx,
             state_tx: Arc::new(state_tx),
             cancel_token: CancellationToken::new(),
@@ -222,8 +187,8 @@ impl ETLPipeline {
             .map(|(name, table)| {
                 let config = ProtocolDatasetConfig {
                     etl_type: EtlType::S3,
-                    schema: schema_with_created_at(&table.schema),
-                    params: self.target.table_params(&name),
+                    schema: table.rehydrated_schema(),
+                    params: self.data_sink.table_params(&name),
                     time_column: table.time_column.clone(),
                     partitions: vec![], // TODO: support dynamically specifying partitioning schemes
                 };
@@ -254,8 +219,9 @@ impl ETLPipeline {
 
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
         for table_name in tables.keys() {
-            let source = Arc::clone(&self.source);
-            let target = Arc::clone(&self.target);
+            let dataset = Arc::clone(&self.dataset);
+            let source = Arc::clone(&self.data_storage);
+            let target = Arc::clone(&self.data_sink);
             let table_name = table_name.clone();
 
             join_set.spawn(async move {
@@ -268,12 +234,12 @@ impl ETLPipeline {
                     })?;
 
                 for batch in read_result.batches {
-                    let rehydrated = append_created_at(&batch).map_err(|e| {
-                        format!("append __created_at to {table_name} batch {first_batch_id}: {e}")
+                    let rehydrated = dataset.rehydrate(&table_name, &batch).map_err(|e| {
+                        format!("rehydrate {table_name} batch {first_batch_id}: {e}")
                     })?;
 
                     target
-                        .write(&table_name, first_batch_id, rehydrated)
+                        .write(&table_name, first_batch_id, rehydrated, InsertOp::Append) // TODO: different insert ops
                         .await
                         .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
                 }
@@ -320,8 +286,8 @@ impl ETLPipeline {
     /// each batch the task:
     ///
     /// 1. Reads the batch from the [`Source`].
-    /// 2. Appends the `__created_at` timestamp column.
-    /// 3. Writes the enriched batch to the [`Target`].
+    /// 2. Rehydrates it through the [`Dataset`] (appending time columns, etc.).
+    /// 3. Writes the rehydrated batch to the [`Target`].
     ///
     /// The task transitions to [`PipelineState::Stopped`] when all batches are
     /// processed, the [`CancellationToken`] is triggered, or an error occurs.
@@ -339,8 +305,8 @@ impl ETLPipeline {
         let _ = self.state_tx.send(PipelineState::Running);
 
         let dataset = Arc::clone(&self.dataset);
-        let source = Arc::clone(&self.source);
-        let target = Arc::clone(&self.target);
+        let source = Arc::clone(&self.data_storage);
+        let target = Arc::clone(&self.data_sink);
         let cancel = self.cancel_token.clone();
         let state_tx = Arc::clone(&self.state_tx);
 
@@ -360,7 +326,7 @@ impl ETLPipeline {
         work.sort_by_key(|(_, id)| *id);
 
         let handle = tokio::spawn(async move {
-            let reason = run_pipeline(source, target, work, cancel).await;
+            let reason = run_pipeline(dataset, source, target, work, cancel).await;
             let _ = state_tx.send(PipelineState::Stopped(reason));
         });
 
@@ -386,8 +352,9 @@ impl ETLPipeline {
 /// Groups work items by batch ID and processes all tables within each step
 /// concurrently, checking for cancellation between steps.
 async fn run_pipeline(
-    source: DynSource,
-    target: DynTarget,
+    dataset: Arc<dyn Dataset>,
+    data_storage: Arc<dyn DataStorage>,
+    data_sink: Arc<dyn Sink>,
     work: Vec<(String, u64)>,
     cancel: CancellationToken,
 ) -> StopReason {
@@ -463,12 +430,13 @@ async fn run_pipeline(
         // Process all tables for this batch_id concurrently.
         let mut join_set: JoinSet<Result<(String, bool), String>> = JoinSet::new();
         for table_name in active_tables {
-            let source = Arc::clone(&source);
-            let target = Arc::clone(&target);
+            let dataset = Arc::clone(&dataset);
+            let data_storage = Arc::clone(&data_storage);
+            let data_sink = Arc::clone(&data_sink);
 
             join_set.spawn(async move {
                 // 1. Read from source
-                let read_result = match source.read_batch(&table_name, batch_id).await {
+                let read_result = match data_storage.read_batch(&table_name, batch_id).await {
                     Ok(Some(r)) => r,
                     Ok(None) => {
                         debug!(
@@ -489,25 +457,26 @@ async fn run_pipeline(
                     }
                 };
 
-                // 2. Append __created_at and write to target
+                // 2. Rehydrate each record batch and write to target
                 for batch in read_result.batches {
-                    let rehydrated = match append_created_at(&batch) {
+                    let rehydrated = match dataset.rehydrate(&table_name, &batch) {
                         Ok(b) => b,
                         Err(e) => {
                             error!(
                                 table = %table_name,
                                 batch_id,
                                 error = %e,
-                                "Failed to append __created_at column"
+                                "Failed to rehydrate batch"
                             );
-                            return Err(format!(
-                                "append __created_at to {table_name} batch {batch_id}: {e}"
-                            ));
+                            return Err(format!("rehydrate {table_name} batch {batch_id}: {e}"));
                         }
                     };
 
-                    // 3. Write to target
-                    if let Err(e) = target.write(&table_name, batch_id, rehydrated).await {
+                    // 3. Write to target. TODO: support different insert operations
+                    if let Err(e) = data_sink
+                        .write(&table_name, batch_id, rehydrated, InsertOp::Append)
+                        .await
+                    {
                         error!(
                             table = %table_name,
                             batch_id,
