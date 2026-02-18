@@ -135,13 +135,15 @@ adbc_client = { path = "crates/adbc_client" }
 arrow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
+data-generation = { path = "crates/data-generation" }
+etl = { path = "crates/etl" }
 reqwest.workspace = true
 serde.workspace = true
-spicepod = { path = "crates/spicepod" }
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }
 test-framework = { path = "crates/test-framework" }
 tokio.workspace = true
 tokio-util.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 
 [features]

@@ -64,6 +64,10 @@ pub enum PipelineState {
     /// The pipeline has been created with a dataset, source, and target but has
     /// not yet started processing.
     NotStarted,
+    /// The pipeline has been initialized: the first batch for every table has
+    /// been ETL'd into the target so the system adapter can discover initial
+    /// data.
+    Initialized,
     /// The pipeline is actively rehydrating batches (in order of batch ID) from
     /// the configured [`Source`] into the configured [`Target`].
     Running,
@@ -91,9 +95,12 @@ pub enum StopReason {
 /// 1. **[`NotStarted`](PipelineState::NotStarted)** — created via [`ETLPipeline::new`]
 ///    with a dataset, source, and target. Call [`setup_request_datasets`](ETLPipeline::setup_request_datasets)
 ///    to obtain the dataset configurations that a system adapter needs.
-/// 2. **[`Running`](PipelineState::Running)** — the pipeline is actively processing
-///    batches.
-/// 3. **[`Stopped`](PipelineState::Stopped)** — the pipeline finished, was cancelled,
+/// 2. **[`Initialized`](PipelineState::Initialized)** — the first batch (batch 0)
+///    has been ETL'd into the target via [`initialize`](ETLPipeline::initialize).
+///    The system adapter can now discover initial data.
+/// 3. **[`Running`](PipelineState::Running)** — the pipeline is actively processing
+///    remaining batches (batch 1+).
+/// 4. **[`Stopped`](PipelineState::Stopped)** — the pipeline finished, was cancelled,
 ///    or hit an error.
 pub struct ETLPipeline {
     dataset_source: DatasetSource,
@@ -188,11 +195,97 @@ impl ETLPipeline {
             .collect()
     }
 
-    /// Starts the ETL pipeline, transitioning from [`PipelineState::NotStarted`]
+    /// Initializes the ETL pipeline by processing only the first batch (batch
+    /// ID 0) for every table.
+    ///
+    /// This ensures the target has some initial data before calling
+    /// `setup()` on the system adapter. After successful initialization the
+    /// pipeline transitions to [`PipelineState::Initialized`].
+    ///
+    /// Returns an error if the pipeline is not in the [`NotStarted`] state or
+    /// if any batch fails to process.
+    pub async fn initialize(&mut self) -> anyhow::Result<()> {
+        if *self.state_rx.borrow() != PipelineState::NotStarted {
+            anyhow::bail!(
+                "Cannot initialize pipeline: current state is {:?}",
+                *self.state_rx.borrow()
+            );
+        }
+
+        let tables = self.dataset.tables();
+        let first_batch_id = 0u64;
+
+        let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
+        for (table_name, _) in &tables {
+            let dataset = Arc::clone(&self.dataset);
+            let source = Arc::clone(&self.source);
+            let target = Arc::clone(&self.target);
+            let table_name = table_name.clone();
+
+            join_set.spawn(async move {
+                let read_result = source
+                    .read_batch(&table_name, first_batch_id)
+                    .await
+                    .map_err(|e| format!("read {table_name} batch {first_batch_id}: {e}"))?
+                    .ok_or_else(|| {
+                        format!("No data for table {table_name} at batch {first_batch_id}")
+                    })?;
+
+                for batch in read_result.batches {
+                    let rehydrated = dataset
+                        .rehydrate(&table_name, &batch)
+                        .map_err(|e| {
+                            format!("rehydrate {table_name} batch {first_batch_id}: {e}")
+                        })?;
+
+                    target
+                        .write(&table_name, first_batch_id, rehydrated)
+                        .await
+                        .map_err(|e| {
+                            format!("write {table_name} batch {first_batch_id}: {e}")
+                        })?;
+                }
+
+                info!(
+                    table = %table_name,
+                    batch_id = first_batch_id,
+                    "Initial batch processed"
+                );
+                Ok(table_name)
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(_table_name)) => {}
+                Ok(Err(err_msg)) => {
+                    let _ = self
+                        .state_tx
+                        .send(PipelineState::Stopped(StopReason::Error(err_msg.clone())));
+                    anyhow::bail!("ETL initialization failed: {err_msg}");
+                }
+                Err(e) => {
+                    let msg = format!("Task panicked during initialization: {e}");
+                    let _ = self
+                        .state_tx
+                        .send(PipelineState::Stopped(StopReason::Error(msg.clone())));
+                    anyhow::bail!("{msg}");
+                }
+            }
+        }
+
+        info!("ETL pipeline initialized with first batch for all tables");
+        let _ = self.state_tx.send(PipelineState::Initialized);
+        Ok(())
+    }
+
+    /// Starts the ETL pipeline, transitioning from [`PipelineState::Initialized`]
     /// to [`PipelineState::Running`].
     ///
     /// Spawns a background tokio task that iterates over every table and
-    /// processes batch IDs in ascending order. For each batch the task:
+    /// processes batch IDs in ascending order, skipping batch 0 which was
+    /// already processed during [`initialize`](ETLPipeline::initialize). For
+    /// each batch the task:
     ///
     /// 1. Reads the batch from the [`Source`].
     /// 2. Rehydrates it through the [`Dataset`] (appending time columns, etc.).
@@ -201,12 +294,13 @@ impl ETLPipeline {
     /// The task transitions to [`PipelineState::Stopped`] when all batches are
     /// processed, the [`CancellationToken`] is triggered, or an error occurs.
     ///
-    /// Returns an error if the pipeline is not in the [`NotStarted`] state.
+    /// Returns an error if the pipeline is not in the [`Initialized`] state.
     pub fn start(&mut self) -> anyhow::Result<()> {
-        if *self.state_rx.borrow() != PipelineState::NotStarted {
+        let current_state = self.state_rx.borrow().clone();
+        if current_state != PipelineState::Initialized {
             anyhow::bail!(
-                "Cannot start pipeline: current state is {:?}",
-                *self.state_rx.borrow()
+                "Cannot start pipeline: current state is {:?} (must be Initialized)",
+                current_state
             );
         }
 
@@ -224,6 +318,10 @@ impl ETLPipeline {
         let mut work: Vec<(String, u64)> = Vec::new();
         for (name, _) in &tables {
             for id in dataset.batch_ids(name) {
+                // Skip batch 0 — it was already processed during initialize().
+                if id == 0 {
+                    continue;
+                }
                 work.push((name.clone(), id));
             }
         }

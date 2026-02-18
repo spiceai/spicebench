@@ -35,6 +35,7 @@ pub struct S3Target {
     store: Arc<dyn ObjectStore>,
     bucket: String,
     prefix: String,
+    region: Option<String>,
 }
 
 impl S3Target {
@@ -59,6 +60,7 @@ impl S3Target {
             store,
             bucket: config.bucket.clone(),
             prefix: config.prefix.clone(),
+            region: config.region.clone(),
         })
     }
 
@@ -100,9 +102,18 @@ impl Target for S3Target {
             serde_json::Value::String("s3".to_string()),
         );
         params.insert(
-            "location".to_string(),
+            "from".to_string(),
             serde_json::Value::String(self.table_s3_path(table_name)),
         );
+        params.insert("file_format".to_string(), serde_json::Value::String("parquet".to_string()));
+
+        if let Some(region) = &self.region {
+            params.insert(
+                "s3_region".to_string(),
+                serde_json::Value::String(region.clone()),
+            );
+        }
+
         params
     }
 
