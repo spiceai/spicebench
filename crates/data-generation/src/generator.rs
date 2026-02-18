@@ -26,14 +26,14 @@ use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
 use super::target::Target;
 
-pub struct Ingestor {
+pub struct DataGenerator {
     dataset: Arc<dyn Dataset>,
     target: Arc<dyn Target>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
 }
 
-impl Ingestor {
+impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
         target: Arc<dyn Target>,
