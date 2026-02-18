@@ -21,10 +21,8 @@ use uuid::Uuid;
 
 mod args;
 mod commands;
-mod health;
 mod metrics;
-
-use args::BenchRunArgs;
+mod scenario;
 
 use crate::commands::connect_system_adapter;
 
@@ -32,7 +30,13 @@ use crate::commands::connect_system_adapter;
 #[command(author, version, about, long_about = None)]
 struct Cli {
     #[command(flatten)]
-    args: BenchRunArgs,
+    common: args::CommonArgs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SystemAdapterExecutionMode {
+    AdapterCommand,
+    DirectQuery,
 }
 
 #[tokio::main]
@@ -42,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let cli = Cli::parse();
 
-    let mut system_adapter_client = match connect_system_adapter(&cli.args.test_args.common).await {
+    let mut system_adapter_client = match connect_system_adapter(&cli.common).await {
         Ok(system_adapter_client) => system_adapter_client,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to connect to system adapter: {e}"));
