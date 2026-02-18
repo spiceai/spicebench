@@ -43,7 +43,7 @@ pub struct CommonArgs {
     pub(crate) otlp_header: Vec<(String, String)>,
 
     /// Logical name for the system adapter connection.
-    #[arg(long, default_value = "system_adapter")]
+    #[arg(long, default_value = "system_adapter", env = "SYSTEM_ADAPTER")]
     pub(crate) system_adapter_name: String,
 
     /// How to execute when a system adapter transport is configured.

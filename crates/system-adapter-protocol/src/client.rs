@@ -227,11 +227,6 @@ impl Client {
         let request_value = serde_json::to_value(request)?;
         let response_value = self.call_raw(request_value).await?;
         let response: JsonRpcResponse<Resp> = serde_json::from_value(response_value)?;
-
-        if let Some(error) = response.error {
-            return Err(ClientError::JsonRpc(error));
-        }
-
         Ok(response)
     }
 

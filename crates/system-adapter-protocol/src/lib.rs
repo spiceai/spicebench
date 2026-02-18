@@ -164,7 +164,7 @@ pub struct SetupRequest {
 }
 
 /// Response from setup request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SetupResponse {
     /// Indicates if setup was successful
     pub ok: bool,
@@ -180,7 +180,7 @@ pub struct QueryMethodRequest {
 }
 
 /// Response containing database connection information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueryMethodResponse {
     /// ADBC driver to use for database connections
     pub driver: AdbcDriver,
@@ -198,7 +198,7 @@ pub struct TeardownRequest {
 }
 
 /// Response from teardown request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TeardownResponse {
     /// Indicates if teardown was successful
     pub ok: bool,
@@ -214,7 +214,7 @@ pub struct MetricsRequest {
 }
 
 /// Resource utilization snapshot from the system under test
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ResourceMetrics {
     /// CPU utilization as a percentage (0.0–100.0)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -237,7 +237,7 @@ pub struct ResourceMetrics {
 }
 
 /// Ingestion progress snapshot from the system under test
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct IngestionMetrics {
     /// Total rows ingested so far
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -254,7 +254,7 @@ pub struct IngestionMetrics {
 }
 
 /// Response containing current SUT metrics
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct MetricsResponse {
     /// Resource utilization metrics (CPU, memory, disk, IOPS)
     pub resource: ResourceMetrics,
