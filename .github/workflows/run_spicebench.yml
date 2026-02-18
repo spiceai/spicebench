@@ -225,7 +225,6 @@ jobs:
               exit 1
               ;;
           esac
-
       - name: Install ADBC FlightSQL driver
         run: |
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
