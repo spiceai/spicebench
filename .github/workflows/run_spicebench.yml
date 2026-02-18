@@ -80,6 +80,8 @@ jobs:
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
           ETL_NUM_STEPS: ${{ github.event.inputs.etl_num_steps || '25' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-num-steps ${ETL_NUM_STEPS}"
           if [ -n "${ETL_SOURCE_PREFIX}" ]; then
