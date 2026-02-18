@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use data_generation::config::{DatasetConfig, TargetConfig};
+use data_generation::dataset::MutationConfig;
 use data_generation::storage::s3::S3Storage;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use tracing_subscriber::EnvFilter;
@@ -117,7 +118,10 @@ async fn main() -> anyhow::Result<()> {
     let source = Arc::new(S3Storage::new(&cli.source_config())?);
     let target = Arc::new(S3Storage::new(&cli.target_config())?);
 
-    let mut pipeline = ETLPipeline::new(dataset_source, &dataset_config, source, target)?;
+    let mutations = MutationConfig::new(0.1, 0.1);
+
+    let mut pipeline =
+        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
 
     tracing::info!(
         dataset = %cli.dataset,
