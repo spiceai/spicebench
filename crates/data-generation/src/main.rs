@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use clap::Parser;
+use data_generation::generator::DataGenerator;
 use data_generation::target::Target;
 use tracing_subscriber::EnvFilter;
 
@@ -22,7 +23,6 @@ use std::sync::Arc;
 
 use data_generation::config::{Cli, Command, CommonArgs};
 use data_generation::dataset::{Dataset, MutationConfig};
-use data_generation::ingestor::Ingestor;
 use data_generation::metrics::{IngestResult, Metrics};
 use data_generation::storage::s3::S3Storage;
 

@@ -231,7 +231,10 @@ impl TpchDataset {
 
 #[async_trait]
 impl Dataset for TpchDataset {
-    fn create(config: &DatasetConfig, mutations: &MutationConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    fn create(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+    ) -> anyhow::Result<Arc<dyn Dataset>>
     where
         Self: Sized + 'static,
     {
@@ -340,9 +343,7 @@ impl Dataset for TpchDataset {
         let num_rows = batch.num_rows();
 
         // Reserve a contiguous range of op indices for this batch.
-        let op_base = self
-            .op_counter
-            .fetch_add(num_rows as i64, Ordering::SeqCst);
+        let op_base = self.op_counter.fetch_add(num_rows as i64, Ordering::SeqCst);
 
         // All rows are creates for now.
         let ops = StringArray::from(vec!["c"; num_rows]);

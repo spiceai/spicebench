@@ -24,8 +24,8 @@ use async_trait::async_trait;
 use rand::Rng;
 
 use crate::config::DatasetConfig;
-use crate::dataset::key_set::IndexedKeySet;
 use crate::dataset::MutationConfig;
+use crate::dataset::key_set::IndexedKeySet;
 
 use super::{Dataset, DatasetTable};
 

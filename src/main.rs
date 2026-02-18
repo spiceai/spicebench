@@ -20,8 +20,7 @@ use adbc_client::AdbcConnection;
 use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
 use data_generation::dataset::MutationConfig;
-use data_generation::source::s3::S3Source;
-use data_generation::target::s3::S3Target;
+use data_generation::storage::s3::S3Storage;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tracing::Level;
@@ -81,8 +80,6 @@ async fn main() -> anyhow::Result<()> {
         prefix: cli.common.etl_source_prefix.clone(),
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
-        table_format: cli.common.table_format.clone(),
-        executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
     let run_suffix = Uuid::new_v4().to_string();
@@ -98,8 +95,6 @@ async fn main() -> anyhow::Result<()> {
         prefix: target_prefix,
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
-        table_format: cli.common.table_format.clone(),
-        executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
     let source = Arc::new(S3Storage::new(&source_config)?);
@@ -107,7 +102,13 @@ async fn main() -> anyhow::Result<()> {
 
     let mutations = MutationConfig::new(0.1, 0.1);
 
-    let mut pipeline = ETLPipeline::new(dataset_source, &generation_config, source, target, &mutations)?;
+    let mut pipeline = ETLPipeline::new(
+        dataset_source,
+        &generation_config,
+        source,
+        target,
+        &mutations,
+    )?;
 
     // --- Initialize: ETL the first batch so the target has data ---
     tracing::info!("Initializing ETL pipeline (first batch)...");

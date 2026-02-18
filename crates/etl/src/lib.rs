@@ -18,9 +18,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use data_generation::config::DatasetConfig as GenerationDatasetConfig;
-use data_generation::dataset::{Dataset, MutationConfig};
 use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
+use data_generation::dataset::{Dataset, MutationConfig};
 use data_generation::source::Source;
 use data_generation::target::Target;
 use std::collections::{BTreeMap, HashSet};
@@ -50,7 +50,11 @@ impl DatasetSource {
     /// configuration.
     ///
     /// Delegates to the [`Dataset::create`] factory method on the concrete type.
-    pub fn create(&self, config: &GenerationDatasetConfig, mutations: &MutationConfig) -> anyhow::Result<Arc<dyn Dataset>> {
+    pub fn create(
+        &self,
+        config: &GenerationDatasetConfig,
+        mutations: &MutationConfig,
+    ) -> anyhow::Result<Arc<dyn Dataset>> {
         match self {
             DatasetSource::SimpleSequence => SimpleSequenceDataset::create(config, mutations),
             DatasetSource::Tpch => TpchDataset::create(config, mutations),

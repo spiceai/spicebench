@@ -166,7 +166,10 @@ pub trait Dataset: Send + Sync {
     ///
     /// The default implementation returns an error; concrete dataset types
     /// should override this.
-    fn create(config: &DatasetConfig, mutations: &MutationConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    fn create(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+    ) -> anyhow::Result<Arc<dyn Dataset>>
     where
         Self: Sized + 'static;
 
@@ -307,14 +310,19 @@ pub trait Dataset: Send + Sync {
 
 #[async_trait]
 impl Dataset for Arc<dyn Dataset> {
-    fn create(config: &DatasetConfig, mutations: &MutationConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    fn create(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+    ) -> anyhow::Result<Arc<dyn Dataset>>
     where
         Self: Sized + 'static,
     {
         match config.dataset_type.as_str() {
             "tpch" => TpchDataset::create(config, mutations),
             "simple_sequence" => SimpleSequenceDataset::create(config, mutations),
-            other => anyhow::bail!("Unknown dataset type: {other}. Supported: tpch, simple_sequence"),
+            other => {
+                anyhow::bail!("Unknown dataset type: {other}. Supported: tpch, simple_sequence")
+            }
         }
     }
 
