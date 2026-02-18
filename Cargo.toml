@@ -4,7 +4,7 @@ members = [
     "crates/adbc_client",
     "crates/app",
     "crates/data-generation",
-    "crates/duration-parse",
+    "crates/duration-parse", "crates/etl",
     "crates/flight_client",
     "crates/otel-arrow",
     "crates/spicepod",

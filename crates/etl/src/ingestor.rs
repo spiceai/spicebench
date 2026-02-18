@@ -20,10 +20,10 @@ use std::time::Instant;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::config::IngestorConfig;
-use crate::dataset::Dataset;
-use crate::metrics::{IngestResult, Metrics};
-use crate::target::Target;
+use data_generation::config::IngestorConfig;
+use data_generation::dataset::Dataset;
+use data_generation::metrics::{IngestResult, Metrics};
+use data_generation::target::Target;
 
 pub struct Ingestor<S: Dataset, T: Target> {
     dataset: S,
