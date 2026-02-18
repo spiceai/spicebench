@@ -21,8 +21,7 @@ use data_generation::config::DatasetConfig as GenerationDatasetConfig;
 use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
 use data_generation::dataset::{Dataset, MutationConfig};
-use data_generation::source::Source;
-use data_generation::target::Target;
+use data_generation::storage::DataStorage;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,8 +32,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-type DynSource = Arc<dyn Source>;
-type DynTarget = Arc<dyn Target>;
+use crate::sink::{InsertOp, Sink};
+
+pub mod sink;
 
 /// Specifies which dataset implementation to use for the ETL pipeline.
 #[derive(Debug, Clone)]
@@ -109,8 +109,8 @@ pub enum StopReason {
 pub struct ETLPipeline {
     dataset_source: DatasetSource,
     dataset: Arc<dyn Dataset>,
-    source: DynSource,
-    target: DynTarget,
+    data_storage: Arc<dyn DataStorage>,
+    data_sink: Arc<dyn Sink>,
     state_rx: watch::Receiver<PipelineState>,
     state_tx: Arc<watch::Sender<PipelineState>>,
     cancel_token: CancellationToken,
@@ -128,6 +128,8 @@ impl ETLPipeline {
         config: &GenerationDatasetConfig,
         source: DynSource,
         target: DynTarget,
+        data_storage: Arc<dyn DataStorage>,
+        data_sink: Arc<dyn Sink>,
         mutations: &MutationConfig,
     ) -> anyhow::Result<Self> {
         let dataset = dataset_source.create(config, mutations)?;
@@ -135,8 +137,8 @@ impl ETLPipeline {
         Ok(Self {
             dataset_source,
             dataset,
-            source,
-            target,
+            data_storage,
+            data_sink,
             state_rx,
             state_tx: Arc::new(state_tx),
             cancel_token: CancellationToken::new(),
@@ -193,7 +195,7 @@ impl ETLPipeline {
                 let config = ProtocolDatasetConfig {
                     etl_type: EtlType::S3,
                     schema: table.rehydrated_schema(),
-                    params: self.target.table_params(&name),
+                    params: self.data_sink.table_params(&name),
                     time_column: table.time_column.clone(),
                     partitions: vec![], // TODO: support dynamically specifying partitioning schemes
                 };
@@ -225,8 +227,8 @@ impl ETLPipeline {
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
         for table_name in tables.keys() {
             let dataset = Arc::clone(&self.dataset);
-            let source = Arc::clone(&self.source);
-            let target = Arc::clone(&self.target);
+            let source = Arc::clone(&self.data_storage);
+            let target = Arc::clone(&self.data_sink);
             let table_name = table_name.clone();
 
             join_set.spawn(async move {
@@ -244,7 +246,7 @@ impl ETLPipeline {
                     })?;
 
                     target
-                        .write(&table_name, first_batch_id, rehydrated)
+                        .write(&table_name, first_batch_id, rehydrated, InsertOp::Append) // TODO: different insert ops
                         .await
                         .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
                 }
@@ -310,8 +312,8 @@ impl ETLPipeline {
         let _ = self.state_tx.send(PipelineState::Running);
 
         let dataset = Arc::clone(&self.dataset);
-        let source = Arc::clone(&self.source);
-        let target = Arc::clone(&self.target);
+        let source = Arc::clone(&self.data_storage);
+        let target = Arc::clone(&self.data_sink);
         let cancel = self.cancel_token.clone();
         let state_tx = Arc::clone(&self.state_tx);
 
@@ -358,8 +360,8 @@ impl ETLPipeline {
 /// concurrently, checking for cancellation between steps.
 async fn run_pipeline(
     dataset: Arc<dyn Dataset>,
-    source: DynSource,
-    target: DynTarget,
+    data_storage: Arc<dyn DataStorage>,
+    data_sink: Arc<dyn Sink>,
     work: Vec<(String, u64)>,
     cancel: CancellationToken,
 ) -> StopReason {
@@ -436,12 +438,12 @@ async fn run_pipeline(
         let mut join_set: JoinSet<Result<(String, bool), String>> = JoinSet::new();
         for table_name in active_tables {
             let dataset = Arc::clone(&dataset);
-            let source = Arc::clone(&source);
-            let target = Arc::clone(&target);
+            let data_storage = Arc::clone(&data_storage);
+            let data_sink = Arc::clone(&data_sink);
 
             join_set.spawn(async move {
                 // 1. Read from source
-                let read_result = match source.read_batch(&table_name, batch_id).await {
+                let read_result = match data_storage.read_batch(&table_name, batch_id).await {
                     Ok(Some(r)) => r,
                     Ok(None) => {
                         debug!(
@@ -477,8 +479,11 @@ async fn run_pipeline(
                         }
                     };
 
-                    // 3. Write to target
-                    if let Err(e) = target.write(&table_name, batch_id, rehydrated).await {
+                    // 3. Write to target. TODO: support different insert operations
+                    if let Err(e) = data_sink
+                        .write(&table_name, batch_id, rehydrated, InsertOp::Append)
+                        .await
+                    {
                         error!(
                             table = %table_name,
                             batch_id,

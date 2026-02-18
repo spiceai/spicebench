@@ -16,7 +16,7 @@ limitations under the License.
 
 use clap::Parser;
 use data_generation::generator::DataGenerator;
-use data_generation::target::Target;
+use data_generation::storage::DataStorage;
 use tracing_subscriber::EnvFilter;
 
 use std::sync::Arc;
@@ -72,7 +72,7 @@ fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
 
     let ingestor = DataGenerator::new(
         dataset,
-        target as Arc<dyn Target>,
+        target as Arc<dyn DataStorage>,
         &ingestor_config,
         metrics,
     );
