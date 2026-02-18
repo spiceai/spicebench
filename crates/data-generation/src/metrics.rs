@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::target::WriteResult;
+use crate::storage::WriteResult;
 
 #[derive(Clone)]
 pub struct Metrics {
