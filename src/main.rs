@@ -19,8 +19,7 @@ use std::sync::Arc;
 use adbc_client::AdbcConnection;
 use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
-use data_generation::source::s3::S3Source;
-use data_generation::target::s3::S3Target;
+use data_generation::storage::s3::S3Storage;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tracing::Level;
@@ -97,8 +96,8 @@ async fn main() -> anyhow::Result<()> {
         endpoint: cli.common.etl_endpoint.clone(),
     };
 
-    let source = Arc::new(S3Source::new(&source_config)?);
-    let target = Arc::new(S3Target::new(&target_config)?);
+    let source = Arc::new(S3Storage::new(&source_config)?);
+    let target = Arc::new(S3Storage::new(&target_config)?);
 
     let mut pipeline = ETLPipeline::new(dataset_source, &generation_config, source, target)?;
 

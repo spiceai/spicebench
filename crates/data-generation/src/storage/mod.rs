@@ -14,10 +14,4 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub mod config;
-pub mod dataset;
-pub mod ingestor;
-pub mod metrics;
-pub mod source;
-pub mod storage;
-pub mod target;
+pub mod s3;

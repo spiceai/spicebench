@@ -25,7 +25,7 @@ use data_generation::dataset;
 use data_generation::dataset::tpch::TpchDataset;
 use data_generation::ingestor::Ingestor;
 use data_generation::metrics::{IngestResult, Metrics};
-use data_generation::target::s3::S3Target;
+use data_generation::storage::s3::S3Storage;
 
 fn print_summary(result: &IngestResult) {
     println!("  Duration:          {:?}", result.elapsed);
@@ -50,7 +50,7 @@ fn print_summary(result: &IngestResult) {
     println!("  Avg write latency: {:?}", result.avg_write_latency);
 }
 
-fn build(args: &CommonArgs) -> anyhow::Result<(Ingestor, Arc<S3Target>)> {
+fn build(args: &CommonArgs) -> anyhow::Result<(Ingestor, Arc<S3Storage>)> {
     let dataset_config = args.dataset_config();
     let target_config = args.target_config();
     let ingestor_config = args.ingestor_config();
@@ -69,7 +69,7 @@ fn build(args: &CommonArgs) -> anyhow::Result<(Ingestor, Arc<S3Target>)> {
         other => anyhow::bail!("Unknown dataset type: {other}. Supported: tpch"),
     };
 
-    let target = Arc::new(S3Target::new(&target_config)?);
+    let target = Arc::new(S3Storage::new(&target_config)?);
     let metrics = Metrics::new();
 
     let ingestor = Ingestor::new(
