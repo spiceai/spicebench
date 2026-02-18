@@ -266,7 +266,7 @@ pub trait Dataset: Send + Sync {
     async fn next_batches(&self) -> anyhow::Result<Option<HashMap<String, RecordBatch>>> {
         let tables = self.tables();
         let mut batches = HashMap::new();
-        for (name, _) in &tables {
+        for name in tables.keys() {
             if let Some(batch) = self.next_batch(name).await? {
                 batches.insert(name.clone(), batch);
             }

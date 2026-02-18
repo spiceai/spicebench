@@ -129,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(table = %name, schema = ?config.schema, "Dataset table registered");
     }
 
+    pipeline.initialize().await?;
     pipeline.start()?;
 
     let final_state = pipeline.wait().await;

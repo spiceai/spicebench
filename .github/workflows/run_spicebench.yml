@@ -17,66 +17,39 @@ on:
         options:
           - spidapter
           - databricks
-      run_data_generation:
-        description: 'Run data-generation before spicebench'
-        required: false
-        default: false
-        type: boolean
-      data_generation_runner_type:
-        description: 'Runner label for data-generation job'
-        required: false
-        default: 'ubuntu-latest'
+      etl_bucket:
+        description: 'S3 bucket for ETL source and target data'
+        required: true
+        default: "spiceai-public-datasets"
         type: string
-      data_generation_scale_factor:
-        description: 'Data-generation scale factor'
+      etl_source_prefix:
+        description: 'S3 key prefix for ETL source data'
         required: false
-        default: '1.0'
+        default: 'data-gen/tpch_sf1'
         type: string
-      data_generation_bucket:
-        description: 'S3 bucket for generated data (required if run_data_generation=true)'
+      etl_target_prefix:
+        description: 'S3 key prefix for ETL target (rehydrated) data'
+        required: false
+        default: 'rehydrated/tpch_sf1'
+        type: string
+      etl_region:
+        description: 'AWS region for the ETL S3 bucket'
+        required: false
+        default: "us-east-1"
+        type: string
+      etl_endpoint:
+        description: 'S3 endpoint URL for ETL bucket (for MinIO/LocalStack)'
         required: false
         type: string
-      data_generation_prefix:
-        description: 'Base S3 prefix for generated data (scenario appended automatically)'
+      etl_num_steps:
+        description: 'Number of ETL data generation steps (partitions)'
         required: false
-        default: 'data-gen'
+        default: '25'
         type: string
-      data_generation_max_concurrency:
-        description: 'Data-generation max concurrent S3 writes'
-        required: false
-        default: '8'
-        type: string
-      data_generation_region:
-        description: 'AWS region for data-generation'
-        required: false
-        default: 'us-east-1'
-        type: string
-      data_generation_skip_initial:
-        description: 'Skip data-generation initial ingest'
-        required: false
-        default: false
-        type: boolean
 
 jobs:
-  data-generation:
-    name: Run data generation
-    if: ${{ github.event.inputs.run_data_generation == 'true' }}
-    uses: ./.github/workflows/data_generation_run.yml
-    with:
-      scenario: ${{ github.event.inputs.scenario }}
-      runner_type: ${{ github.event.inputs.data_generation_runner_type }}
-      scale_factor: ${{ github.event.inputs.data_generation_scale_factor }}
-      bucket: ${{ github.event.inputs.data_generation_bucket }}
-      prefix: ${{ github.event.inputs.data_generation_prefix }}
-      max_concurrency: ${{ github.event.inputs.data_generation_max_concurrency }}
-      region: ${{ github.event.inputs.data_generation_region }}
-      skip_initial: ${{ github.event.inputs.data_generation_skip_initial == 'true' }}
-    secrets: inherit
-
   run-spicebench:
     name: Run spicebench
-    needs: [data-generation]
-    if: ${{ always() && (needs.data-generation.result == 'success' || needs.data-generation.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 600
     steps:
@@ -222,7 +195,30 @@ jobs:
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
+          ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
+          ETL_SOURCE_PREFIX: ${{ github.event.inputs.etl_source_prefix }}
+          ETL_TARGET_PREFIX: ${{ github.event.inputs.etl_target_prefix }}
+          ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
+          ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
+          ETL_NUM_STEPS: ${{ github.event.inputs.etl_num_steps || '25' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          RUST_LOG: "info"
         run: |
+          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-num-steps ${ETL_NUM_STEPS}"
+          if [ -n "${ETL_SOURCE_PREFIX}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-source-prefix ${ETL_SOURCE_PREFIX}"
+          fi
+          if [ -n "${ETL_TARGET_PREFIX}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-target-prefix ${ETL_TARGET_PREFIX}"
+          fi
+          if [ -n "${ETL_REGION}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"
+          fi
+          if [ -n "${ETL_ENDPOINT}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
+          fi
+          
           if [ "${SYSTEM_ADAPTER}" = "databricks" ]; then
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
@@ -244,6 +240,7 @@ jobs:
           ~/.spice/bin/spicebench \
             --concurrency 2  \
             --scenario "${SCENARIO}" \
+            ${ETL_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS}

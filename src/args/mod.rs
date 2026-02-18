@@ -76,6 +76,34 @@ pub struct CommonArgs {
     /// Environment variables for stdio system adapter in key=value form. Can be repeated.
     #[arg(long, value_parser = parse_key_val, action = ArgAction::Append, value_name = "KEY=VALUE", requires = "system_adapter_stdio_cmd")]
     pub(crate) system_adapter_env: Vec<(String, String)>,
+
+    /// S3 bucket name for the ETL source and target
+    #[arg(long)]
+    pub(crate) etl_bucket: String,
+
+    /// S3 key prefix for the ETL source data
+    #[arg(long, default_value = "")]
+    pub(crate) etl_source_prefix: String,
+
+    /// S3 key prefix for the ETL target (rehydrated) data
+    #[arg(long, default_value = "")]
+    pub(crate) etl_target_prefix: String,
+
+    /// AWS region for the ETL S3 bucket
+    #[arg(long)]
+    pub(crate) etl_region: Option<String>,
+
+    /// S3 endpoint URL for the ETL bucket (for MinIO/LocalStack)
+    #[arg(long)]
+    pub(crate) etl_endpoint: Option<String>,
+
+    /// Number of ETL data generation steps (partitions)
+    #[arg(long, default_value_t = 25)]
+    pub(crate) etl_num_steps: u16,
+
+    /// Scale factor for the ETL dataset
+    #[arg(long, default_value_t = 1.0)]
+    pub(crate) scale_factor: f64,
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
