@@ -16,7 +16,9 @@ limitations under the License.
 
 use super::get_app_and_start_request;
 use crate::{args::BenchRunArgs, health::HealthMonitor};
+use std::sync::Arc;
 use std::time::Duration;
+use system_adapter_protocol::MetricsResponse;
 use test_framework::{
     TestType, anyhow,
     app::AppBuilder,
@@ -35,7 +37,85 @@ use test_framework::{
     utils::observe_memory,
 };
 use tokio::signal;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+
+/// Record the latest SUT metrics snapshot as OTel gauge values.
+fn record_sut_metrics(response: &MetricsResponse) {
+    // Resource metrics
+    if let Some(cpu) = response.resource.cpu_usage_percent {
+        crate::metrics::SUT_CPU_USAGE_PERCENT.record(cpu, &[]);
+    }
+    if let Some(mem) = response.resource.memory_usage_bytes {
+        crate::metrics::SUT_MEMORY_USAGE_BYTES.record(mem, &[]);
+    }
+    if let Some(v) = response.resource.disk_read_bytes {
+        crate::metrics::SUT_DISK_READ_BYTES.record(v, &[]);
+    }
+    if let Some(v) = response.resource.disk_write_bytes {
+        crate::metrics::SUT_DISK_WRITE_BYTES.record(v, &[]);
+    }
+    if let Some(v) = response.resource.disk_read_iops {
+        crate::metrics::SUT_DISK_READ_IOPS.record(v, &[]);
+    }
+    if let Some(v) = response.resource.disk_write_iops {
+        crate::metrics::SUT_DISK_WRITE_IOPS.record(v, &[]);
+    }
+
+    // Ingestion metrics
+    if let Some(v) = response.ingestion.rows_ingested {
+        crate::metrics::INGESTION_ROWS_TOTAL.record(v, &[]);
+    }
+    if let Some(v) = response.ingestion.bytes_ingested {
+        crate::metrics::INGESTION_BYTES_TOTAL.record(v, &[]);
+    }
+    if let Some(v) = response.ingestion.rows_per_sec {
+        crate::metrics::INGESTION_ROWS_PER_SEC.record(v, &[]);
+    }
+    if let Some(v) = response.ingestion.active_connections {
+        crate::metrics::ACTIVE_CONNECTIONS.record(v, &[]);
+    }
+}
+
+/// Spawn a task that periodically scrapes SUT metrics from the system adapter.
+///
+/// Returns a `JoinHandle` that resolves to the last `MetricsResponse` received
+/// (or `None` if no successful scrape occurred).
+fn spawn_sut_metrics_scraper(
+    adapter: Arc<Mutex<system_adapter_protocol::Client>>,
+    run_id: uuid::Uuid,
+    token: CancellationToken,
+    interval: Duration,
+) -> tokio::task::JoinHandle<Option<MetricsResponse>> {
+    tokio::spawn(async move {
+        let mut last_response: Option<MetricsResponse> = None;
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    match adapter.lock().await.metrics(run_id).await {
+                        Ok(resp) => {
+                            record_sut_metrics(&resp);
+                            last_response = Some(resp);
+                        }
+                        Err(e) => {
+                            eprintln!("SUT metrics scrape failed: {e}");
+                        }
+                    }
+                }
+                () = token.cancelled() => {
+                    // Final scrape before exiting
+                    if let Ok(resp) = adapter.lock().await.metrics(run_id).await {
+                        record_sut_metrics(&resp);
+                        last_response = Some(resp);
+                    }
+                    break;
+                }
+            }
+        }
+        last_response
+    })
+}
 
 #[expect(clippy::too_many_lines)]
 pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
@@ -190,6 +270,31 @@ pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
         .as_ref()
         .map(|endpoint| StreamingOtlpExporter::spawn(endpoint.clone()));
 
+    // Spawn SUT metrics scraper if --scrape-sut-metrics is enabled and a system adapter is configured
+    let sut_scraper_token = CancellationToken::new();
+    let sut_scraper_handle = if args.test_args.common.scrape_sut_metrics
+        && (args.test_args.common.system_adapter_stdio_cmd.is_some()
+            || args.test_args.common.system_adapter_http_url.is_some())
+    {
+        let adapter = super::connect_system_adapter(&args.test_args.common).await?;
+        let run_id = uuid::Uuid::new_v4();
+        println!("SUT metrics scraping enabled (run_id={run_id})");
+        Some(spawn_sut_metrics_scraper(
+            Arc::new(Mutex::new(adapter)),
+            run_id,
+            sut_scraper_token.clone(),
+            Duration::from_secs(5),
+        ))
+    } else {
+        None
+    };
+
+    // Record client concurrency as a gauge
+    crate::metrics::ACTIVE_CONNECTIONS.record(
+        args.test_args.common.concurrency.try_into().unwrap_or(0),
+        &[],
+    );
+
     let mut test_builder = NotStarted::new()
         .with_parallel_count(args.test_args.common.concurrency)
         .with_end_condition(load_end_condition)
@@ -265,27 +370,55 @@ pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
         crate::metrics::MIN_DURATION.record(query.min_duration_ms, &attributes);
         crate::metrics::MAX_DURATION.record(query.max_duration_ms, &attributes);
         crate::metrics::ITERATIONS.record(query.iterations.try_into()?, &attributes);
-        crate::metrics::P90_DURATION.record(query.percentile_90_duration_ms, &attributes);
-        crate::metrics::P95_DURATION.record(query.percentile_95_duration_ms, &attributes);
         crate::metrics::P99_DURATION.record(query.percentile_99_duration_ms, &attributes);
     }
 
-    // Calculate and record overall load test percentiles
+    // Calculate and record overall load test P99
     if !all_duration_values.is_empty() {
-        let overall_p90 = all_duration_values.percentile(90.0)?;
-        let overall_p95 = all_duration_values.percentile(95.0)?;
         let overall_p99 = all_duration_values.percentile(99.0)?;
-
-        // Record overall load test metrics (without query_name attribute)
-        // Metric can be identified as overall by the absence of query_name attribute
-        crate::metrics::P90_DURATION.record(overall_p90.as_millis().try_into()?, &[]);
-        crate::metrics::P95_DURATION.record(overall_p95.as_millis().try_into()?, &[]);
         crate::metrics::P99_DURATION.record(overall_p99.as_millis().try_into()?, &[]);
     }
     crate::metrics::TEST_DURATION
         .record((metrics.finished_at - metrics.started_at).try_into()?, &[]);
     crate::metrics::PEAK_MEMORY_USAGE.record(max_memory * 1024.0, &[]);
     crate::metrics::MEDIAN_MEMORY_USAGE.record(median_memory * 1024.0, &[]);
+
+    // Query throughput metrics
+    let total_iterations: u64 = metrics
+        .metrics
+        .iter()
+        .map(|q| q.iterations as u64)
+        .sum();
+    let test_duration_secs =
+        (metrics.finished_at - metrics.started_at) as f64 / 1000.0;
+    crate::metrics::QUERIES_TOTAL.add(total_iterations, &[]);
+    if test_duration_secs > 0.0 {
+        let qps = total_iterations as f64 / test_duration_secs;
+        crate::metrics::QUERIES_PER_SEC.record(qps, &[]);
+
+        // Efficiency: queries/s normalized by CPU core count
+        let cpu_cores = std::thread::available_parallelism()
+            .map(|n| n.get() as f64)
+            .unwrap_or(1.0);
+        if cpu_cores > 0.0 {
+            crate::metrics::EFFICIENCY_QUERIES_PER_CORE
+                .record(qps / cpu_cores, &[]);
+        }
+    }
+
+    // Stop SUT metrics scraper
+    sut_scraper_token.cancel();
+    if let Some(handle) = sut_scraper_handle
+        && let Ok(Some(last_sut_metrics)) = handle.await
+    {
+        println!(
+            "Final SUT metrics: cpu={:?}%, mem={:?}B, ingested_rows={:?}, ingested_bytes={:?}",
+            last_sut_metrics.resource.cpu_usage_percent,
+            last_sut_metrics.resource.memory_usage_bytes,
+            last_sut_metrics.ingestion.rows_ingested,
+            last_sut_metrics.ingestion.bytes_ingested,
+        );
+    }
 
     println!("Baseline metrics:");
     let baseline_records = baseline_metrics.build_records()?;

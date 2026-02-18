@@ -195,6 +195,64 @@ pub struct TeardownResponse {
     pub ok: bool,
 }
 
+/// Request to collect current metrics from the system under test
+///
+/// JSON-RPC method: `metrics`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsRequest {
+    /// Unique identifier for the benchmark run
+    pub run_id: Uuid,
+}
+
+/// Resource utilization snapshot from the system under test
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ResourceMetrics {
+    /// CPU utilization as a percentage (0.0–100.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_usage_percent: Option<f64>,
+    /// Resident memory usage in bytes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_usage_bytes: Option<u64>,
+    /// Disk bytes read since last scrape
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_read_bytes: Option<u64>,
+    /// Disk bytes written since last scrape
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_write_bytes: Option<u64>,
+    /// Disk read IOPS since last scrape
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_read_iops: Option<u64>,
+    /// Disk write IOPS since last scrape
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_write_iops: Option<u64>,
+}
+
+/// Ingestion progress snapshot from the system under test
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IngestionMetrics {
+    /// Total rows ingested so far
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_ingested: Option<u64>,
+    /// Total bytes ingested so far
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_ingested: Option<u64>,
+    /// Current ingestion throughput in rows/sec
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_per_sec: Option<f64>,
+    /// Number of active connections / clients
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_connections: Option<u64>,
+}
+
+/// Response containing current SUT metrics
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsResponse {
+    /// Resource utilization metrics (CPU, memory, disk, IOPS)
+    pub resource: ResourceMetrics,
+    /// Ingestion progress metrics
+    pub ingestion: IngestionMetrics,
+}
+
 /// Standard JSON-RPC 2.0 request envelope
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest<T> {
@@ -296,5 +354,6 @@ pub mod methods {
     pub const SETUP: &str = "setup";
     pub const QUERY_METHOD: &str = "query_method";
     pub const TEARDOWN: &str = "teardown";
+    pub const METRICS: &str = "metrics";
     pub const RPC_METHODS: &str = "rpc.methods";
 }

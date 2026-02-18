@@ -17,8 +17,9 @@ limitations under the License.
 //! Server implementations for system adapter JSON-RPC protocol.
 
 use crate::{
-    error_codes, methods, DatasetConfig, JsonRpcError, JsonRpcResponse, QueryMethodRequest,
-    QueryMethodResponse, SetupRequest, SetupResponse, TeardownRequest, TeardownResponse,
+    error_codes, methods, DatasetConfig, JsonRpcError, JsonRpcResponse, MetricsRequest,
+    MetricsResponse, QueryMethodRequest, QueryMethodResponse, SetupRequest, SetupResponse,
+    TeardownRequest, TeardownResponse,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -88,6 +89,19 @@ pub trait Handler: Send + Sync {
         run_id: Uuid,
     ) -> std::result::Result<TeardownResponse, String>;
 
+    /// Collect current metrics from the system under test
+    ///
+    /// Called periodically by spicebench when `--scrape-sut-metrics` is enabled.
+    /// Returns a snapshot of resource utilization and ingestion progress.
+    /// Default implementation returns empty metrics.
+    async fn metrics(
+        &mut self,
+        run_id: Uuid,
+    ) -> std::result::Result<MetricsResponse, String> {
+        let _ = run_id;
+        Ok(MetricsResponse::default())
+    }
+
     /// List available RPC methods
     ///
     /// Override this if you want to add custom methods beyond the standard ones.
@@ -96,6 +110,7 @@ pub trait Handler: Send + Sync {
             methods::SETUP.to_string(),
             methods::QUERY_METHOD.to_string(),
             methods::TEARDOWN.to_string(),
+            methods::METRICS.to_string(),
             methods::RPC_METHODS.to_string(),
         ]
     }
@@ -169,6 +184,7 @@ impl<H: Handler> Server<H> {
             methods::SETUP => self.handle_setup(&request, id.clone()).await,
             methods::QUERY_METHOD => self.handle_query_method(&request, id.clone()).await,
             methods::TEARDOWN => self.handle_teardown(&request, id.clone()).await,
+            methods::METRICS => self.handle_metrics(&request, id.clone()).await,
             methods::RPC_METHODS => self.handle_rpc_methods(id.clone()).await,
             _ => serde_json::to_value(JsonRpcResponse::<()>::error(
                 id,
@@ -282,6 +298,40 @@ impl<H: Handler> Server<H> {
         }
     }
 
+    async fn handle_metrics(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
+        let params = match request.get("params") {
+            Some(p) => p,
+            None => {
+                return serde_json::to_value(JsonRpcResponse::<()>::error(
+                    id,
+                    JsonRpcError::new(error_codes::INVALID_PARAMS, "Missing params"),
+                ))
+                .unwrap_or(serde_json::json!({}));
+            }
+        };
+
+        let metrics_request: MetricsRequest = match serde_json::from_value(params.clone()) {
+            Ok(req) => req,
+            Err(e) => {
+                return serde_json::to_value(JsonRpcResponse::<()>::error(
+                    id,
+                    JsonRpcError::new(error_codes::INVALID_PARAMS, format!("Invalid params: {e}")),
+                ))
+                .unwrap_or(serde_json::json!({}));
+            }
+        };
+
+        match self.handler.metrics(metrics_request.run_id).await {
+            Ok(response) => serde_json::to_value(JsonRpcResponse::success(id, response))
+                .unwrap_or(serde_json::json!({})),
+            Err(e) => serde_json::to_value(JsonRpcResponse::<()>::error(
+                id,
+                JsonRpcError::new(error_codes::INTERNAL_ERROR, e),
+            ))
+            .unwrap_or(serde_json::json!({})),
+        }
+    }
+
     async fn handle_rpc_methods(&mut self, id: serde_json::Value) -> serde_json::Value {
         let methods = self.handler.rpc_methods();
         let result = serde_json::json!({ "methods": methods });
@@ -321,6 +371,13 @@ mod tests {
             _run_id: Uuid,
         ) -> std::result::Result<TeardownResponse, String> {
             Ok(TeardownResponse { ok: true })
+        }
+
+        async fn metrics(
+            &mut self,
+            _run_id: Uuid,
+        ) -> std::result::Result<MetricsResponse, String> {
+            Ok(MetricsResponse::default())
         }
     }
 
