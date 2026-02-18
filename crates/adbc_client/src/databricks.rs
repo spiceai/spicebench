@@ -167,7 +167,7 @@ mod tests {
             std::env::var("DATABRICKS_HTTP_PATH").expect("DATABRICKS_HTTP_PATH must be set");
 
         let uri = format!("databricks://token:{token}@{endpoint}:443/{http_path}");
-        let kwargs = HashMap::from([("uri".to_string(), uri)]);
+        let kwargs = HashMap::from([("uri".to_string(), serde_json::Value::String(uri))]);
 
         let mut conn =
             AdbcConnection::create("databricks", kwargs).expect("Failed to connect via create");

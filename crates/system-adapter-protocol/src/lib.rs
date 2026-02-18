@@ -132,6 +132,15 @@ pub enum AdbcDriver {
     Databricks,
 }
 
+impl std::fmt::Display for AdbcDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Flightsql => write!(f, "flightsql"),
+            Self::Databricks => write!(f, "databricks"),
+        }
+    }
+}
+
 /// Configuration for a single dataset's ETL source
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetConfig {
