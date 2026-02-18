@@ -23,14 +23,6 @@ on:
         required: false
         default: '8'
         type: string
-      table_format:
-        required: false
-        default: 'parquet'
-        type: string
-      executor_instance_type:
-        required: false
-        default: 'github-hosted-ubuntu-latest'
-        type: string
       region:
         required: false
         default: 'us-east-1'
@@ -78,16 +70,6 @@ on:
         description: 'Maximum number of concurrent S3 writes'
         required: true
         default: '8'
-        type: string
-      table_format:
-        description: 'Table format for generated datasets (iceberg, parquet, delta)'
-        required: false
-        default: 'parquet'
-        type: string
-      executor_instance_type:
-        description: 'Executor instance type label for benchmark comparison and dashboarding'
-        required: false
-        default: 'github-hosted-ubuntu-latest'
         type: string
       region:
         description: 'AWS region'
@@ -138,8 +120,6 @@ jobs:
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
           PREFIX_BASE: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           MAX_CONCURRENCY: ${{ inputs.max_concurrency || github.event.inputs.max_concurrency || '8' }}
-          TABLE_FORMAT: ${{ inputs.table_format || github.event.inputs.table_format || 'parquet' }}
-          EXECUTOR_INSTANCE_TYPE: ${{ inputs.executor_instance_type || github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           SKIP_INITIAL: ${{ inputs.skip_initial || github.event.inputs.skip_initial || false }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -154,8 +134,6 @@ jobs:
           ARGS="${ARGS} --bucket ${BUCKET}"
           ARGS="${ARGS} --prefix ${PREFIX}"
           ARGS="${ARGS} --max-concurrency ${MAX_CONCURRENCY}"
-          ARGS="${ARGS} --table-format ${TABLE_FORMAT}"
-          ARGS="${ARGS} --executor-instance-type ${EXECUTOR_INSTANCE_TYPE}"
           ARGS="${ARGS} --region ${REGION}"
 
           if [ "${SKIP_INITIAL}" = "true" ]; then
