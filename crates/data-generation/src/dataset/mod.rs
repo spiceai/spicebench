@@ -353,8 +353,4 @@ impl Dataset for Arc<dyn Dataset> {
     fn tables(&self) -> HashMap<String, DatasetTable> {
         (**self).tables()
     }
-
-    fn rehydrate(&self, table: &str, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
-        (**self).rehydrate(table, batch)
-    }
 }
