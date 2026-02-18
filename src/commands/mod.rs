@@ -21,12 +21,8 @@ use adbc_client::AdbcConnection;
 use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder};
 use test_framework::{
     anyhow,
-    app::{App, AppBuilder},
     opentelemetry_sdk::Resource,
     queries::QuerySet,
-    spiced::StartRequest,
-    spicepod::Spicepod,
-    spicepod_utils::from_app,
     spicetest::datasets::NotStarted,
     telemetry::{OtlpExporterConfig, Telemetry},
 };
@@ -98,36 +94,6 @@ pub(crate) async fn build_test_with_validation(
     Ok((query_set, test_builder))
 }
 
-#[allow(dead_code)]
-pub(crate) async fn get_app_and_start_request(
-    args: &CommonArgs,
-) -> anyhow::Result<(App, StartRequest)> {
-    // When metrics are disabled, no Telemetry is created, so METER_PROVIDER_ONCE
-    // remains unset and all metric operations are no-ops.
-
-    let mut spicepod = Spicepod::load_exact(args.spicepod_path.clone()).await?;
-
-    let mut app_builder = AppBuilder::new(spicepod.name.clone()).with_spicepod(spicepod.clone());
-
-    if let Some(dependencies_root) = &args.spicepod_dependencies {
-        for dependency in &spicepod.dependencies {
-            let dependent_spicepod = Spicepod::load(&dependencies_root.join(dependency)).await?;
-            app_builder = app_builder.with_spicepod_dependency(dependent_spicepod);
-        }
-    }
-    // After we've loaded dependencies, remove.
-    spicepod.dependencies = vec![];
-    let app = app_builder.build();
-
-    let mut start_request = StartRequest::new(args.spiced_path_buf(), from_app(app.clone()))?;
-
-    if let Some(ref data_dir) = args.data_dir {
-        start_request = start_request.with_data_dir(data_dir.clone());
-    }
-
-    Ok((app, start_request))
-}
-
 /// Connect to a system adapter based on command-line arguments
 ///
 /// All validation is handled by clap:
@@ -161,13 +127,17 @@ pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemA
 #[allow(dead_code)]
 pub(crate) async fn create_query_executor(
     args: &DatasetTestArgs,
-    spiced_instance: &test_framework::spiced::SpicedInstance,
+    spiced_instance: Option<&test_framework::spiced::SpicedInstance>,
     adbc_conn: Option<AdbcConnection>,
 ) -> anyhow::Result<Box<dyn test_framework::execution::QueryExecutor>> {
     if let Some(conn) = adbc_conn {
         println!("Using query executor: ADBC direct connection");
         return Ok(Box::new(adbc_executor::AdbcDirectQueryExecutor::new(conn)));
     }
+
+    let spiced_instance = spiced_instance.ok_or_else(|| {
+        anyhow::anyhow!("Spiced instance is required when ADBC connection is not provided")
+    })?;
 
     let executor: Box<dyn test_framework::execution::QueryExecutor> = if args.distributed {
         println!("Using query executor: distributed (http)");

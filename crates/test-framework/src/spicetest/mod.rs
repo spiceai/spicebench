@@ -45,10 +45,10 @@ pub struct SpiceTest<S: TestState> {
 }
 
 impl<S: TestCompleted> SpiceTest<S> {
-    /// Once the test has completed, return ownership of the spiced instance
-    pub fn end(self) -> Result<SpicedInstance> {
+    /// Once the test has completed, return ownership of the spiced instance (if any).
+    #[must_use]
+    pub fn end(self) -> Option<SpicedInstance> {
         self.spiced_instance
-            .context("Spiced instance should be present")
     }
 }
 
