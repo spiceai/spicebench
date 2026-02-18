@@ -30,7 +30,7 @@ on:
       etl_target_base_prefix:
         description: 'Base S3 key prefix for ETL target (rehydrated) data. A random suffix is appended per run.'
         required: false
-        default: 'rehydrated/tpch_sf1'
+        default: 'rehydrated'
         type: string
       etl_region:
         description: 'AWS region for the ETL S3 bucket'
