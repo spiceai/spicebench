@@ -115,28 +115,3 @@ pub static MEDIAN_MEMORY_USAGE: LazyLock<Gauge<f64>> = LazyLock::new(|| {
         .build()
 });
 
-// SUT metrics fetched via the system adapter JSON-RPC.
-
-pub static SUT_QUERY_COUNT: LazyLock<Gauge<f64>> = LazyLock::new(|| {
-    meter()
-    .f64_gauge("sut_query_count")
-        .with_description("Total number of queries executed by the SUT runtime.")
-        .with_unit("queries")
-        .build()
-});
-
-pub static SUT_CACHE_HIT_RATE: LazyLock<Gauge<f64>> = LazyLock::new(|| {
-    meter()
-    .f64_gauge("sut_cache_hit_rate")
-        .with_description("Results cache hit rate reported by the SUT runtime.")
-        .with_unit("ratio")
-        .build()
-});
-
-pub static SUT_ACTIVE_CONNECTIONS: LazyLock<Gauge<f64>> = LazyLock::new(|| {
-    meter()
-    .f64_gauge("sut_active_connections")
-        .with_description("Peak active connections during test.")
-        .with_unit("connections")
-        .build()
-});

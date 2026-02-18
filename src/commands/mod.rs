@@ -20,7 +20,6 @@ use crate::args::{CommonArgs, DatasetTestArgs};
 use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder};
 use test_framework::{
     anyhow,
-    anyhow::Context,
     app::{App, AppBuilder},
     opentelemetry_sdk::Resource,
     queries::QuerySet,
@@ -124,24 +123,6 @@ pub(crate) async fn get_app_and_start_request(
     Ok((app, start_request))
 }
 
-pub(crate) async fn maybe_dispatch_run_to_system_adapter(
-    common_args: &CommonArgs,
-) -> anyhow::Result<Option<SystemAdapterClient>> {
-    if !has_system_adapter_transport(common_args) {
-        return Ok(None);
-    }
-
-    let client = connect_system_adapter(common_args)
-        .await
-        .context("System adapter transport was configured but could not be initialized")?;
-
-    Ok(Some(client))
-}
-
-fn has_system_adapter_transport(args: &CommonArgs) -> bool {
-    args.system_adapter_stdio_cmd.is_some() || args.system_adapter_http_url.is_some()
-}
-
 /// Connect to a system adapter based on command-line arguments
 ///
 /// All validation is handled by clap:
@@ -219,30 +200,3 @@ macro_rules! wait_test_and_memory {
     };
 }
 
-fn resolve_sut_metrics_method(methods: &[String]) -> Option<&'static str> {
-    const CANDIDATES: &[&str] = &[
-        "sut.metrics",
-        "metrics.sut",
-        "system.metrics",
-        "metrics.system",
-        "metrics.scrape",
-        "run.metrics",
-    ];
-
-    CANDIDATES
-        .iter()
-        .copied()
-        .find(|candidate| methods.iter().any(|m| m == candidate))
-}
-
-fn metric_value(result: &serde_json::Value, metric_name: &str) -> Option<f64> {
-    let value = result
-        .get(metric_name)
-        .or_else(|| result.get("metrics").and_then(|m| m.get(metric_name)));
-
-    match value {
-        Some(serde_json::Value::Number(n)) => n.as_f64(),
-        Some(serde_json::Value::String(s)) => s.parse::<f64>().ok(),
-        _ => None,
-    }
-}
