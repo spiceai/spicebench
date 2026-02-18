@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,7 +23,7 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 
 use crate::config::DatasetConfig;
 
-use super::{Dataset, DatasetBatch, DatasetTable};
+use super::{Dataset, DatasetTable};
 
 /// A simple dataset that generates a sequence of integers in a single table.
 ///
@@ -59,7 +60,7 @@ impl SimpleSequenceDataset {
 }
 
 impl Dataset for SimpleSequenceDataset {
-    fn raw_next_batch(&mut self, _table: &str) -> anyhow::Result<Option<DatasetBatch>> {
+    fn raw_next_batch(&mut self, _table: &str) -> anyhow::Result<Option<RecordBatch>> {
         if self.remaining_steps == 0 {
             return Ok(None);
         }
@@ -85,17 +86,17 @@ impl Dataset for SimpleSequenceDataset {
             vec![Arc::new(ids), Arc::new(values), Arc::new(timestamps)],
         )?;
 
-        Ok(Some(DatasetBatch {
-            table_name: "integer_sequence".to_string(),
-            batch,
-        }))
+        Ok(Some(batch))
     }
 
-    fn tables(&self) -> Vec<DatasetTable> {
-        vec![DatasetTable {
-            name: "integer_sequence".to_string(),
-            schema: Self::schema(),
-            time_column: Some("inserted_at".to_string()),
-        }]
+    fn tables(&self) -> HashMap<String, DatasetTable> {
+        HashMap::from([(
+            "integer_sequence".to_string(),
+            DatasetTable {
+                name: "integer_sequence".to_string(),
+                schema: Self::schema(),
+                time_column: Some("inserted_at".to_string()),
+            },
+        )])
     }
 }
