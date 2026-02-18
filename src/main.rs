@@ -105,23 +105,23 @@ async fn main() -> anyhow::Result<()> {
     let sink_kwargs = adbc_driver.db_kwargs.clone();
     let load_kwargs = adbc_driver.db_kwargs;
 
-    let adbc_conn: Option<AdbcConnection> =
-        match AdbcConnection::create(&driver_name, sink_kwargs) {
-            Ok(conn) => {
-                println!(
-                    "ADBC connection established (driver: {})",
-                    adbc_driver.driver
-                );
-                Some(conn)
-            }
-            Err(e) => {
-                eprintln!(
-                    "Failed to create ADBC connection for driver {}: {e}",
-                    adbc_driver.driver
-                );
-                None
-            }
-        };
+    let adbc_conn: Option<AdbcConnection> = match AdbcConnection::create(&driver_name, sink_kwargs)
+    {
+        Ok(conn) => {
+            println!(
+                "ADBC connection established (driver: {})",
+                adbc_driver.driver
+            );
+            Some(conn)
+        }
+        Err(e) => {
+            eprintln!(
+                "Failed to create ADBC connection for driver {}: {e}",
+                adbc_driver.driver
+            );
+            None
+        }
+    };
 
     let Some(adbc_conn) = adbc_conn else {
         return Err(anyhow::anyhow!(

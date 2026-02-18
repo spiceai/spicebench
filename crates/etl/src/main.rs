@@ -26,7 +26,9 @@ use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC")]
+#[command(
+    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC"
+)]
 struct Cli {
     /// Dataset type: "tpch" or "simple_sequence"
     #[arg(long, default_value = "tpch")]
@@ -95,7 +97,6 @@ impl Cli {
             endpoint: self.endpoint.clone(),
         }
     }
-
 }
 
 #[tokio::main]
@@ -113,10 +114,7 @@ async fn main() -> anyhow::Result<()> {
 
     let adbc_conn = AdbcConnection::create(
         &cli.adbc_driver,
-        std::collections::HashMap::from([(
-            "uri".to_string(),
-            Value::String(cli.adbc_uri.clone()),
-        )]),
+        std::collections::HashMap::from([("uri".to_string(), Value::String(cli.adbc_uri.clone()))]),
     )?;
     let target = Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()));
 

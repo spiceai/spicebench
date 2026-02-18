@@ -163,7 +163,10 @@ impl S3Storage {
                 .collect::<anyhow::Result<Vec<String>>>()?;
 
             if parsed.is_empty() {
-                anyhow::bail!("'key_columns' cannot be empty in metadata sidecar for {}", metadata_path);
+                anyhow::bail!(
+                    "'key_columns' cannot be empty in metadata sidecar for {}",
+                    metadata_path
+                );
             }
 
             Ok(parsed)

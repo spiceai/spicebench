@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use adbc_client::AdbcConnection;
 use arrow::array::{
     Array, ArrayRef, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, Int8Array, RecordBatch, StringArray,
-    TimestampMicrosecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    Int8Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    TimestampMicrosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, Schema};
 use async_trait::async_trait;
@@ -148,8 +148,11 @@ impl Sink for AdbcSink {
                     let mut start = 0usize;
                     while start < num_rows {
                         let end = std::cmp::min(start + self.insert_rows_per_statement, num_rows);
-                        dml_statements
-                            .push(self.insert_sql_for_rows(table_name, &batch, start..end)?);
+                        dml_statements.push(self.insert_sql_for_rows(
+                            table_name,
+                            &batch,
+                            start..end,
+                        )?);
                         start = end;
                     }
                 }
@@ -241,7 +244,8 @@ impl AdbcSink {
                 continue;
             }
             let field = &fields[col_idx];
-            let value = sql_literal_for_value(&batch.columns()[col_idx], field.data_type(), row_idx)?;
+            let value =
+                sql_literal_for_value(&batch.columns()[col_idx], field.data_type(), row_idx)?;
             set_clauses.push(format!("{} = {value}", quote_identifier(field.name())));
         }
 
@@ -329,15 +333,33 @@ fn sql_literal_for_value(
     }
 
     match data_type {
-        DataType::Boolean => Ok(as_array::<BooleanArray>(column, data_type)?.value(row_idx).to_string()),
-        DataType::Int8 => Ok(as_array::<Int8Array>(column, data_type)?.value(row_idx).to_string()),
-        DataType::Int16 => Ok(as_array::<Int16Array>(column, data_type)?.value(row_idx).to_string()),
-        DataType::Int32 => Ok(as_array::<Int32Array>(column, data_type)?.value(row_idx).to_string()),
-        DataType::Int64 => Ok(as_array::<Int64Array>(column, data_type)?.value(row_idx).to_string()),
-        DataType::UInt8 => Ok(as_array::<UInt8Array>(column, data_type)?.value(row_idx).to_string()),
-        DataType::UInt16 => Ok(as_array::<UInt16Array>(column, data_type)?.value(row_idx).to_string()),
-        DataType::UInt32 => Ok(as_array::<UInt32Array>(column, data_type)?.value(row_idx).to_string()),
-        DataType::UInt64 => Ok(as_array::<UInt64Array>(column, data_type)?.value(row_idx).to_string()),
+        DataType::Boolean => Ok(as_array::<BooleanArray>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
+        DataType::Int8 => Ok(as_array::<Int8Array>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
+        DataType::Int16 => Ok(as_array::<Int16Array>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
+        DataType::Int32 => Ok(as_array::<Int32Array>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
+        DataType::Int64 => Ok(as_array::<Int64Array>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
+        DataType::UInt8 => Ok(as_array::<UInt8Array>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
+        DataType::UInt16 => Ok(as_array::<UInt16Array>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
+        DataType::UInt32 => Ok(as_array::<UInt32Array>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
+        DataType::UInt64 => Ok(as_array::<UInt64Array>(column, data_type)?
+            .value(row_idx)
+            .to_string()),
         DataType::Float32 => {
             let value = as_array::<Float32Array>(column, data_type)?.value(row_idx);
             if value.is_finite() {
@@ -373,7 +395,10 @@ fn sql_literal_for_value(
             let date = epoch
                 .checked_add_signed(Duration::days(i64::from(days)))
                 .ok_or_else(|| anyhow::anyhow!("Date32 out of range: {days}"))?;
-            Ok(format!("DATE {}", quote_string_literal(&date.format("%Y-%m-%d").to_string())))
+            Ok(format!(
+                "DATE {}",
+                quote_string_literal(&date.format("%Y-%m-%d").to_string())
+            ))
         }
         DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
             let micros = as_array::<TimestampMicrosecondArray>(column, data_type)?.value(row_idx);
