@@ -229,18 +229,14 @@ impl ETLPipeline {
                     })?;
 
                 for batch in read_result.batches {
-                    let rehydrated = dataset
-                        .rehydrate(&table_name, &batch)
-                        .map_err(|e| {
-                            format!("rehydrate {table_name} batch {first_batch_id}: {e}")
-                        })?;
+                    let rehydrated = dataset.rehydrate(&table_name, &batch).map_err(|e| {
+                        format!("rehydrate {table_name} batch {first_batch_id}: {e}")
+                    })?;
 
                     target
                         .write(&table_name, first_batch_id, rehydrated)
                         .await
-                        .map_err(|e| {
-                            format!("write {table_name} batch {first_batch_id}: {e}")
-                        })?;
+                        .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
                 }
 
                 info!(

@@ -92,8 +92,7 @@ async fn main() -> anyhow::Result<()> {
     let source = Arc::new(S3Source::new(&source_config)?);
     let target = Arc::new(S3Target::new(&target_config)?);
 
-    let mut pipeline =
-        ETLPipeline::new(dataset_source, &generation_config, source, target)?;
+    let mut pipeline = ETLPipeline::new(dataset_source, &generation_config, source, target)?;
 
     // --- Initialize: ETL the first batch so the target has data ---
     tracing::info!("Initializing ETL pipeline (first batch)...");

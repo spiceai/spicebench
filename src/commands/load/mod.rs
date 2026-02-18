@@ -16,9 +16,9 @@ limitations under the License.
 #![allow(dead_code)]
 
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
+use etl::ETLPipeline;
 use std::sync::Arc;
 use std::time::Duration;
-use etl::ETLPipeline;
 use system_adapter_protocol::MetricsResponse;
 use test_framework::{
     TestType, anyhow,
@@ -114,7 +114,7 @@ pub(crate) async fn run(
     scenario: &Scenario,
     common_args: &CommonArgs,
     adbc_conn: adbc_client::AdbcConnection,
-    etl_pipeline: &mut ETLPipeline
+    etl_pipeline: &mut ETLPipeline,
 ) -> anyhow::Result<()> {
     scenario.load_query_set()?;
     // Create the appropriate query executor based on args

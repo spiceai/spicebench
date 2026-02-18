@@ -102,7 +102,10 @@ impl Target for S3Target {
             "from".to_string(),
             serde_json::Value::String(self.table_s3_path(table_name)),
         );
-        params.insert("file_format".to_string(), serde_json::Value::String("parquet".to_string()));
+        params.insert(
+            "file_format".to_string(),
+            serde_json::Value::String("parquet".to_string()),
+        );
 
         if let Some(region) = &self.region {
             params.insert(
