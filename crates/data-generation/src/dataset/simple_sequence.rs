@@ -77,6 +77,8 @@ impl SimpleSequenceDataset {
 
     /// Returns the static Arrow schema for the `integer_sequence` table.
     ///
+    /// Includes change-tracking columns (`_op`, `_op_index`).
+    ///
     /// The time column (`__created_at`) is not included; it will be added during
     /// ETL rehydration.
     pub fn schema() -> SchemaRef {
