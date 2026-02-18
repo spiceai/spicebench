@@ -21,6 +21,19 @@ use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectPath;
 
 use crate::config::TargetConfig;
+use crate::storage::DataStorage;
+
+use arrow::array::RecordBatch;
+use async_trait::async_trait;
+use futures::TryStreamExt;
+use object_store::PutPayload;
+use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::basic::Compression;
+use parquet::file::properties::WriterProperties;
+use std::collections::HashMap;
+
+use super::{ReadResult, WriteResult};
 
 /// Unified S3 storage backend that implements both [`Source`] and [`Target`].
 ///
@@ -88,5 +101,127 @@ impl S3Storage {
         } else {
             ObjectPath::from(format!("{}/{table_name}/", self.prefix))
         }
+    }
+}
+
+#[async_trait]
+impl DataStorage for S3Storage {
+    fn expected_files(&self, table_name: &str, batch_ids: &[u64]) -> Vec<String> {
+        batch_ids
+            .iter()
+            .map(|id| {
+                if self.prefix.is_empty() {
+                    format!("s3://{}/{table_name}/batch-{id:06}.parquet", self.bucket)
+                } else {
+                    format!(
+                        "s3://{}/{}/{table_name}/batch-{id:06}.parquet",
+                        self.bucket, self.prefix
+                    )
+                }
+            })
+            .collect()
+    }
+
+    fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value> {
+        let mut params = HashMap::new();
+        params.insert(
+            "connector".to_string(),
+            serde_json::Value::String("s3".to_string()),
+        );
+        params.insert(
+            "from".to_string(),
+            serde_json::Value::String(self.table_s3_path(table_name)),
+        );
+        params.insert(
+            "file_format".to_string(),
+            serde_json::Value::String("parquet".to_string()),
+        );
+
+        if let Some(region) = &self.region {
+            params.insert(
+                "s3_region".to_string(),
+                serde_json::Value::String(region.clone()),
+            );
+        }
+
+        params
+    }
+
+    async fn write(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+        batch: RecordBatch,
+    ) -> anyhow::Result<WriteResult> {
+        let rows = batch.num_rows() as u64;
+        let schema = batch.schema();
+
+        // Serialize RecordBatch to Parquet bytes in memory
+        let props = WriterProperties::builder()
+            .set_compression(Compression::SNAPPY)
+            .build();
+
+        let mut buf = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props))?;
+        writer.write(&batch)?;
+        writer.close()?;
+
+        let bytes_written = buf.len() as u64;
+
+        // Upload to S3 with per-table directory structure
+        let path = self.batch_object_path(table_name, batch_id);
+
+        self.store.put(&path, PutPayload::from(buf)).await?;
+
+        Ok(WriteResult {
+            rows_written: rows,
+            bytes_written,
+        })
+    }
+
+    async fn list_batches(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
+        let prefix = self.table_object_prefix(table_name);
+
+        let objects: Vec<_> = self.store.list(Some(&prefix)).try_collect().await?;
+
+        let paths: Vec<String> = objects
+            .into_iter()
+            .filter(|meta| meta.location.as_ref().ends_with(".parquet"))
+            .map(|meta| meta.location.to_string())
+            .collect();
+
+        Ok(paths)
+    }
+
+    async fn read_batch(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+    ) -> anyhow::Result<Option<ReadResult>> {
+        let location = self.batch_object_path(table_name, batch_id);
+
+        let get_result = match self.store.get(&location).await {
+            Ok(r) => r,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let bytes = get_result.bytes().await?;
+        let bytes_read = bytes.len() as u64;
+
+        let reader = ParquetRecordBatchReaderBuilder::try_new(bytes)?.build()?;
+
+        let mut batches = Vec::new();
+        let mut rows_read = 0u64;
+        for batch in reader {
+            let batch = batch?;
+            rows_read += batch.num_rows() as u64;
+            batches.push(batch);
+        }
+
+        Ok(Some(ReadResult {
+            batches,
+            rows_read,
+            bytes_read,
+        }))
     }
 }

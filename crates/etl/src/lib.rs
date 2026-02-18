@@ -21,8 +21,7 @@ use data_generation::config::DatasetConfig as GenerationDatasetConfig;
 use data_generation::dataset::Dataset;
 use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
-use data_generation::source::Source;
-use data_generation::target::Target;
+use data_generation::storage::{BatchOperation, DataStorage};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,10 +32,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-pub mod sink;
+use crate::sink::{InsertOp, Sink};
 
-type DynSource = Arc<dyn Source>;
-type DynTarget = Arc<dyn Target>;
+pub mod sink;
 
 /// Specifies which dataset implementation to use for the ETL pipeline.
 #[derive(Debug, Clone)]
@@ -89,8 +87,8 @@ pub enum StopReason {
     Error(String),
 }
 
-/// An ETL pipeline that reads batches from a [`Source`], rehydrates them using a
-/// [`Dataset`], and writes them to a [`Target`].
+/// An ETL pipeline that reads batches from [`DataStorage`], rehydrates them
+/// using a [`Dataset`], and writes them to a [`Sink`].
 ///
 /// # Lifecycle
 ///
@@ -107,8 +105,8 @@ pub enum StopReason {
 pub struct ETLPipeline {
     dataset_source: DatasetSource,
     dataset: Arc<dyn Dataset>,
-    source: DynSource,
-    target: DynTarget,
+    data_storage: Arc<dyn DataStorage>,
+    data_sink: Arc<dyn Sink>,
     state_rx: watch::Receiver<PipelineState>,
     state_tx: Arc<watch::Sender<PipelineState>>,
     cancel_token: CancellationToken,
@@ -124,16 +122,16 @@ impl ETLPipeline {
     pub fn new(
         dataset_source: DatasetSource,
         config: &GenerationDatasetConfig,
-        source: DynSource,
-        target: DynTarget,
+        data_storage: Arc<dyn DataStorage>,
+        data_sink: Arc<dyn Sink>,
     ) -> anyhow::Result<Self> {
         let dataset = dataset_source.create(config)?;
         let (state_tx, state_rx) = watch::channel(PipelineState::NotStarted);
         Ok(Self {
             dataset_source,
             dataset,
-            source,
-            target,
+            data_storage,
+            data_sink,
             state_rx,
             state_tx: Arc::new(state_tx),
             cancel_token: CancellationToken::new(),
@@ -218,8 +216,8 @@ impl ETLPipeline {
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
         for table_name in tables.keys() {
             let dataset = Arc::clone(&self.dataset);
-            let source = Arc::clone(&self.source);
-            let target = Arc::clone(&self.target);
+            let source = Arc::clone(&self.data_storage);
+            let target = Arc::clone(&self.data_sink);
             let table_name = table_name.clone();
 
             join_set.spawn(async move {
@@ -231,13 +229,15 @@ impl ETLPipeline {
                         format!("No data for table {table_name} at batch {first_batch_id}")
                     })?;
 
+                let op = sink_op_from_batch_op(&read_result.operation);
+
                 for batch in read_result.batches {
                     let rehydrated = dataset.rehydrate(&table_name, &batch).map_err(|e| {
                         format!("rehydrate {table_name} batch {first_batch_id}: {e}")
                     })?;
 
                     target
-                        .write(&table_name, first_batch_id, rehydrated)
+                        .write(&table_name, first_batch_id, rehydrated, op.clone())
                         .await
                         .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
                 }
@@ -285,7 +285,7 @@ impl ETLPipeline {
     ///
     /// 1. Reads the batch from the [`Source`].
     /// 2. Rehydrates it through the [`Dataset`] (appending time columns, etc.).
-    /// 3. Writes the rehydrated batch to the [`Target`].
+    /// 3. Writes the rehydrated batch to the [`Sink`].
     ///
     /// The task transitions to [`PipelineState::Stopped`] when all batches are
     /// processed, the [`CancellationToken`] is triggered, or an error occurs.
@@ -303,8 +303,8 @@ impl ETLPipeline {
         let _ = self.state_tx.send(PipelineState::Running);
 
         let dataset = Arc::clone(&self.dataset);
-        let source = Arc::clone(&self.source);
-        let target = Arc::clone(&self.target);
+        let source = Arc::clone(&self.data_storage);
+        let target = Arc::clone(&self.data_sink);
         let cancel = self.cancel_token.clone();
         let state_tx = Arc::clone(&self.state_tx);
 
@@ -351,8 +351,8 @@ impl ETLPipeline {
 /// concurrently, checking for cancellation between steps.
 async fn run_pipeline(
     dataset: Arc<dyn Dataset>,
-    source: DynSource,
-    target: DynTarget,
+    data_storage: Arc<dyn DataStorage>,
+    data_sink: Arc<dyn Sink>,
     work: Vec<(String, u64)>,
     cancel: CancellationToken,
 ) -> StopReason {
@@ -429,12 +429,12 @@ async fn run_pipeline(
         let mut join_set: JoinSet<Result<(String, bool), String>> = JoinSet::new();
         for table_name in active_tables {
             let dataset = Arc::clone(&dataset);
-            let source = Arc::clone(&source);
-            let target = Arc::clone(&target);
+            let data_storage = Arc::clone(&data_storage);
+            let data_sink = Arc::clone(&data_sink);
 
             join_set.spawn(async move {
                 // 1. Read from source
-                let read_result = match source.read_batch(&table_name, batch_id).await {
+                let read_result = match data_storage.read_batch(&table_name, batch_id).await {
                     Ok(Some(r)) => r,
                     Ok(None) => {
                         debug!(
@@ -455,6 +455,8 @@ async fn run_pipeline(
                     }
                 };
 
+                let op = sink_op_from_batch_op(&read_result.operation);
+
                 // 2. Rehydrate each record batch and write to target
                 for batch in read_result.batches {
                     let rehydrated = match dataset.rehydrate(&table_name, &batch) {
@@ -470,8 +472,11 @@ async fn run_pipeline(
                         }
                     };
 
-                    // 3. Write to target
-                    if let Err(e) = target.write(&table_name, batch_id, rehydrated).await {
+                    // 3. Write to sink
+                    if let Err(e) = data_sink
+                        .write(&table_name, batch_id, rehydrated, op.clone())
+                        .await
+                    {
                         error!(
                             table = %table_name,
                             batch_id,
@@ -531,4 +536,16 @@ async fn run_pipeline(
         "ETL pipeline completed successfully"
     );
     StopReason::Completed
+}
+
+fn sink_op_from_batch_op(op: &BatchOperation) -> InsertOp {
+    match op {
+        BatchOperation::Insert => InsertOp::Insert,
+        BatchOperation::Update { key_columns } => InsertOp::Update {
+            key_columns: key_columns.clone(),
+        },
+        BatchOperation::Delete { key_columns } => InsertOp::Delete {
+            key_columns: key_columns.clone(),
+        },
+    }
 }
