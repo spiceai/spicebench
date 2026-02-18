@@ -41,8 +41,8 @@ pub async fn record_explain_plan(
         flight_client,
         &format!("EXPLAIN {}", query.to_sql_with_inlined_params()),
     )
-        .await
-        .map_err(|e| anyhow::anyhow!("query `{query_name}` to plan: {e}"))?;
+    .await
+    .map_err(|e| anyhow::anyhow!("query `{query_name}` to plan: {e}"))?;
 
     let explain_plan_raw = arrow::util::pretty::pretty_format_batches(&plan_results)?;
 

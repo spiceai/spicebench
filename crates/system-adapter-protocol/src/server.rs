@@ -17,9 +17,9 @@ limitations under the License.
 //! Server implementations for system adapter JSON-RPC protocol.
 
 use crate::{
-    error_codes, methods, DatasetConfig, JsonRpcError, JsonRpcResponse, MetricsRequest,
-    MetricsResponse, QueryMethodRequest, QueryMethodResponse, SetupRequest, SetupResponse,
-    TeardownRequest, TeardownResponse,
+    DatasetConfig, JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse,
+    QueryMethodRequest, QueryMethodResponse, SetupRequest, SetupResponse, TeardownRequest,
+    TeardownResponse, error_codes, methods,
 };
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -85,20 +85,14 @@ pub trait Handler: Send + Sync {
     ) -> std::result::Result<QueryMethodResponse, String>;
 
     /// Teardown a benchmark run
-    async fn teardown(
-        &mut self,
-        run_id: Uuid,
-    ) -> std::result::Result<TeardownResponse, String>;
+    async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String>;
 
     /// Collect current metrics from the system under test
     ///
     /// Called periodically by spicebench when `--scrape-sut-metrics` is enabled.
     /// Returns a snapshot of resource utilization and ingestion progress.
     /// Default implementation returns empty metrics.
-    async fn metrics(
-        &mut self,
-        run_id: Uuid,
-    ) -> std::result::Result<MetricsResponse, String> {
+    async fn metrics(&mut self, run_id: Uuid) -> std::result::Result<MetricsResponse, String> {
         let _ = run_id;
         Ok(MetricsResponse::default())
     }
@@ -168,7 +162,10 @@ impl<H: Handler> Server<H> {
             }
         };
 
-        let id = request.get("id").cloned().unwrap_or(serde_json::Value::Null);
+        let id = request
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let method = match request.get("method").and_then(|v| v.as_str()) {
             Some(m) => m,
             None => {
@@ -235,7 +232,11 @@ impl<H: Handler> Server<H> {
         }
     }
 
-    async fn handle_setup(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
+    async fn handle_setup(
+        &mut self,
+        request: &serde_json::Value,
+        id: serde_json::Value,
+    ) -> serde_json::Value {
         let req: SetupRequest = match Self::parse_params(request, &id) {
             Ok(r) => r,
             Err(e) => return e,
@@ -243,7 +244,11 @@ impl<H: Handler> Server<H> {
         Self::handler_response(self.handler.setup(req.run_id, req.datasets).await, id)
     }
 
-    async fn handle_query_method(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
+    async fn handle_query_method(
+        &mut self,
+        request: &serde_json::Value,
+        id: serde_json::Value,
+    ) -> serde_json::Value {
         let req: QueryMethodRequest = match Self::parse_params(request, &id) {
             Ok(r) => r,
             Err(e) => return e,
@@ -251,7 +256,11 @@ impl<H: Handler> Server<H> {
         Self::handler_response(self.handler.query_method(req.run_id).await, id)
     }
 
-    async fn handle_teardown(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
+    async fn handle_teardown(
+        &mut self,
+        request: &serde_json::Value,
+        id: serde_json::Value,
+    ) -> serde_json::Value {
         let req: TeardownRequest = match Self::parse_params(request, &id) {
             Ok(r) => r,
             Err(e) => return e,
@@ -259,7 +268,11 @@ impl<H: Handler> Server<H> {
         Self::handler_response(self.handler.teardown(req.run_id).await, id)
     }
 
-    async fn handle_metrics(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
+    async fn handle_metrics(
+        &mut self,
+        request: &serde_json::Value,
+        id: serde_json::Value,
+    ) -> serde_json::Value {
         let req: MetricsRequest = match Self::parse_params(request, &id) {
             Ok(r) => r,
             Err(e) => return e,
@@ -270,8 +283,7 @@ impl<H: Handler> Server<H> {
     async fn handle_rpc_methods(&mut self, id: serde_json::Value) -> serde_json::Value {
         let methods = self.handler.rpc_methods();
         let result = serde_json::json!({ "methods": methods });
-        serde_json::to_value(JsonRpcResponse::success(id, result))
-            .unwrap_or(serde_json::json!({}))
+        serde_json::to_value(JsonRpcResponse::success(id, result)).unwrap_or(serde_json::json!({}))
     }
 }
 
@@ -308,10 +320,7 @@ mod tests {
             Ok(TeardownResponse { ok: true })
         }
 
-        async fn metrics(
-            &mut self,
-            _run_id: Uuid,
-        ) -> std::result::Result<MetricsResponse, String> {
+        async fn metrics(&mut self, _run_id: Uuid) -> std::result::Result<MetricsResponse, String> {
             Ok(MetricsResponse::default())
         }
     }
