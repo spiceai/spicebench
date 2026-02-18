@@ -10,11 +10,13 @@ repository.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
-tokio = { workspace = true, features = ["process", "io-util"] }
+tokio = { workspace = true, features = ["process", "io-util", "io-std"] }
 reqwest = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
 
 [features]
 default = ["client"]
 client = ["reqwest"]
+server = ["async-trait"]
 
 [dev-dependencies]
