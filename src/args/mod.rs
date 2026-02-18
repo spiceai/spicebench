@@ -15,10 +15,28 @@ limitations under the License.
 */
 
 use clap::{ArgAction, Parser, ValueEnum};
-use data_generation::config::TableFormat;
 
 mod dataset;
 use crate::scenario::Scenario;
+
+#[derive(Clone, Debug, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum TableFormat {
+    Iceberg,
+    Parquet,
+    Delta,
+}
+
+impl std::fmt::Display for TableFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Iceberg => "iceberg",
+            Self::Parquet => "parquet",
+            Self::Delta => "delta",
+        };
+        write!(f, "{value}")
+    }
+}
 
 /// Arguments Common to all [`TestCommands`].
 #[derive(Parser, Debug, Clone)]
