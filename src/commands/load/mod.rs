@@ -297,6 +297,9 @@ pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
 
     let health_report = health_monitor.stop().await;
 
+    // Fetch and process SUT metrics via system adapter JSON-RPC if enabled
+    super::process_sut_metrics(&args.test_args.common, args.test_args.common.metrics, &[])
+        .await;
     // Shutdown streaming exporter before emitting final telemetry
     if let Some(exporter) = streaming_exporter {
         exporter.shutdown().await;

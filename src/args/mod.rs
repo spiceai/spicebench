@@ -60,9 +60,9 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) metrics: bool,
 
-    /// Whether to collect spiced runtime metrics via the system adapter JSON-RPC command.
+    /// Whether to collect SUT metrics via the system adapter JSON-RPC command.
     #[arg(long)]
-    pub(crate) scrape_spiced_metrics: bool,
+    pub(crate) scrape_sut_metrics: bool,
 
     /// OTLP metrics collector endpoint (HTTP or gRPC). If unset, falls back to Arrow telemetry.
     #[arg(long)]
