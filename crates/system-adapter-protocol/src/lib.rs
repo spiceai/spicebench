@@ -98,6 +98,7 @@ limitations under the License.
 //! # }
 //! ```
 
+use arrow_schema::SchemaRef;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -136,6 +137,8 @@ pub enum AdbcDriver {
 pub struct DatasetConfig {
     /// Type of ETL to configure
     pub etl_type: EtlType,
+    /// Arrow schema for the dataset
+    pub schema: SchemaRef,
     /// ETL-specific configuration parameters
     pub params: HashMap<String, serde_json::Value>,
 }
