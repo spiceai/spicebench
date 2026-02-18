@@ -46,9 +46,10 @@ struct Cli {
     #[arg(long, default_value = "")]
     source_prefix: String,
 
-    /// S3 key prefix for target (rehydrated) data
+    /// Base S3 key prefix for target (rehydrated) data.
+    /// A random suffix is appended automatically to create a unique destination per run.
     #[arg(long, default_value = "")]
-    target_prefix: String,
+    target_base_prefix: String,
 
     /// AWS region
     #[arg(long)]
@@ -88,9 +89,15 @@ impl Cli {
     }
 
     fn target_config(&self) -> TargetConfig {
+        let run_suffix = uuid::Uuid::new_v4().to_string();
+        let prefix = if self.target_base_prefix.is_empty() {
+            run_suffix
+        } else {
+            format!("{}/{run_suffix}", self.target_base_prefix)
+        };
         TargetConfig {
             bucket: self.bucket.clone(),
-            prefix: self.target_prefix.clone(),
+            prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }
@@ -117,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
         dataset = %cli.dataset,
         bucket = %cli.bucket,
         source_prefix = %cli.source_prefix,
-        target_prefix = %cli.target_prefix,
+        target_base_prefix = %cli.target_base_prefix,
         scale_factor = cli.scale_factor,
         num_steps = cli.num_steps,
         "Starting ETL pipeline"
