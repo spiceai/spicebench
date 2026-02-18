@@ -16,8 +16,8 @@ limitations under the License.
 
 //! Client implementations for system adapter JSON-RPC communication.
 
-use crate::{methods, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
-use serde::{de::DeserializeOwned, Serialize};
+use crate::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, methods};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -121,12 +121,14 @@ impl Client {
             ))
         })?;
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            ClientError::Transport("Stdio child missing stdin".to_string())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            ClientError::Transport("Stdio child missing stdout".to_string())
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ClientError::Transport("Stdio child missing stdin".to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ClientError::Transport("Stdio child missing stdout".to_string()))?;
 
         Ok(Self::Stdio {
             _child: Box::new(child),
@@ -164,9 +166,7 @@ impl Client {
             .and_then(|v| v.get("methods"))
             .and_then(|v| v.as_array())
             .ok_or_else(|| {
-                ClientError::InvalidResponse(
-                    "Response missing result.methods array".to_string(),
-                )
+                ClientError::InvalidResponse("Response missing result.methods array".to_string())
             })?
             .iter()
             .filter_map(|v| v.as_str().map(ToString::to_string))
@@ -192,7 +192,7 @@ impl Client {
     }
 
     /// Make a raw JSON-RPC call with serde_json::Value
-    pub async fn call_raw(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
+    async fn call_raw(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
         match self {
             Self::Stdio {
                 _child: _,
@@ -227,20 +227,15 @@ impl Client {
                     .send()
                     .await
                     .map_err(|e| {
-                        ClientError::Transport(format!(
-                            "Failed to POST to {endpoint}: {e}"
-                        ))
+                        ClientError::Transport(format!("Failed to POST to {endpoint}: {e}"))
                     })?;
 
                 let status = response.status();
-                let value: serde_json::Value = response
-                    .json()
-                    .await
-                    .map_err(|e| {
-                        ClientError::Transport(format!(
-                            "Failed to parse response body (status {status}): {e}"
-                        ))
-                    })?;
+                let value: serde_json::Value = response.json().await.map_err(|e| {
+                    ClientError::Transport(format!(
+                        "Failed to parse response body (status {status}): {e}"
+                    ))
+                })?;
 
                 if let Some(error) = value.get("error") {
                     let error: JsonRpcError = serde_json::from_value(error.clone())?;
@@ -264,9 +259,7 @@ enum TransportConfig {
         env: HashMap<String, String>,
     },
     #[cfg(feature = "client")]
-    Http {
-        endpoint: String,
-    },
+    Http { endpoint: String },
 }
 
 impl ClientBuilder {
@@ -293,7 +286,10 @@ impl ClientBuilder {
 
     /// Add command-line arguments (stdio only)
     pub fn with_args(mut self, args: Vec<String>) -> Self {
-        if let TransportConfig::Stdio { args: ref mut a, .. } = self.transport {
+        if let TransportConfig::Stdio {
+            args: ref mut a, ..
+        } = self.transport
+        {
             *a = args;
         }
         self

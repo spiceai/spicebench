@@ -5815,6 +5815,7 @@ dependencies = [
  "serde_json",
  "spiceai",
  "spicepod",
+ "system-adapter-protocol",
  "test-framework",
  "tokio",
  "tokio-util",
