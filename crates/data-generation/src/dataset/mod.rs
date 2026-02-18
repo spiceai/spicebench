@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub mod tpch;
 pub mod simple_sequence;
+pub mod tpch;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -62,7 +62,10 @@ impl DatasetTable {
     /// The batch schema must match [`schema`] (i.e. without the time column).
     pub fn rehydrate(&self, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
         if self.time_column.is_none() {
-            anyhow::bail!("Cannot rehydrate table '{}' without a time column", self.name);
+            anyhow::bail!(
+                "Cannot rehydrate table '{}' without a time column",
+                self.name
+            );
         }
 
         if batch.schema() != self.schema {
@@ -75,26 +78,50 @@ impl DatasetTable {
                 match actual_fields.get(i) {
                     Some(actual) if actual != expected => {
                         if actual.name() != expected.name() {
-                            diffs.push(format!("  column {i}: expected name '{}', got '{}'", expected.name(), actual.name()));
+                            diffs.push(format!(
+                                "  column {i}: expected name '{}', got '{}'",
+                                expected.name(),
+                                actual.name()
+                            ));
                         }
                         if actual.data_type() != expected.data_type() {
-                            diffs.push(format!("  column '{}' (index {i}): expected type {:?}, got {:?}", expected.name(), expected.data_type(), actual.data_type()));
+                            diffs.push(format!(
+                                "  column '{}' (index {i}): expected type {:?}, got {:?}",
+                                expected.name(),
+                                expected.data_type(),
+                                actual.data_type()
+                            ));
                         }
                         if actual.is_nullable() != expected.is_nullable() {
-                            diffs.push(format!("  column '{}' (index {i}): expected nullable={}, got nullable={}", expected.name(), expected.is_nullable(), actual.is_nullable()));
+                            diffs.push(format!(
+                                "  column '{}' (index {i}): expected nullable={}, got nullable={}",
+                                expected.name(),
+                                expected.is_nullable(),
+                                actual.is_nullable()
+                            ));
                         }
                     }
                     None => {
-                        diffs.push(format!("  column '{}' (index {i}): missing from batch", expected.name()));
+                        diffs.push(format!(
+                            "  column '{}' (index {i}): missing from batch",
+                            expected.name()
+                        ));
                     }
                     _ => {}
                 }
             }
             for i in expected_fields.len()..actual_fields.len() {
-                diffs.push(format!("  column '{}' (index {i}): unexpected extra column in batch", actual_fields[i].name()));
+                diffs.push(format!(
+                    "  column '{}' (index {i}): unexpected extra column in batch",
+                    actual_fields[i].name()
+                ));
             }
             if expected_fields.len() != actual_fields.len() {
-                diffs.push(format!("  expected {} columns, got {}", expected_fields.len(), actual_fields.len()));
+                diffs.push(format!(
+                    "  expected {} columns, got {}",
+                    expected_fields.len(),
+                    actual_fields.len()
+                ));
             }
 
             anyhow::bail!(
@@ -110,8 +137,8 @@ impl DatasetTable {
             .as_micros() as i64;
 
         let num_rows = batch.num_rows();
-        let timestamps = TimestampMicrosecondArray::from(vec![Some(now_us); num_rows])
-            .with_timezone("UTC");
+        let timestamps =
+            TimestampMicrosecondArray::from(vec![Some(now_us); num_rows]).with_timezone("UTC");
 
         let rehydrated_schema = self.rehydrated_schema();
         let mut columns: Vec<_> = batch.columns().to_vec();
@@ -183,32 +210,53 @@ pub trait Dataset: Send + Sync {
                 match actual_fields.get(i) {
                     Some(actual) if actual != expected => {
                         if actual.name() != expected.name() {
-                            diffs.push(format!("  column {i}: expected name '{}', got '{}'", expected.name(), actual.name()));
+                            diffs.push(format!(
+                                "  column {i}: expected name '{}', got '{}'",
+                                expected.name(),
+                                actual.name()
+                            ));
                         }
                         if actual.data_type() != expected.data_type() {
-                            diffs.push(format!("  column '{}' (index {i}): expected type {:?}, got {:?}", expected.name(), expected.data_type(), actual.data_type()));
+                            diffs.push(format!(
+                                "  column '{}' (index {i}): expected type {:?}, got {:?}",
+                                expected.name(),
+                                expected.data_type(),
+                                actual.data_type()
+                            ));
                         }
                         if actual.is_nullable() != expected.is_nullable() {
-                            diffs.push(format!("  column '{}' (index {i}): expected nullable={}, got nullable={}", expected.name(), expected.is_nullable(), actual.is_nullable()));
+                            diffs.push(format!(
+                                "  column '{}' (index {i}): expected nullable={}, got nullable={}",
+                                expected.name(),
+                                expected.is_nullable(),
+                                actual.is_nullable()
+                            ));
                         }
                     }
                     None => {
-                        diffs.push(format!("  column '{}' (index {i}): missing from batch", expected.name()));
+                        diffs.push(format!(
+                            "  column '{}' (index {i}): missing from batch",
+                            expected.name()
+                        ));
                     }
                     _ => {}
                 }
             }
             for i in expected_fields.len()..actual_fields.len() {
-                diffs.push(format!("  column '{}' (index {i}): unexpected extra column in batch", actual_fields[i].name()));
+                diffs.push(format!(
+                    "  column '{}' (index {i}): unexpected extra column in batch",
+                    actual_fields[i].name()
+                ));
             }
             if expected_fields.len() != actual_fields.len() {
-                diffs.push(format!("  expected {} columns, got {}", expected_fields.len(), actual_fields.len()));
+                diffs.push(format!(
+                    "  expected {} columns, got {}",
+                    expected_fields.len(),
+                    actual_fields.len()
+                ));
             }
 
-            anyhow::bail!(
-                "Schema mismatch for table '{table}':\n{}",
-                diffs.join("\n")
-            );
+            anyhow::bail!("Schema mismatch for table '{table}':\n{}", diffs.join("\n"));
         }
 
         Ok(Some(batch))

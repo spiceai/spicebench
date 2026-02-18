@@ -82,18 +82,16 @@ impl Dataset for SimpleSequenceDataset {
             return Ok(None);
         }
 
-        let offset = self.current_offset.fetch_add(self.batch_size as i64, Ordering::SeqCst);
+        let offset = self
+            .current_offset
+            .fetch_add(self.batch_size as i64, Ordering::SeqCst);
 
-        let ids: Int64Array = (offset..offset + self.batch_size as i64)
-            .collect();
+        let ids: Int64Array = (offset..offset + self.batch_size as i64).collect();
         let values: Int64Array = (offset..offset + self.batch_size as i64)
             .map(|id| id * 10)
             .collect();
 
-        let batch = RecordBatch::try_new(
-            Self::schema(),
-            vec![Arc::new(ids), Arc::new(values)],
-        )?;
+        let batch = RecordBatch::try_new(Self::schema(), vec![Arc::new(ids), Arc::new(values)])?;
 
         Ok(Some(batch))
     }

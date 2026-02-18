@@ -24,10 +24,7 @@ use test_framework::{
     arrow::util::pretty::print_batches,
     metrics::{MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, StatisticsCollector},
     opentelemetry::KeyValue,
-    spicetest::{
-        SpiceTest,
-        datasets::NotStarted,
-    },
+    spicetest::{SpiceTest, datasets::NotStarted},
     telemetry::streaming::StreamingOtlpExporter,
 };
 use tokio::signal;

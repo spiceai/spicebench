@@ -38,5 +38,9 @@ pub trait Source: Send + Sync + 'static {
     ///
     /// The concrete implementation is responsible for mapping `(table_name,
     /// batch_id)` to the underlying storage path.
-    async fn read_batch(&self, table_name: &str, batch_id: u64) -> anyhow::Result<Option<ReadResult>>;
+    async fn read_batch(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+    ) -> anyhow::Result<Option<ReadResult>>;
 }
