@@ -59,7 +59,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
         // Print table locations as JSON
         if let Some(loc_fn) = table_location_fn {
             let mut map = serde_json::Map::new();
-            for table in self.dataset.tables() {
+            for (name, table) in self.dataset.tables() {
                 let mut entry = serde_json::Map::new();
                 entry.insert(
                     "connector".to_string(),
@@ -67,7 +67,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
                 );
                 entry.insert(
                     "location".to_string(),
-                    serde_json::Value::String(loc_fn(&table.name)),
+                    serde_json::Value::String(loc_fn(&name)),
                 );
                 if let Some(ref time_col) = table.time_column {
                     entry.insert(
@@ -75,7 +75,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
                         serde_json::Value::String(time_col.clone()),
                     );
                 }
-                map.insert(table.name, serde_json::Value::Object(entry));
+                map.insert(name, serde_json::Value::Object(entry));
             }
             println!("{}", serde_json::Value::Object(map));
         }
@@ -89,13 +89,13 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
 
         match self.dataset.next_batches() {
             Ok(Some(batches)) => {
-                for source_batch in batches {
+                for (table_name, batch) in batches {
                     self.metrics.record_generation();
 
                     let start = Instant::now();
                     let result = self
                         .target
-                        .write(&source_batch.table_name, self.batch_id, source_batch.batch)
+                        .write(&table_name, self.batch_id, batch)
                         .await?;
                     self.metrics.record_write(&result, start.elapsed());
                     self.batch_id += 1;
@@ -173,7 +173,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
                 }
             };
 
-            for source_batch in source_batches {
+            for (table_name, batch) in source_batches {
                 self.metrics.record_generation();
 
                 // Acquire semaphore permit — creates backpressure if all write slots are busy
@@ -182,8 +182,6 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
                 let target = self.target.clone();
                 let metrics = self.metrics.clone();
                 let current_batch_id = self.batch_id;
-                let table_name = source_batch.table_name;
-                let batch = source_batch.batch;
                 self.batch_id += 1;
 
                 join_set.spawn(async move {
