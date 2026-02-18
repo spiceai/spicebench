@@ -125,16 +125,18 @@ pub(crate) async fn get_app_and_start_request(
 }
 
 pub(crate) async fn maybe_dispatch_run_to_system_adapter(
-    raw_cli_args: &[String],
+    _raw_cli_args: &[String],
     common_args: &CommonArgs,
 ) -> anyhow::Result<Option<SystemAdapterClient>> {
     if !has_system_adapter_transport(common_args) {
         return Ok(None);
     }
 
-    connect_system_adapter(common_args)
+    let client = connect_system_adapter(common_args)
         .await
-        .context("System adapter transport was configured but could not be initialized")
+        .context("System adapter transport was configured but could not be initialized")?;
+
+    Ok(Some(client))
 }
 
 fn resolve_system_adapter_method(raw_cli_args: &[String]) -> Option<&'static str> {
@@ -224,34 +226,12 @@ fn handle_adapter_execution_response(response: &serde_json::Value) -> anyhow::Re
 }
 
 /// Connect to a system adapter based on command-line arguments
-async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<Option<SystemAdapterClient>> {
-    let has_stdio = args.system_adapter_stdio_cmd.is_some();
-    let has_http = args.system_adapter_http_url.is_some();
-
-    if has_stdio && has_http {
-        anyhow::bail!(
-            "Set only one system adapter transport: --system-adapter-stdio-cmd or --system-adapter-http-url"
-        );
-    }
-
-    if !has_stdio && !has_http {
-        if args.system_adapter_stdio_args.is_some()
-            || !args.system_adapter_param.is_empty()
-            || !args.system_adapter_env.is_empty()
-        {
-            anyhow::bail!(
-                "System adapter params were provided without a transport. Set either --system-adapter-stdio-cmd or --system-adapter-http-url."
-            );
-        }
-        return Ok(None);
-    }
-
-    if has_http && !args.system_adapter_env.is_empty() {
-        anyhow::bail!(
-            "--system-adapter-env is only valid with --system-adapter-stdio-cmd transport."
-        );
-    }
-
+///
+/// All validation is handled by clap:
+/// - `conflicts_with` ensures stdio and http aren't both set
+/// - `requires` ensures params/args/env need a transport
+/// - `group` allows either stdio or http transport
+pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemAdapterClient> {
     if let Some(command) = &args.system_adapter_stdio_cmd {
         let args_vec = args
             .system_adapter_stdio_args
@@ -259,23 +239,20 @@ async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<Option<Syst
             .map(|s| s.split_whitespace().map(String::from).collect())
             .unwrap_or_default();
 
-        let client = ClientBuilder::stdio(command)
+        return ClientBuilder::stdio(command)
             .with_args(args_vec)
             .with_env(args.system_adapter_env.clone().into_iter().collect())
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create stdio client: {e}"))?;
-
-        return Ok(Some(client));
+            .map_err(|e| anyhow::anyhow!("Failed to create stdio client: {e}"));
     }
 
     if let Some(endpoint) = &args.system_adapter_http_url {
-        let client = ClientBuilder::http(endpoint)
+        return ClientBuilder::http(endpoint)
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?;
-        return Ok(Some(client));
+            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"));
     }
 
-    Ok(None)
+    Err(anyhow::anyhow!("No system adapter transport configured"))
 }
 
 /// Create the appropriate query executor based on command-line arguments

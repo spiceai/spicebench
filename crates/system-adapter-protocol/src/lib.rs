@@ -31,25 +31,23 @@ limitations under the License.
 //! ```no_run
 //! # #[cfg(feature = "client")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! use system_adapter_protocol::{Client, JsonRpcRequest, SetupRequest, SetupResponse};
+//! use system_adapter_protocol::Client;
 //! use std::collections::HashMap;
 //! use uuid::Uuid;
 //!
 //! // Create an HTTP client
 //! let mut client = Client::http("http://localhost:8080");
 //!
-//! // Make a setup request
-//! let request = JsonRpcRequest::new(
-//!     1,
-//!     "setup",
-//!     SetupRequest {
-//!         run_id: Uuid::new_v4(),
-//!         datasets: HashMap::new(),
-//!     }
-//! );
+//! // Setup a benchmark run
+//! let run_id = Uuid::new_v4();
+//! let setup_response = client.setup(run_id, HashMap::new()).await?;
 //!
-//! let response: system_adapter_protocol::JsonRpcResponse<SetupResponse> =
-//!     client.call_typed(request).await?;
+//! // Get query method information
+//! let query_response = client.query_method(run_id).await?;
+//! println!("Driver: {:?}", query_response.driver);
+//!
+//! // Teardown the run
+//! let teardown_response = client.teardown(run_id).await?;
 //! # Ok(())
 //! # }
 //! ```

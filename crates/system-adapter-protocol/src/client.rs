@@ -175,8 +175,42 @@ impl Client {
         Ok(methods)
     }
 
+    /// Setup a benchmark run with ETL configuration
+    pub async fn setup(
+        &mut self,
+        run_id: uuid::Uuid,
+        datasets: std::collections::HashMap<String, crate::DatasetConfig>,
+    ) -> Result<crate::SetupResponse> {
+        let request = crate::SetupRequest { run_id, datasets };
+        let rpc_request = JsonRpcRequest::new(1, crate::methods::SETUP, request);
+        let response = self.call_typed(rpc_request).await?;
+        response
+            .result
+            .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
+    }
+
+    /// Get query method/driver information for a benchmark run
+    pub async fn query_method(&mut self, run_id: uuid::Uuid) -> Result<crate::QueryMethodResponse> {
+        let request = crate::QueryMethodRequest { run_id };
+        let rpc_request = JsonRpcRequest::new(1, crate::methods::QUERY_METHOD, request);
+        let response = self.call_typed(rpc_request).await?;
+        response
+            .result
+            .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
+    }
+
+    /// Teardown a benchmark run
+    pub async fn teardown(&mut self, run_id: uuid::Uuid) -> Result<crate::TeardownResponse> {
+        let request = crate::TeardownRequest { run_id };
+        let rpc_request = JsonRpcRequest::new(1, crate::methods::TEARDOWN, request);
+        let response = self.call_typed(rpc_request).await?;
+        response
+            .result
+            .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
+    }
+
     /// Make a typed JSON-RPC call with request and response types
-    pub async fn call_typed<Req: Serialize, Resp: DeserializeOwned>(
+    async fn call_typed<Req: Serialize, Resp: DeserializeOwned>(
         &mut self,
         request: JsonRpcRequest<Req>,
     ) -> Result<JsonRpcResponse<Resp>> {

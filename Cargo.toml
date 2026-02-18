@@ -152,6 +152,7 @@ test-framework = { path = "crates/test-framework" }
 rand.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+uuid.workspace = true
 
 [features]
 default = []
