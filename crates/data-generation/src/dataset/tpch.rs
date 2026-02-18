@@ -367,11 +367,10 @@ impl TpchDataset {
             "tpchgen-rs TPC-H dataset initialized"
         );
 
-        let key_sets: HashMap<String, Mutex<IndexedKeySet<PrimaryKeyValue>>> =
-            TPCH_TABLES
-                .iter()
-                .map(|(name, _)| (name.to_string(), Mutex::new(IndexedKeySet::new())))
-                .collect();
+        let key_sets: HashMap<String, Mutex<IndexedKeySet<PrimaryKeyValue>>> = TPCH_TABLES
+            .iter()
+            .map(|(name, _)| (name.to_string(), Mutex::new(IndexedKeySet::new())))
+            .collect();
 
         let table_steps: HashMap<String, AtomicU16> = TPCH_TABLES
             .iter()
