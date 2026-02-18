@@ -15,20 +15,18 @@ limitations under the License.
 */
 #![allow(dead_code)]
 
-use crate::args::BenchRunArgs;
+use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
 use std::sync::Arc;
 use std::time::Duration;
 use system_adapter_protocol::MetricsResponse;
 use test_framework::{
     TestType, anyhow,
     arrow::util::pretty::print_batches,
-    git,
     metrics::{MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, StatisticsCollector},
     opentelemetry::KeyValue,
-    opentelemetry_sdk::Resource,
     spicetest::{
         SpiceTest,
-        datasets::{EndCondition, NotStarted},
+        datasets::NotStarted,
     },
     telemetry::streaming::StreamingOtlpExporter,
 };
@@ -115,82 +113,31 @@ fn spawn_sut_metrics_scraper(
 
 #[expect(clippy::too_many_lines)]
 pub(crate) async fn run(
-    args: &BenchRunArgs,
-    adbc_conn: Option<adbc_client::AdbcConnection>,
+    scenario: &Scenario,
+    common_args: &CommonArgs,
+    adbc_conn: adbc_client::AdbcConnection,
 ) -> anyhow::Result<()> {
-    if args.test_args.common.concurrency < 2 {
-        return Err(anyhow::anyhow!(
-            "Concurrency should be greater than 1 for a load test"
-        ));
-    }
-
-    let sut_name = "spicebench-sut";
-
-    let spiced_commit_sha =
-        std::env::var("SPICED_COMMIT").unwrap_or_else(|_| "unknown".to_string());
-    let spicebench_commit_sha = git::get_commit_sha();
-    let branch_name = git::get_branch_name();
-    let spicepod = args.test_args.common.spicepod_path.display().to_string();
-
-    let query_set = args.test_args.load_query_set()?;
-    let load_resource = Resource::builder_empty()
-        .with_attributes(vec![
-            KeyValue::new("service.name", sut_name.to_string()),
-            KeyValue::new("type", "spicebench"),
-            KeyValue::new("name", sut_name),
-            KeyValue::new("query_set", query_set.to_string()),
-            KeyValue::new("spicebench_commit_sha", spicebench_commit_sha),
-            KeyValue::new("spiced_commit_sha", spiced_commit_sha),
-            KeyValue::new("branch_name", branch_name),
-            KeyValue::new("concurrency", args.test_args.common.concurrency.to_string()),
-            KeyValue::new("spicepod", spicepod),
-            KeyValue::new(
-                "param_set_variants",
-                args.test_args
-                    .random_param_set_count
-                    .unwrap_or(1)
-                    .to_string(),
-            ),
-            KeyValue::new(
-                "protocol",
-                if args.test_args.http_clients {
-                    "http"
-                } else {
-                    "flight"
-                },
-            ),
-        ])
-        .build();
-
-    // Create telemetry with resource upfront, before any metrics calls
-    let telemetry = super::create_telemetry_with_resource(&args.test_args.common, load_resource);
-
+    scenario.load_query_set()?;
     // Create the appropriate query executor based on args
-    let executor = super::create_query_executor(&args.test_args, None, adbc_conn).await?;
+    let executor = Box::new(adbc_executor::AdbcDirectQueryExecutor::new(adbc_conn));
 
-    println!("Starting Spicebench run");
+    println!("Running benchmark");
 
-    let load_end_condition = if args.run_until_stopped {
-        EndCondition::Unlimited
-    } else {
-        EndCondition::Duration(Duration::from_secs(args.test_args.common.duration))
-    };
+    let load_end_condition = scenario.end_condition();
 
     // Create streaming OTLP exporter if OTLP endpoint is configured
-    let streaming_exporter = args
-        .test_args
-        .common
+    let streaming_exporter = common_args
         .otlp_endpoint
         .as_ref()
         .map(|endpoint| StreamingOtlpExporter::spawn(endpoint.clone()));
 
     // Spawn SUT metrics scraper if --scrape-sut-metrics is enabled and a system adapter is configured
     let sut_scraper_token = CancellationToken::new();
-    let sut_scraper_handle = if args.test_args.common.scrape_sut_metrics
-        && (args.test_args.common.system_adapter_stdio_cmd.is_some()
-            || args.test_args.common.system_adapter_http_url.is_some())
+    let sut_scraper_handle = if common_args.scrape_sut_metrics
+        && (common_args.system_adapter_stdio_cmd.is_some()
+            || common_args.system_adapter_http_url.is_some())
     {
-        let adapter = super::connect_system_adapter(&args.test_args.common).await?;
+        let adapter = super::connect_system_adapter(common_args).await?;
         let run_id = uuid::Uuid::new_v4();
         println!("SUT metrics scraping enabled (run_id={run_id})");
         Some(spawn_sut_metrics_scraper(
@@ -204,16 +151,12 @@ pub(crate) async fn run(
     };
 
     // Record client concurrency as a gauge
-    crate::metrics::ACTIVE_CONNECTIONS.record(
-        args.test_args.common.concurrency.try_into().unwrap_or(0),
-        &[],
-    );
+    crate::metrics::ACTIVE_CONNECTIONS.record(common_args.concurrency.try_into().unwrap_or(0), &[]);
 
     let mut test_builder = NotStarted::new()
-        .with_parallel_count(args.test_args.common.concurrency)
+        .with_parallel_count(common_args.concurrency)
         .with_end_condition(load_end_condition)
-        .with_query_executor(executor)
-        .with_query_duration_threshold(args.test_args.mark_query_failed_if_exceeds);
+        .with_query_executor(executor);
 
     // Add streaming metrics sender if exporter is configured
     if let Some(exporter) = &streaming_exporter {
@@ -221,18 +164,12 @@ pub(crate) async fn run(
     }
 
     let (query_set, test_builder) =
-        super::build_test_with_validation(&args.test_args, test_builder).await?;
+        super::build_test_with_validation(scenario, test_builder).await?;
 
-    // Use the same query overrides that were applied in build_test_with_validation
-    let query_overrides = args
-        .test_args
-        .query_overrides
-        .clone()
-        .map(test_framework::queries::QueryOverrides::from);
-    let _queries = query_set.get_queries(query_overrides, None, None).await?;
+    let _queries = query_set.get_queries(None, None, None).await?;
 
-    let throughput_test = SpiceTest::<NotStarted>::new("spicebench".into(), test_builder)
-        .with_progress_bars(!args.test_args.common.disable_progress_bars)
+    let throughput_test = SpiceTest::<NotStarted>::new(scenario.to_string(), test_builder)
+        .with_progress_bars(false)
         .start()?;
     let shutdown_token = throughput_test.cancellation_token();
     let test_future = throughput_test.wait();
@@ -240,7 +177,7 @@ pub(crate) async fn run(
     let test = match tokio::select! {
         res = &mut test_future => res,
         _ = signal::ctrl_c() => {
-            println!("Interrupt received, stopping load test...");
+            println!("Interrupt received, stopping benchmark...");
             shutdown_token.cancel();
             test_future.await
         }
@@ -250,11 +187,14 @@ pub(crate) async fn run(
             return Err(e);
         }
     };
+    test.get_query_durations().statistical_set()?;
+
     // Get all query durations for overall statistics before ending the test
     let all_durations = test.get_query_durations().clone();
     let all_duration_values: Vec<_> = all_durations.values().flatten().copied().collect();
 
     let metrics: QueryMetrics<_, NoExtendedMetrics> = test.collect(TestType::Load)?;
+    let _ = test.end();
 
     // Record per-query metrics for load test
     for query in &metrics.metrics {
@@ -283,13 +223,8 @@ pub(crate) async fn run(
         .record((metrics.finished_at - metrics.started_at).try_into()?, &[]);
 
     // Query throughput metrics
-    let total_iterations: u64 = metrics
-        .metrics
-        .iter()
-        .map(|q| q.iterations as u64)
-        .sum();
-    let test_duration_secs =
-        (metrics.finished_at - metrics.started_at) as f64 / 1000.0;
+    let total_iterations: u64 = metrics.metrics.iter().map(|q| q.iterations as u64).sum();
+    let test_duration_secs = (metrics.finished_at - metrics.started_at) as f64 / 1000.0;
     crate::metrics::QUERIES_TOTAL.add(total_iterations, &[]);
     if test_duration_secs > 0.0 {
         let qps = total_iterations as f64 / test_duration_secs;
@@ -300,8 +235,7 @@ pub(crate) async fn run(
             .map(|n| n.get() as f64)
             .unwrap_or(1.0);
         if cpu_cores > 0.0 {
-            crate::metrics::EFFICIENCY_QUERIES_PER_CORE
-                .record(qps / cpu_cores, &[]);
+            crate::metrics::EFFICIENCY_QUERIES_PER_CORE.record(qps / cpu_cores, &[]);
         }
     }
 
@@ -319,7 +253,8 @@ pub(crate) async fn run(
         );
     }
 
-    println!("Load test metrics:");
+    println!("{}", vec!["-"; 30].join(""));
+    println!("Benchmark metrics:");
     let records = metrics.build_records()?;
     print_batches(&records)?;
 
@@ -328,9 +263,6 @@ pub(crate) async fn run(
         exporter.shutdown().await;
     }
 
-    telemetry.emit().await?;
-
-    println!("Spicebench run completed");
-
+    println!("Benchmark completed");
     Ok(())
 }
