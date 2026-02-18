@@ -20,11 +20,11 @@ use adbc_client::AdbcConnection;
 use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
 use data_generation::storage::s3::S3Storage;
+use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 mod args;
 mod commands;
@@ -83,32 +83,7 @@ async fn main() -> anyhow::Result<()> {
         executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
-    let run_suffix = Uuid::new_v4().to_string();
-    let target_prefix = if cli.common.etl_target_base_prefix.is_empty() {
-        run_suffix.clone()
-    } else {
-        format!("{}/{run_suffix}", cli.common.etl_target_base_prefix)
-    };
-    tracing::info!(target_prefix = %target_prefix, "Generated unique ETL target prefix");
-
-    let target_config = TargetConfig {
-        bucket: cli.common.etl_bucket.clone(),
-        prefix: target_prefix,
-        region: cli.common.etl_region.clone(),
-        endpoint: cli.common.etl_endpoint.clone(),
-        table_format: cli.common.table_format.clone(),
-        executor_instance_type: cli.common.executor_instance_type.clone(),
-    };
-
     let source = Arc::new(S3Storage::new(&source_config)?);
-    let target = Arc::new(S3Storage::new(&target_config)?);
-
-    let mut pipeline = ETLPipeline::new(dataset_source, &generation_config, source, target)?;
-
-    // --- Initialize: ETL the first batch so the target has data ---
-    tracing::info!("Initializing ETL pipeline (first batch)...");
-    pipeline.initialize().await?;
-    tracing::info!("ETL pipeline initialized");
 
     // --- Connect to the system adapter ---
     let mut system_adapter_client = match connect_system_adapter(&cli.common).await {
@@ -118,32 +93,22 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // --- Setup the system adapter (target already has initial data) ---
-    let run_id = Uuid::new_v4();
-    let datasets = pipeline.setup_request_datasets();
-    let setup_metadata = std::collections::HashMap::from([(
-        "executor_instance_type".to_string(),
-        serde_json::Value::String(cli.common.executor_instance_type.clone()),
-    )]);
-
-    if let Err(e) = system_adapter_client
-        .setup(run_id, datasets, setup_metadata)
-        .await
-    {
-        return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
-    }
+    let run_id = uuid::Uuid::new_v4();
 
     // --- Query method from system adapter ---
     let adbc_driver = match system_adapter_client.query_method(run_id).await {
         Ok(method) => method,
         Err(e) => {
-            pipeline.cancel();
             return Err(anyhow::anyhow!("Failed to query system adapter: {e}"));
         }
     };
 
+    let driver_name = adbc_driver.driver.to_string();
+    let sink_kwargs = adbc_driver.db_kwargs.clone();
+    let load_kwargs = adbc_driver.db_kwargs;
+
     let adbc_conn: Option<AdbcConnection> =
-        match AdbcConnection::create(&adbc_driver.driver.to_string(), adbc_driver.db_kwargs) {
+        match AdbcConnection::create(&driver_name, sink_kwargs) {
             Ok(conn) => {
                 println!(
                     "ADBC connection established (driver: {})",
@@ -166,7 +131,41 @@ async fn main() -> anyhow::Result<()> {
         ));
     };
 
-    commands::load::run(&cli.common.scenario, &cli.common, adbc_conn, &mut pipeline).await?;
+    let target = Arc::new(AdbcSink::new(adbc_conn, None));
+    let mut pipeline = ETLPipeline::new(dataset_source, &generation_config, source, target)?;
+
+    // --- Initialize: ETL the first batch so the target has data ---
+    tracing::info!("Initializing ETL pipeline (first batch)...");
+    pipeline.initialize().await?;
+    tracing::info!("ETL pipeline initialized");
+
+    // --- Setup the system adapter after initial data load ---
+    let datasets = pipeline.setup_request_datasets();
+    let setup_metadata = std::collections::HashMap::from([(
+        "executor_instance_type".to_string(),
+        serde_json::Value::String(cli.common.executor_instance_type.clone()),
+    )]);
+
+    if let Err(e) = system_adapter_client
+        .setup(run_id, datasets, setup_metadata)
+        .await
+    {
+        pipeline.cancel();
+        return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
+    }
+
+    let load_conn = match AdbcConnection::create(&driver_name, load_kwargs) {
+        Ok(conn) => conn,
+        Err(e) => {
+            pipeline.cancel();
+            return Err(anyhow::anyhow!(
+                "Failed to create benchmark ADBC connection for driver {}: {e}",
+                adbc_driver.driver
+            ));
+        }
+    };
+
+    commands::load::run(&cli.common.scenario, &cli.common, load_conn, &mut pipeline).await?;
 
     // --- Wait for ETL to finish ---
     let final_state = pipeline.wait().await;

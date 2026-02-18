@@ -117,13 +117,6 @@ pub mod server;
 #[cfg(feature = "server")]
 pub use server::{Handler, Server, ServerError};
 
-/// ETL type for data ingestion configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EtlType {
-    S3,
-}
-
 /// ADBC driver types supported by the system adapter
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -143,25 +136,21 @@ impl std::fmt::Display for AdbcDriver {
     }
 }
 
-/// Configuration for a single dataset's ETL source
+/// Configuration for a single dataset to be prepared for benchmarking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetConfig {
-    /// Type of ETL to configure
-    pub etl_type: EtlType,
     /// Arrow schema for the dataset
     pub schema: SchemaRef,
-    /// ETL-specific configuration parameters
-    pub params: HashMap<String, serde_json::Value>,
 }
 
-/// Request to setup a benchmark run with ETL configuration
+/// Request to setup a benchmark run.
 ///
 /// JSON-RPC method: `setup`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupRequest {
     /// Unique identifier for this benchmark run
     pub run_id: Uuid,
-    /// Map of dataset name to its ETL configuration
+    /// Map of dataset name to dataset definition
     pub datasets: HashMap<String, DatasetConfig>,
     /// Arbitrary run metadata propagated from spicebench to adapters
     #[serde(default)]

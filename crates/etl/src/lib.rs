@@ -27,11 +27,13 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use system_adapter_protocol::{DatasetConfig as ProtocolDatasetConfig, EtlType};
+use system_adapter_protocol::DatasetConfig as ProtocolDatasetConfig;
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+pub mod sink;
 
 type DynSource = Arc<dyn Source>;
 type DynTarget = Arc<dyn Target>;
@@ -177,7 +179,7 @@ impl ETLPipeline {
     ///
     /// Each entry maps a table name to its
     /// [`DatasetConfig`](system_adapter_protocol::DatasetConfig), which includes
-    /// the rehydrated Arrow schema and the ETL type. This can be used to build a
+    /// the rehydrated Arrow schema. This can be used to build a
     /// [`SetupRequest`](system_adapter_protocol::SetupRequest) for the system
     /// adapter.
     pub fn setup_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
@@ -186,9 +188,7 @@ impl ETLPipeline {
             .into_iter()
             .map(|(name, table)| {
                 let config = ProtocolDatasetConfig {
-                    etl_type: EtlType::S3,
                     schema: table.rehydrated_schema(),
-                    params: self.target.table_params(&name),
                 };
                 (name, config)
             })

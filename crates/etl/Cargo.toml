@@ -17,9 +17,14 @@ name = "etl"
 path = "src/main.rs"
 
 [dependencies]
+adbc_client = { path = "../adbc_client" }
 anyhow.workspace = true
+arrow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
+serde_json.workspace = true
 system-adapter-protocol = { path = "../system-adapter-protocol" }
 tokio.workspace = true
 tokio-util.workspace = true
