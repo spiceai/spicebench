@@ -255,7 +255,7 @@ pub(crate) async fn run(
         None
     };
 
-    // Spawn freshness scraper
+    // Spawn e2e checker
     let table_names: Vec<String> = etl_pipeline.dataset().tables().keys().cloned().collect();
     let e2e_latency_token = CancellationToken::new();
     let e2e_latency_handle = spawn_e2e_latency_check(
