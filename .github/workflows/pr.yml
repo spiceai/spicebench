@@ -30,10 +30,10 @@ jobs:
           cache: false # Using GHA cache is slower than re-installing
 
       - name: cargo check
-        run: cargo check --workspace
+        run: make check
 
       - name: cargo test
-        run: cargo test -p spicebench
+        run: make test
 
   clippy:
     name: cargo clippy
@@ -49,4 +49,4 @@ jobs:
           cache: false # Using GHA cache is slower than re-installing
 
       - name: cargo clippy
-        run: cargo clippy -p spicebench --all-targets -- -D warnings
+        run: make clippy
