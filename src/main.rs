@@ -151,6 +151,9 @@ async fn main() -> anyhow::Result<()> {
     let setup_metadata = std::collections::HashMap::from([(
         "executor_instance_type".to_string(),
         serde_json::Value::String(cli.common.executor_instance_type.clone()),
+    ), (
+        "table_format".to_string(),
+        serde_json::Value::String(cli.common.table_format.to_string()),
     )]);
 
     if let Err(e) = system_adapter_client
