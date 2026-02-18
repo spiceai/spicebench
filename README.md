@@ -267,6 +267,37 @@ spicebench \
     --scrape-sut-metrics
 ```
 
+#### Databricks adapter example (local stdio binary)
+
+Build the adapter:
+
+```bash
+cargo build --manifest-path system-adapters/databricks/Cargo.toml
+```
+
+Install the Databricks ADBC driver used by `spicebench` query execution:
+
+```bash
+curl -LsSf https://dbc.columnar.tech/install.sh | sh
+dbc install databricks
+```
+
+Run `spicebench` with the adapter over stdio:
+
+```bash
+spicebench \
+    --query-set tpch \
+    --system-adapter-name databricks \
+    --system-adapter-stdio-cmd system-adapters/databricks/target/debug/databricks-system-adapter \
+    --system-adapter-stdio-args "stdio" \
+    --system-adapter-env DATABRICKS_ENDPOINT=$DATABRICKS_ENDPOINT \
+    --system-adapter-env DATABRICKS_TOKEN=$DATABRICKS_TOKEN \
+    --system-adapter-env DATABRICKS_HTTP_PATH=$DATABRICKS_HTTP_PATH \
+    --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=$DATABRICKS_SQL_WAREHOUSE_ID \
+    --system-adapter-env DATABRICKS_CATALOG=spiceai_sandbox \
+    --system-adapter-env DATABRICKS_SCHEMA=tpch
+```
+
 ### Crate Overview
 
 | Crate                     | Description                                                                                |

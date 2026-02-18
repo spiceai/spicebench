@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["system-adapters/databricks"]
 members = [
     ".",
     "crates/adbc_client",
