@@ -19,6 +19,7 @@ use std::sync::Arc;
 use adbc_client::AdbcConnection;
 use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
+use data_generation::dataset::MutationConfig;
 use data_generation::source::s3::S3Source;
 use data_generation::target::s3::S3Target;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
@@ -100,7 +101,9 @@ async fn main() -> anyhow::Result<()> {
     let source = Arc::new(S3Source::new(&source_config)?);
     let target = Arc::new(S3Target::new(&target_config)?);
 
-    let mut pipeline = ETLPipeline::new(dataset_source, &generation_config, source, target)?;
+    let mutations = MutationConfig::new(0.1, 0.1);
+
+    let mut pipeline = ETLPipeline::new(dataset_source, &generation_config, source, target, &mutations)?;
 
     // --- Initialize: ETL the first batch so the target has data ---
     tracing::info!("Initializing ETL pipeline (first batch)...");

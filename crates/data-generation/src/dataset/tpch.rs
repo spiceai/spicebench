@@ -15,16 +15,17 @@ limitations under the License.
 */
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use arrow::array::RecordBatch;
+use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use duckdb::Connection;
 use tracing::info;
 
 use crate::config::DatasetConfig;
+use crate::dataset::MutationConfig;
 
 use super::{Dataset, DatasetTable};
 
@@ -43,8 +44,9 @@ const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
 /// Returns the static Arrow schema for a TPC-H table (without time column).
 ///
 /// The time column is not included because it will be added during ETL rehydration.
+/// Includes `_op` and `_op_index` columns for change-tracking.
 fn tpch_schema(table: &str) -> SchemaRef {
-    let fields: Vec<Field> = match table {
+    let mut fields: Vec<Field> = match table {
         "region" => vec![
             Field::new("r_regionkey", DataType::Int32, true),
             Field::new("r_name", DataType::Utf8, true),
@@ -124,6 +126,8 @@ fn tpch_schema(table: &str) -> SchemaRef {
         ],
         _ => unreachable!("unknown TPC-H table: {table}"),
     };
+    fields.push(Field::new("_op", DataType::Utf8, false));
+    fields.push(Field::new("_op_index", DataType::Int64, false));
     Arc::new(Schema::new(fields))
 }
 
@@ -146,10 +150,15 @@ pub struct TpchDataset {
     current_step: AtomicU16,
     /// Total number of step partitions for `dbgen(children=...)`.
     num_steps: u16,
+    /// Configuration for data mutations
+    #[expect(dead_code)] // mutations implemented soon
+    mutations: MutationConfig,
+    /// Global monotonically increasing operation counter for replay ordering.
+    op_counter: AtomicI64,
 }
 
 impl TpchDataset {
-    pub fn new(config: &DatasetConfig) -> anyhow::Result<Self> {
+    pub fn new(config: &DatasetConfig, mutations: &MutationConfig) -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
 
         // Generate initial TPC-H data (step 0)
@@ -173,6 +182,8 @@ impl TpchDataset {
             consumed_tables: RwLock::new(HashSet::new()),
             current_step: AtomicU16::new(0),
             num_steps: config.num_steps,
+            mutations: mutations.clone(),
+            op_counter: AtomicI64::new(0),
         })
     }
 
@@ -220,11 +231,25 @@ impl TpchDataset {
 
 #[async_trait]
 impl Dataset for TpchDataset {
-    fn create(config: &DatasetConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    fn create(config: &DatasetConfig, mutations: &MutationConfig) -> anyhow::Result<Arc<dyn Dataset>>
     where
         Self: Sized + 'static,
     {
-        Ok(Arc::new(Self::new(config)?))
+        Ok(Arc::new(Self::new(config, mutations)?))
+    }
+
+    fn primary_key(&self, table: &str) -> Vec<String> {
+        match table {
+            "region" => vec!["r_regionkey".to_string()],
+            "nation" => vec!["n_nationkey".to_string()],
+            "supplier" => vec!["s_suppkey".to_string()],
+            "customer" => vec!["c_custkey".to_string()],
+            "part" => vec!["p_partkey".to_string()],
+            "partsupp" => vec!["ps_partkey".to_string(), "ps_suppkey".to_string()],
+            "orders" => vec!["o_orderkey".to_string()],
+            "lineitem" => vec!["l_orderkey".to_string(), "l_linenumber".to_string()],
+            _ => vec![],
+        }
     }
 
     fn num_batches(&self, table: &str) -> u64 {
@@ -311,7 +336,24 @@ impl Dataset for TpchDataset {
             return Ok(None);
         }
 
-        Ok(Some(batches.into_iter().next().expect("checked non-empty")))
+        let batch = batches.into_iter().next().expect("checked non-empty");
+        let num_rows = batch.num_rows();
+
+        // Reserve a contiguous range of op indices for this batch.
+        let op_base = self
+            .op_counter
+            .fetch_add(num_rows as i64, Ordering::SeqCst);
+
+        // All rows are creates for now.
+        let ops = StringArray::from(vec!["c"; num_rows]);
+        let op_indices = Int64Array::from((op_base..op_base + num_rows as i64).collect::<Vec<_>>());
+
+        let schema = tpch_schema(table);
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = batch.columns().to_vec();
+        columns.push(Arc::new(ops));
+        columns.push(Arc::new(op_indices));
+
+        Ok(Some(RecordBatch::try_new(schema, columns)?))
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {
