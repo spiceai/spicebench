@@ -1,11 +1,74 @@
 name: Run spicebench
+run-name: Run spicebench - ${{ github.event.inputs.scenario || 'tpch' }}
 
 on:
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Scenario/query set to run (e.g. tpch)'
+        required: true
+        default: 'tpch'
+        type: string
+      run_data_generation:
+        description: 'Run data-generation before spicebench'
+        required: false
+        default: false
+        type: boolean
+      data_generation_runner_type:
+        description: 'Runner label for data-generation job'
+        required: false
+        default: 'ubuntu-latest'
+        type: string
+      data_generation_scale_factor:
+        description: 'Data-generation scale factor'
+        required: false
+        default: '1.0'
+        type: string
+      data_generation_bucket:
+        description: 'S3 bucket for generated data (required if run_data_generation=true)'
+        required: false
+        type: string
+      data_generation_prefix:
+        description: 'Base S3 prefix for generated data (scenario appended automatically)'
+        required: false
+        default: 'data-gen'
+        type: string
+      data_generation_max_concurrency:
+        description: 'Data-generation max concurrent S3 writes'
+        required: false
+        default: '8'
+        type: string
+      data_generation_region:
+        description: 'AWS region for data-generation'
+        required: false
+        default: 'us-east-1'
+        type: string
+      data_generation_skip_initial:
+        description: 'Skip data-generation initial ingest'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
+  data-generation:
+    name: Run data generation
+    if: ${{ github.event.inputs.run_data_generation == 'true' }}
+    uses: ./.github/workflows/data_generation_run.yml
+    with:
+      scenario: ${{ github.event.inputs.scenario }}
+      runner_type: ${{ github.event.inputs.data_generation_runner_type }}
+      scale_factor: ${{ github.event.inputs.data_generation_scale_factor }}
+      bucket: ${{ github.event.inputs.data_generation_bucket }}
+      prefix: ${{ github.event.inputs.data_generation_prefix }}
+      max_concurrency: ${{ github.event.inputs.data_generation_max_concurrency }}
+      region: ${{ github.event.inputs.data_generation_region }}
+      skip_initial: ${{ github.event.inputs.data_generation_skip_initial == 'true' }}
+    secrets: inherit
+
   run-spicebench:
     name: Run spicebench
+    needs: [data-generation]
+    if: ${{ always() && (needs.data-generation.result == 'success' || needs.data-generation.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 600
     steps:
@@ -40,7 +103,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.91
-          cache: false
+          cache: true
 
       - name: Build spicebench
         if: steps.cache-spicebench.outputs.cache-hit != 'true'
@@ -53,10 +116,11 @@ jobs:
         env:
           SPICEAI_API_KEY: ${{ secrets.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
-          RUSTFLAGS: "-A warnings"
+          RUSTFLAGS: '-A warnings'
+          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
         run: |
           ~/.spice/bin/spicebench \
             --concurrency 2  \
-            --query-set tpch \
+            --query-set "${SCENARIO}" \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "run ghcr.io/spiceai/spidapter:latest -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL run stdio --verbose"
