@@ -79,8 +79,6 @@ async fn main() -> anyhow::Result<()> {
         prefix: cli.common.etl_source_prefix.clone(),
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
-        table_format: cli.common.table_format.clone(),
-        executor_instance_type: cli.common.executor_instance_type.clone(),
     };
 
     let source = Arc::new(S3Storage::new(&source_config)?);

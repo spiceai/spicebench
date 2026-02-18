@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use adbc_client::AdbcConnection;
 use clap::Parser;
-use data_generation::config::{DatasetConfig, TableFormat, TargetConfig};
+use data_generation::config::{DatasetConfig, TargetConfig};
 use data_generation::storage::s3::S3Storage;
 use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
@@ -47,14 +47,6 @@ struct Cli {
     /// S3 key prefix for source data
     #[arg(long, default_value = "")]
     source_prefix: String,
-
-    /// Logical table format propagated to system adapters
-    #[arg(long, value_enum, default_value = "parquet")]
-    table_format: TableFormat,
-
-    /// Executor instance type label propagated to adapters for dashboarding
-    #[arg(long, default_value = "unknown")]
-    executor_instance_type: String,
 
     /// AWS region
     #[arg(long)]
@@ -100,8 +92,6 @@ impl Cli {
         TargetConfig {
             bucket: self.bucket.clone(),
             prefix: self.source_prefix.clone(),
-            table_format: self.table_format.clone(),
-            executor_instance_type: self.executor_instance_type.clone(),
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }
