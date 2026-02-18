@@ -22,9 +22,9 @@ use std::sync::Arc;
 use data_generation::config::{Cli, Command, CommonArgs};
 use data_generation::dataset;
 use data_generation::dataset::tpch::TpchDataset;
-use data_generation::ingestor::Ingestor;
 use data_generation::metrics::{IngestResult, Metrics};
 use data_generation::target::s3::S3Target;
+use etl::ingestor::Ingestor;
 
 fn print_summary(result: &IngestResult) {
     println!("  Duration:          {:?}", result.elapsed);

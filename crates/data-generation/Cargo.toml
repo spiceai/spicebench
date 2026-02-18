@@ -12,10 +12,6 @@ version.workspace = true
 name = "data_generation"
 path = "src/lib.rs"
 
-[[bin]]
-name = "data-generation"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
 arrow = { workspace = true }
@@ -30,5 +26,4 @@ parquet.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4"] }
