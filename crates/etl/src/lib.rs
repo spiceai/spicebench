@@ -126,8 +126,6 @@ impl ETLPipeline {
     pub fn new(
         dataset_source: DatasetSource,
         config: &GenerationDatasetConfig,
-        source: DynSource,
-        target: DynTarget,
         data_storage: Arc<dyn DataStorage>,
         data_sink: Arc<dyn Sink>,
         mutations: &MutationConfig,
