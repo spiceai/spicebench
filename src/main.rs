@@ -23,6 +23,8 @@ use data_generation::source::s3::S3Source;
 use data_generation::target::s3::S3Target;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
+use tracing::Level;
+use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 mod args;
@@ -51,6 +53,12 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::CryptoProvider::install_default(
         rustls::crypto::aws_lc_rs::default_provider(),
     );
+
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     let cli = Cli::parse();
 
     // --- Construct the ETL pipeline ---
