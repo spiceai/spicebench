@@ -134,7 +134,6 @@ pub(crate) async fn get_app_and_start_request(
 }
 
 pub(crate) async fn maybe_dispatch_run_to_system_adapter(
-    _raw_cli_args: &[String],
     common_args: &CommonArgs,
 ) -> anyhow::Result<Option<SystemAdapterClient>> {
     if !has_system_adapter_transport(common_args) {
@@ -149,7 +148,6 @@ pub(crate) async fn maybe_dispatch_run_to_system_adapter(
 fn has_system_adapter_transport(args: &CommonArgs) -> bool {
     args.system_adapter_stdio_cmd.is_some() || args.system_adapter_http_url.is_some()
 }
-
 
 const SYSTEM_ADAPTER_ASYNC_QUERY_METHOD: &str = "query.async";
 
