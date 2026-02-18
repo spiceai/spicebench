@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Scenario/query set to run (e.g. tpch)'
+        description: "Scenario/query set to run (e.g. tpch)"
         required: true
-        default: 'tpch'
+        default: "tpch"
         type: string
       system_adapter:
         description: 'System adapter to run (docker spidapter or local databricks adapter)'
@@ -18,41 +18,41 @@ on:
           - spidapter
           - databricks
       run_data_generation:
-        description: 'Run data-generation before spicebench'
+        description: "Run data-generation before spicebench"
         required: false
         default: false
         type: boolean
       data_generation_runner_type:
-        description: 'Runner label for data-generation job'
+        description: "Runner label for data-generation job"
         required: false
-        default: 'ubuntu-latest'
+        default: "ubuntu-latest"
         type: string
       data_generation_scale_factor:
-        description: 'Data-generation scale factor'
+        description: "Data-generation scale factor"
         required: false
-        default: '1.0'
+        default: "1.0"
         type: string
       data_generation_bucket:
-        description: 'S3 bucket for generated data (required if run_data_generation=true)'
+        description: "S3 bucket for generated data (required if run_data_generation=true)"
         required: false
         type: string
       data_generation_prefix:
-        description: 'Base S3 prefix for generated data (scenario appended automatically)'
+        description: "Base S3 prefix for generated data (scenario appended automatically)"
         required: false
-        default: 'data-gen'
+        default: "data-gen"
         type: string
       data_generation_max_concurrency:
-        description: 'Data-generation max concurrent S3 writes'
+        description: "Data-generation max concurrent S3 writes"
         required: false
-        default: '8'
+        default: "8"
         type: string
       data_generation_region:
-        description: 'AWS region for data-generation'
+        description: "AWS region for data-generation"
         required: false
-        default: 'us-east-1'
+        default: "us-east-1"
         type: string
       data_generation_skip_initial:
-        description: 'Skip data-generation initial ingest'
+        description: "Skip data-generation initial ingest"
         required: false
         default: false
         type: boolean
@@ -100,36 +100,7 @@ jobs:
         if: ${{ github.event.inputs.system_adapter == 'spidapter' }}
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
-      - name: Restore spicebench cache
-        id: cache-spicebench
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.spice/bin/spicebench
-          key: spicebench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
-          restore-keys: |
-            spicebench-${{ runner.os }}-
-
-      - name: Setup Rust toolchain
-        if: steps.cache-spicebench.outputs.cache-hit != 'true'
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: 1.91
-          cache: true
-
-      - name: Build spicebench
-        id: build-spicebench
-        if: steps.cache-spicebench.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/.spice/bin
-          cargo build -p spicebench
-          install -m 755 target/debug/spicebench ~/.spice/bin/spicebench
-
-      - name: Save spicebench cache
-        if: steps.build-spicebench.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.spice/bin/spicebench
-          key: spicebench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
+      - uses: ./.github/actions/build-spicebench
 
       - name: Restore databricks adapter cache
         if: ${{ github.event.inputs.system_adapter == 'databricks' }}
@@ -241,7 +212,6 @@ jobs:
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
-          RUSTFLAGS: '-A warnings'
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
         run: |
@@ -265,7 +235,7 @@ jobs:
 
           ~/.spice/bin/spicebench \
             --concurrency 2  \
-            --query-set "${SCENARIO}" \
+            --scenario "${SCENARIO}" \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS}

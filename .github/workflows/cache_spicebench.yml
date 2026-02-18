@@ -1,0 +1,18 @@
+name: Cache spicebench
+
+on:
+  push:
+    branches:
+      - trunk
+
+jobs:
+  build-and-cache:
+    name: Build and cache spicebench
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/build-spicebench
+        with:
+          lookup-only: "true"
