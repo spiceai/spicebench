@@ -17,6 +17,7 @@ limitations under the License.
 use std::time::Duration;
 
 use crate::args::{CommonArgs, DatasetTestArgs};
+use adbc_client::AdbcConnection;
 use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder};
 use test_framework::{
     anyhow,
@@ -30,6 +31,7 @@ use test_framework::{
     telemetry::{OtlpExporterConfig, Telemetry},
 };
 
+pub(crate) mod adbc_executor;
 pub(crate) mod load;
 
 /// Create telemetry with resource attributes known upfront.
@@ -156,8 +158,15 @@ pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemA
 pub(crate) async fn create_query_executor(
     args: &DatasetTestArgs,
     spiced_instance: &test_framework::spiced::SpicedInstance,
+    adbc_conn: Option<AdbcConnection>,
 ) -> anyhow::Result<Box<dyn test_framework::execution::QueryExecutor>> {
+    if let Some(conn) = adbc_conn {
+        println!("Using query executor: ADBC direct connection");
+        return Ok(Box::new(adbc_executor::AdbcDirectQueryExecutor::new(conn)));
+    }
+
     let executor: Box<dyn test_framework::execution::QueryExecutor> = if args.distributed {
+        println!("Using query executor: distributed (http)");
         let http_client = spiced_instance.http_client()?;
         let base_url = spiced_instance.http_base_url().to_string();
         Box::new(test_framework::execution::DistributedExecutor::new(
@@ -165,6 +174,7 @@ pub(crate) async fn create_query_executor(
             base_url,
         ))
     } else {
+        println!("Using query executor: http");
         let http_client = spiced_instance.http_client()?;
         let base_url = spiced_instance.http_base_url().to_string();
         Box::new(test_framework::execution::HttpExecutor::new(

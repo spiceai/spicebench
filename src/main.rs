@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use adbc_client::AdbcConnection;
 use clap::Parser;
 use test_framework::{anyhow, rustls};
 use uuid::Uuid;
@@ -56,14 +57,24 @@ async fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
     }
 
-    let _adbc_driver = match system_adapter_client.query_method(run_id).await {
+    let adbc_driver = match system_adapter_client.query_method(run_id).await {
         Ok(method) => method,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to query system adapter: {e}"));
         }
     };
 
-    commands::load::run(&cli.args).await?;
+    let adbc_conn = match AdbcConnection::create(&adbc_driver.driver.to_string(), adbc_driver.db_kwargs) {
+        Ok(conn) => {
+            println!("ADBC connection established (driver: {})", adbc_driver.driver);
+            conn
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to create ADBC connection for driver {}: {e}", adbc_driver.driver));
+        }
+    };
+
+    commands::load::run(&cli.args, Some(adbc_conn)).await?;
 
     if let Err(e) = system_adapter_client.teardown(run_id).await {
         return Err(anyhow::anyhow!("Failed to teardown system adapter: {e}"));

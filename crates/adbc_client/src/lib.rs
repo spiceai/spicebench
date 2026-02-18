@@ -19,7 +19,7 @@ pub mod databricks;
 use std::collections::HashMap;
 
 use adbc_core::options::{AdbcVersion, OptionDatabase, OptionValue};
-use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Statement};
+use adbc_core::{Connection, Database, Driver, Statement, LOAD_FLAG_DEFAULT};
 use adbc_driver_manager::ManagedDriver;
 use arrow_array::RecordBatch;
 use snafu::prelude::*;
@@ -58,13 +58,12 @@ impl AdbcConnection {
         Self { conn }
     }
 
-    /// Create an `AdbcConnection` from a driver name and a map of string key-value options.
+    /// Create an `AdbcConnection` from a driver name and a map of key-value options.
     ///
     /// Each key in `kwargs` is converted to an [`OptionDatabase`] variant
     /// (matching canonical keys like `"uri"`, `"username"`, `"password"`,
-    /// or falling back to [`OptionDatabase::Other`]), and each value becomes
-    /// an [`OptionValue::String`].
-    pub fn create(driver_name: &str, kwargs: HashMap<String, String>) -> Result<Self> {
+    /// or falling back to [`OptionDatabase::Other`]).
+    pub fn create(driver_name: &str, kwargs: HashMap<String, serde_json::Value>) -> Result<Self> {
         let mut driver = ManagedDriver::load_from_name(
             driver_name,
             None,
@@ -78,7 +77,13 @@ impl AdbcConnection {
 
         let opts: Vec<(OptionDatabase, OptionValue)> = kwargs
             .into_iter()
-            .map(|(k, v)| (OptionDatabase::from(k.as_str()), OptionValue::from(v)))
+            .map(|(k, v)| {
+                let val = match v {
+                    serde_json::Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                (OptionDatabase::from(k.as_str()), OptionValue::from(val))
+            })
             .collect();
 
         let db = driver

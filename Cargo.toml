@@ -131,6 +131,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+adbc_client = { path = "crates/adbc_client" }
 arrow.workspace = true
 arrow-json.workspace = true
 async-trait.workspace = true
