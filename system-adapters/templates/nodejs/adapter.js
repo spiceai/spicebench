@@ -107,7 +107,9 @@ function methodRpcMethods() {
 }
 
 function dispatch(request) {
-  const id = Object.prototype.hasOwnProperty.call(request, 'id') ? request.id : null;
+  const id = Object.prototype.hasOwnProperty.call(request, 'id')
+    ? request.id
+    : null;
 
   if (request.jsonrpc !== JSONRPC_VERSION) {
     return jsonrpcError(id, -32600, "Invalid Request: jsonrpc must be '2.0'");
@@ -192,7 +194,9 @@ function runHttp(host, port, rpcPath) {
     });
     req.on('error', (err) => {
       const response = Buffer.from(
-        JSON.stringify(jsonrpcError(null, -32603, 'Internal error', String(err)))
+        JSON.stringify(
+          jsonrpcError(null, -32603, 'Internal error', String(err)),
+        ),
       );
       res.writeHead(500, {
         'Content-Type': 'application/json',
@@ -203,7 +207,9 @@ function runHttp(host, port, rpcPath) {
   });
 
   server.listen(port, host, () => {
-    process.stderr.write(`JSON-RPC HTTP server listening on http://${host}:${port}${rpcPath}\n`);
+    process.stderr.write(
+      `JSON-RPC HTTP server listening on http://${host}:${port}${rpcPath}\n`,
+    );
   });
 }
 

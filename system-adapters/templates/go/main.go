@@ -113,17 +113,17 @@ func methodMetrics(_ map[string]interface{}) interface{} {
 	// - active connections from DB/service diagnostics APIs
 	return map[string]interface{}{
 		"resource": map[string]interface{}{
-			"cpu_usage_percent": 0.0,
+			"cpu_usage_percent":  0.0,
 			"memory_usage_bytes": 0,
-			"disk_read_bytes": 0,
-			"disk_write_bytes": 0,
-			"disk_read_iops": 0,
-			"disk_write_iops": 0,
+			"disk_read_bytes":    0,
+			"disk_write_bytes":   0,
+			"disk_read_iops":     0,
+			"disk_write_iops":    0,
 		},
 		"ingestion": map[string]interface{}{
-			"rows_ingested": 0,
-			"bytes_ingested": 0,
-			"rows_per_sec": 0.0,
+			"rows_ingested":      0,
+			"bytes_ingested":     0,
+			"rows_per_sec":       0.0,
 			"active_connections": 0,
 		},
 	}
