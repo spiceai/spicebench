@@ -116,7 +116,7 @@ jobs:
         env:
           SPICEAI_API_KEY: ${{ secrets.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
-          RUSTFLAGS: "-A warnings"
+          RUSTFLAGS: '-A warnings'
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
         run: |
           ~/.spice/bin/spicebench \
