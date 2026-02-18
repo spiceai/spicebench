@@ -22,6 +22,7 @@ use crate::{
     TeardownRequest, TeardownResponse,
 };
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
@@ -196,30 +197,34 @@ impl<H: Handler> Server<H> {
         result
     }
 
-    async fn handle_setup(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
-        let params = match request.get("params") {
-            Some(p) => p,
-            None => {
-                return serde_json::to_value(JsonRpcResponse::<()>::error(
-                    id,
-                    JsonRpcError::new(error_codes::INVALID_PARAMS, "Missing params"),
-                ))
-                .unwrap_or(serde_json::json!({}));
-            }
-        };
+    /// Parse and deserialize the `params` field from a JSON-RPC request.
+    fn parse_params<T: DeserializeOwned>(
+        request: &serde_json::Value,
+        id: &serde_json::Value,
+    ) -> std::result::Result<T, serde_json::Value> {
+        let params = request.get("params").ok_or_else(|| {
+            serde_json::to_value(JsonRpcResponse::<()>::error(
+                id.clone(),
+                JsonRpcError::new(error_codes::INVALID_PARAMS, "Missing params"),
+            ))
+            .unwrap_or(serde_json::json!({}))
+        })?;
 
-        let setup_request: SetupRequest = match serde_json::from_value(params.clone()) {
-            Ok(req) => req,
-            Err(e) => {
-                return serde_json::to_value(JsonRpcResponse::<()>::error(
-                    id,
-                    JsonRpcError::new(error_codes::INVALID_PARAMS, format!("Invalid params: {e}")),
-                ))
-                .unwrap_or(serde_json::json!({}));
-            }
-        };
+        serde_json::from_value(params.clone()).map_err(|e| {
+            serde_json::to_value(JsonRpcResponse::<()>::error(
+                id.clone(),
+                JsonRpcError::new(error_codes::INVALID_PARAMS, format!("Invalid params: {e}")),
+            ))
+            .unwrap_or(serde_json::json!({}))
+        })
+    }
 
-        match self.handler.setup(setup_request.run_id, setup_request.datasets).await {
+    /// Convert a handler result into a JSON-RPC response value.
+    fn handler_response<T: serde::Serialize>(
+        result: std::result::Result<T, String>,
+        id: serde_json::Value,
+    ) -> serde_json::Value {
+        match result {
             Ok(response) => serde_json::to_value(JsonRpcResponse::success(id, response))
                 .unwrap_or(serde_json::json!({})),
             Err(e) => serde_json::to_value(JsonRpcResponse::<()>::error(
@@ -228,108 +233,38 @@ impl<H: Handler> Server<H> {
             ))
             .unwrap_or(serde_json::json!({})),
         }
+    }
+
+    async fn handle_setup(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
+        let req: SetupRequest = match Self::parse_params(request, &id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        Self::handler_response(self.handler.setup(req.run_id, req.datasets).await, id)
     }
 
     async fn handle_query_method(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
-        let params = match request.get("params") {
-            Some(p) => p,
-            None => {
-                return serde_json::to_value(JsonRpcResponse::<()>::error(
-                    id,
-                    JsonRpcError::new(error_codes::INVALID_PARAMS, "Missing params"),
-                ))
-                .unwrap_or(serde_json::json!({}));
-            }
+        let req: QueryMethodRequest = match Self::parse_params(request, &id) {
+            Ok(r) => r,
+            Err(e) => return e,
         };
-
-        let query_request: QueryMethodRequest = match serde_json::from_value(params.clone()) {
-            Ok(req) => req,
-            Err(e) => {
-                return serde_json::to_value(JsonRpcResponse::<()>::error(
-                    id,
-                    JsonRpcError::new(error_codes::INVALID_PARAMS, format!("Invalid params: {e}")),
-                ))
-                .unwrap_or(serde_json::json!({}));
-            }
-        };
-
-        match self.handler.query_method(query_request.run_id).await {
-            Ok(response) => serde_json::to_value(JsonRpcResponse::success(id, response))
-                .unwrap_or(serde_json::json!({})),
-            Err(e) => serde_json::to_value(JsonRpcResponse::<()>::error(
-                id,
-                JsonRpcError::new(error_codes::INTERNAL_ERROR, e),
-            ))
-            .unwrap_or(serde_json::json!({})),
-        }
+        Self::handler_response(self.handler.query_method(req.run_id).await, id)
     }
 
     async fn handle_teardown(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
-        let params = match request.get("params") {
-            Some(p) => p,
-            None => {
-                return serde_json::to_value(JsonRpcResponse::<()>::error(
-                    id,
-                    JsonRpcError::new(error_codes::INVALID_PARAMS, "Missing params"),
-                ))
-                .unwrap_or(serde_json::json!({}));
-            }
+        let req: TeardownRequest = match Self::parse_params(request, &id) {
+            Ok(r) => r,
+            Err(e) => return e,
         };
-
-        let teardown_request: TeardownRequest = match serde_json::from_value(params.clone()) {
-            Ok(req) => req,
-            Err(e) => {
-                return serde_json::to_value(JsonRpcResponse::<()>::error(
-                    id,
-                    JsonRpcError::new(error_codes::INVALID_PARAMS, format!("Invalid params: {e}")),
-                ))
-                .unwrap_or(serde_json::json!({}));
-            }
-        };
-
-        match self.handler.teardown(teardown_request.run_id).await {
-            Ok(response) => serde_json::to_value(JsonRpcResponse::success(id, response))
-                .unwrap_or(serde_json::json!({})),
-            Err(e) => serde_json::to_value(JsonRpcResponse::<()>::error(
-                id,
-                JsonRpcError::new(error_codes::INTERNAL_ERROR, e),
-            ))
-            .unwrap_or(serde_json::json!({})),
-        }
+        Self::handler_response(self.handler.teardown(req.run_id).await, id)
     }
 
     async fn handle_metrics(&mut self, request: &serde_json::Value, id: serde_json::Value) -> serde_json::Value {
-        let params = match request.get("params") {
-            Some(p) => p,
-            None => {
-                return serde_json::to_value(JsonRpcResponse::<()>::error(
-                    id,
-                    JsonRpcError::new(error_codes::INVALID_PARAMS, "Missing params"),
-                ))
-                .unwrap_or(serde_json::json!({}));
-            }
+        let req: MetricsRequest = match Self::parse_params(request, &id) {
+            Ok(r) => r,
+            Err(e) => return e,
         };
-
-        let metrics_request: MetricsRequest = match serde_json::from_value(params.clone()) {
-            Ok(req) => req,
-            Err(e) => {
-                return serde_json::to_value(JsonRpcResponse::<()>::error(
-                    id,
-                    JsonRpcError::new(error_codes::INVALID_PARAMS, format!("Invalid params: {e}")),
-                ))
-                .unwrap_or(serde_json::json!({}));
-            }
-        };
-
-        match self.handler.metrics(metrics_request.run_id).await {
-            Ok(response) => serde_json::to_value(JsonRpcResponse::success(id, response))
-                .unwrap_or(serde_json::json!({})),
-            Err(e) => serde_json::to_value(JsonRpcResponse::<()>::error(
-                id,
-                JsonRpcError::new(error_codes::INTERNAL_ERROR, e),
-            ))
-            .unwrap_or(serde_json::json!({})),
-        }
+        Self::handler_response(self.handler.metrics(req.run_id).await, id)
     }
 
     async fn handle_rpc_methods(&mut self, id: serde_json::Value) -> serde_json::Value {
