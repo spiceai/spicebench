@@ -16,10 +16,30 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/pr.yml'
+
   check:
     name: cargo check + test
     runs-on: spiceai-macos
     timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v6
 
@@ -30,15 +50,17 @@ jobs:
           cache: false # Using GHA cache is slower than re-installing
 
       - name: cargo check
-        run: cargo check --workspace
+        run: make check
 
       - name: cargo test
-        run: cargo test -p spicebench
+        run: make test
 
   clippy:
     name: cargo clippy
     runs-on: spiceai-macos
     timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v6
 
@@ -49,4 +71,4 @@ jobs:
           cache: false # Using GHA cache is slower than re-installing
 
       - name: cargo clippy
-        run: cargo clippy -p spicebench --all-targets -- -D warnings
+        run: make clippy
