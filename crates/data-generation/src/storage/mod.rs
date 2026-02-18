@@ -20,10 +20,18 @@ use arrow::array::RecordBatch;
 use async_trait::async_trait;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchOperation {
+    Insert,
+    Update { key_columns: Vec<String> },
+    Delete { key_columns: Vec<String> },
+}
+
 pub struct ReadResult {
     pub batches: Vec<RecordBatch>,
     pub rows_read: u64,
     pub bytes_read: u64,
+    pub operation: BatchOperation,
 }
 
 pub struct WriteResult {
@@ -56,6 +64,15 @@ pub trait DataStorage: Send + Sync + 'static {
         batch_id: u64,
         batch: RecordBatch,
     ) -> anyhow::Result<WriteResult>;
+
+    async fn write_batch_operation(
+        &self,
+        _table_name: &str,
+        _batch_id: u64,
+        _operation: &BatchOperation,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value>;
 

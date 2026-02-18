@@ -23,7 +23,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, EtlType, Handler, QueryMethodResponse, Server, SetupResponse,
+    AdbcDriver, DatasetConfig, Handler, QueryMethodResponse, Server, SetupResponse,
     TeardownResponse,
 };
 use uuid::Uuid;
@@ -112,15 +112,6 @@ struct StdioArgs {
     #[arg(long, env = "DATABRICKS_SCHEMA", default_value = "tpch")]
     databricks_schema: String,
 
-    /// Default table format for Unity Catalog table creation
-    #[arg(
-        long,
-        env = "DATABRICKS_TABLE_FORMAT",
-        value_enum,
-        default_value = "parquet"
-    )]
-    databricks_table_format: DatabricksTableFormat,
-
     /// Drop created tables during teardown
     #[arg(
         long,
@@ -135,33 +126,6 @@ struct StdioArgs {
 enum ComputeMode {
     SqlWarehouse,
     SparkCluster,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-#[value(rename_all = "lower")]
-enum DatabricksTableFormat {
-    Iceberg,
-    Parquet,
-    Delta,
-}
-
-impl DatabricksTableFormat {
-    fn as_uc_data_source_format(self) -> &'static str {
-        match self {
-            Self::Iceberg => "ICEBERG",
-            Self::Parquet => "PARQUET",
-            Self::Delta => "DELTA",
-        }
-    }
-
-    fn from_dataset_value(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "iceberg" => Some(Self::Iceberg),
-            "parquet" => Some(Self::Parquet),
-            "delta" => Some(Self::Delta),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -185,7 +149,6 @@ struct AdapterConfig {
     compute_target: ComputeTarget,
     catalog: String,
     schema: String,
-    table_format: DatabricksTableFormat,
     drop_tables_on_teardown: bool,
 }
 
@@ -301,7 +264,6 @@ impl AdapterConfig {
             compute_target,
             catalog: args.databricks_catalog,
             schema: args.databricks_schema,
-            table_format: args.databricks_table_format,
             drop_tables_on_teardown: args.drop_tables_on_teardown,
         })
     }
@@ -384,65 +346,6 @@ impl DatabricksAdapter {
             let body = create_response.text().await.unwrap_or_default();
             return Err(anyhow!(
                 "Databricks Unity Catalog schemas/create failed ({status}): {body}"
-            ));
-        }
-
-        Ok(())
-    }
-
-    async fn ensure_uc_external_table(
-        &self,
-        table_name: &str,
-        location: &str,
-        table_format: DatabricksTableFormat,
-    ) -> Result<()> {
-        let full_name = self.uc_table_full_name(table_name);
-        let delete_url = format!(
-            "https://{}/api/2.1/unity-catalog/tables/{full_name}",
-            self.config.endpoint
-        );
-        let delete_response = self
-            .client
-            .delete(delete_url)
-            .bearer_auth(&self.config.token)
-            .send()
-            .await?;
-
-        if delete_response.status() != StatusCode::OK
-            && delete_response.status() != StatusCode::NOT_FOUND
-        {
-            let status = delete_response.status();
-            let body = delete_response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Databricks Unity Catalog tables/delete failed ({status}) for '{full_name}': {body}"
-            ));
-        }
-
-        let create_url = format!(
-            "https://{}/api/2.1/unity-catalog/tables",
-            self.config.endpoint
-        );
-        let create_response = self
-            .client
-            .post(create_url)
-            .bearer_auth(&self.config.token)
-            .json(&UcTableCreateRequest {
-                catalog_name: self.config.catalog.clone(),
-                schema_name: self.config.schema.clone(),
-                name: table_name.to_string(),
-                table_type: "EXTERNAL".to_string(),
-                data_source_format: table_format.as_uc_data_source_format().to_string(),
-                storage_location: location.to_string(),
-            })
-            .send()
-            .await?;
-
-        if !create_response.status().is_success() {
-            let status = create_response.status();
-            let body = create_response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Databricks Unity Catalog tables/create failed ({status}) for '{}': {body}",
-                full_name
             ));
         }
 
@@ -659,54 +562,12 @@ impl DatabricksAdapter {
         Ok(())
     }
 
-    fn dataset_location(config: &DatasetConfig) -> Result<String> {
-        if let Some(from) = config.params.get("from").and_then(Value::as_str)
-            && !from.is_empty()
-        {
-            return Ok(from.to_string());
-        }
-
-        if config.etl_type == EtlType::S3 {
-            let bucket = config
-                .params
-                .get("bucket")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("Missing params.bucket for S3 dataset"))?;
-
-            let prefix = config
-                .params
-                .get("prefix")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim_start_matches('/');
-
-            if prefix.is_empty() {
-                return Ok(format!("s3://{bucket}/"));
-            }
-
-            return Ok(format!("s3://{bucket}/{prefix}"));
-        }
-
-        Err(anyhow!(
-            "Unsupported dataset configuration: missing location"
-        ))
-    }
 }
 
 #[derive(Debug, Serialize)]
 struct UcSchemaCreateRequest {
     catalog_name: String,
     name: String,
-}
-
-#[derive(Debug, Serialize)]
-struct UcTableCreateRequest {
-    catalog_name: String,
-    schema_name: String,
-    name: String,
-    table_type: String,
-    data_source_format: String,
-    storage_location: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -759,26 +620,12 @@ impl Handler for DatabricksAdapter {
 
         let mut created_tables = Vec::with_capacity(datasets.len());
 
-        for (dataset_name, dataset_cfg) in datasets {
-            let location = Self::dataset_location(&dataset_cfg)
-                .map_err(|e| format!("Invalid dataset '{dataset_name}' config: {e}"))?;
-
-            let table_format = dataset_cfg
-                .params
-                .get("table_format")
-                .and_then(Value::as_str)
-                .and_then(DatabricksTableFormat::from_dataset_value)
-                .unwrap_or(self.config.table_format);
-
+        for (dataset_name, _dataset_cfg) in datasets {
             let table_name = dataset_name;
-            self.ensure_uc_external_table(&table_name, &location, table_format)
-                .await
-                .map_err(|e| {
-                    format!(
-                        "Failed to create Unity Catalog table '{table_name}' at '{location}' with format '{}': {e}",
-                        table_format.as_uc_data_source_format()
-                    )
-                })?;
+
+            eprintln!(
+                "[databricks-adapter] setup: table '{table_name}' will be loaded via ADBC DDL sink"
+            );
 
             created_tables.push(table_name);
         }

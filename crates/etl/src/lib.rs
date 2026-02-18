@@ -21,15 +21,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use arrow::array::{RecordBatch, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use data_generation::config::DatasetConfig as GenerationDatasetConfig;
-use data_generation::dataset::Dataset;
 use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
-use data_generation::storage::DataStorage;
+use data_generation::dataset::{Dataset, MutationConfig};
+use data_generation::storage::{BatchOperation, DataStorage};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use system_adapter_protocol::{DatasetConfig as ProtocolDatasetConfig, EtlType};
+use system_adapter_protocol::DatasetConfig as ProtocolDatasetConfig;
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -85,10 +85,14 @@ impl DatasetSource {
     /// configuration.
     ///
     /// Delegates to the [`Dataset::create`] factory method on the concrete type.
-    pub fn create(&self, config: &GenerationDatasetConfig) -> anyhow::Result<Arc<dyn Dataset>> {
+    pub fn create(
+        &self,
+        config: &GenerationDatasetConfig,
+        mutations: &MutationConfig,
+    ) -> anyhow::Result<Arc<dyn Dataset>> {
         match self {
-            DatasetSource::SimpleSequence => SimpleSequenceDataset::create(config),
-            DatasetSource::Tpch => TpchDataset::create(config),
+            DatasetSource::SimpleSequence => SimpleSequenceDataset::create(config, mutations),
+            DatasetSource::Tpch => TpchDataset::create(config, mutations),
         }
     }
 }
@@ -122,8 +126,8 @@ pub enum StopReason {
     Error(String),
 }
 
-/// An ETL pipeline that reads batches from a [`Source`], rehydrates them using a
-/// [`Dataset`], and writes them to a [`Target`].
+/// An ETL pipeline that reads batches from [`DataStorage`], rehydrates them
+/// using a [`Dataset`], and writes them to a [`Sink`].
 ///
 /// # Lifecycle
 ///
@@ -159,8 +163,9 @@ impl ETLPipeline {
         config: &GenerationDatasetConfig,
         data_storage: Arc<dyn DataStorage>,
         data_sink: Arc<dyn Sink>,
+        mutations: &MutationConfig,
     ) -> anyhow::Result<Self> {
-        let dataset = dataset_source.create(config)?;
+        let dataset = dataset_source.create(config, mutations)?;
         let (state_tx, state_rx) = watch::channel(PipelineState::NotStarted);
         Ok(Self {
             dataset_source,
@@ -212,7 +217,7 @@ impl ETLPipeline {
     ///
     /// Each entry maps a table name to its
     /// [`DatasetConfig`](system_adapter_protocol::DatasetConfig), which includes
-    /// the rehydrated Arrow schema and the ETL type. This can be used to build a
+    /// the rehydrated Arrow schema. This can be used to build a
     /// [`SetupRequest`](system_adapter_protocol::SetupRequest) for the system
     /// adapter.
     pub fn setup_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
@@ -221,11 +226,7 @@ impl ETLPipeline {
             .into_iter()
             .map(|(name, table)| {
                 let config = ProtocolDatasetConfig {
-                    etl_type: EtlType::S3,
                     schema: schema_with_created_at(&table.schema),
-                    params: self.data_sink.table_params(&name),
-                    time_column: table.time_column.clone(),
-                    partitions: vec![], // TODO: support dynamically specifying partitioning schemes
                 };
                 (name, config)
             })
@@ -267,13 +268,15 @@ impl ETLPipeline {
                         format!("No data for table {table_name} at batch {first_batch_id}")
                     })?;
 
+                let op = sink_op_from_batch_op(&read_result.operation);
+
                 for batch in read_result.batches {
                     let rehydrated = append_created_at(&batch).map_err(|e| {
                         format!("append __created_at to {table_name} batch {first_batch_id}: {e}")
                     })?;
 
                     target
-                        .write(&table_name, first_batch_id, rehydrated, InsertOp::Append) // TODO: different insert ops
+                        .write(&table_name, first_batch_id, rehydrated, op.clone())
                         .await
                         .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
                 }
@@ -321,7 +324,7 @@ impl ETLPipeline {
     ///
     /// 1. Reads the batch from the [`Source`].
     /// 2. Appends the `__created_at` timestamp column.
-    /// 3. Writes the enriched batch to the [`Target`].
+    /// 3. Writes the enriched batch to the [`Sink`].
     ///
     /// The task transitions to [`PipelineState::Stopped`] when all batches are
     /// processed, the [`CancellationToken`] is triggered, or an error occurs.
@@ -489,6 +492,8 @@ async fn run_pipeline(
                     }
                 };
 
+                let op = sink_op_from_batch_op(&read_result.operation);
+
                 // 2. Append __created_at and write to target
                 for batch in read_result.batches {
                     let rehydrated = match append_created_at(&batch) {
@@ -506,9 +511,9 @@ async fn run_pipeline(
                         }
                     };
 
-                    // 3. Write to target. TODO: support different insert operations
+                    // 3. Write to sink
                     if let Err(e) = data_sink
-                        .write(&table_name, batch_id, rehydrated, InsertOp::Append)
+                        .write(&table_name, batch_id, rehydrated, op.clone())
                         .await
                     {
                         error!(
@@ -570,4 +575,16 @@ async fn run_pipeline(
         "ETL pipeline completed successfully"
     );
     StopReason::Completed
+}
+
+fn sink_op_from_batch_op(op: &BatchOperation) -> InsertOp {
+    match op {
+        BatchOperation::Insert => InsertOp::Insert,
+        BatchOperation::Update { key_columns } => InsertOp::Update {
+            key_columns: key_columns.clone(),
+        },
+        BatchOperation::Delete { key_columns } => InsertOp::Delete {
+            key_columns: key_columns.clone(),
+        },
+    }
 }

@@ -16,14 +16,20 @@ limitations under the License.
 
 use std::sync::Arc;
 
+use adbc_client::AdbcConnection;
 use clap::Parser;
 use data_generation::config::{DatasetConfig, TargetConfig};
+use data_generation::dataset::MutationConfig;
 use data_generation::storage::s3::S3Storage;
+use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
+use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes back to S3")]
+#[command(
+    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC"
+)]
 struct Cli {
     /// Dataset type: "tpch" or "simple_sequence"
     #[arg(long, default_value = "tpch")]
@@ -44,12 +50,6 @@ struct Cli {
     /// S3 key prefix for source data
     #[arg(long, default_value = "")]
     source_prefix: String,
-
-    /// Base S3 key prefix for target (rehydrated) data.
-    /// A random suffix is appended automatically to create a unique destination per run.
-    #[arg(long, default_value = "")]
-    target_base_prefix: String,
-
     /// AWS region
     #[arg(long)]
     region: Option<String>,
@@ -57,6 +57,18 @@ struct Cli {
     /// S3 endpoint URL (for MinIO/LocalStack)
     #[arg(long)]
     endpoint: Option<String>,
+
+    /// ADBC driver name (for example: databricks, flightsql)
+    #[arg(long)]
+    adbc_driver: String,
+
+    /// ADBC connection URI passed as db option `uri`
+    #[arg(long)]
+    adbc_uri: String,
+
+    /// Optional schema name to prefix destination table names
+    #[arg(long)]
+    adbc_schema: Option<String>,
 }
 
 impl Cli {
@@ -86,21 +98,6 @@ impl Cli {
             endpoint: self.endpoint.clone(),
         }
     }
-
-    fn target_config(&self) -> TargetConfig {
-        let run_suffix = uuid::Uuid::new_v4().to_string();
-        let prefix = if self.target_base_prefix.is_empty() {
-            run_suffix
-        } else {
-            format!("{}/{run_suffix}", self.target_base_prefix)
-        };
-        TargetConfig {
-            bucket: self.bucket.clone(),
-            prefix,
-            region: self.region.clone(),
-            endpoint: self.endpoint.clone(),
-        }
-    }
 }
 
 #[tokio::main]
@@ -115,15 +112,24 @@ async fn main() -> anyhow::Result<()> {
     let dataset_config = cli.dataset_config();
 
     let source = Arc::new(S3Storage::new(&cli.source_config())?);
-    let target = Arc::new(S3Storage::new(&cli.target_config())?);
 
-    let mut pipeline = ETLPipeline::new(dataset_source, &dataset_config, source, target)?;
+    let adbc_conn = AdbcConnection::create(
+        &cli.adbc_driver,
+        std::collections::HashMap::from([("uri".to_string(), Value::String(cli.adbc_uri.clone()))]),
+    )?;
+    let target = Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()));
+
+    let mutations = MutationConfig::new(0.1, 0.1);
+
+    let mut pipeline =
+        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
 
     tracing::info!(
         dataset = %cli.dataset,
         bucket = %cli.bucket,
         source_prefix = %cli.source_prefix,
-        target_base_prefix = %cli.target_base_prefix,
+        adbc_driver = %cli.adbc_driver,
+        adbc_schema = ?cli.adbc_schema,
         scale_factor = cli.scale_factor,
         num_steps = cli.num_steps,
         "Starting ETL pipeline"

@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+pub mod key_set;
 pub mod simple_sequence;
 pub mod tpch;
 
@@ -26,6 +27,8 @@ use arrow::datatypes::{DataType, Field, SchemaRef, TimeUnit};
 use async_trait::async_trait;
 
 use crate::config::DatasetConfig;
+use crate::dataset::simple_sequence::SimpleSequenceDataset;
+use crate::dataset::tpch::TpchDataset;
 
 /// Metadata about a table in a dataset.
 #[derive(Debug, Clone)]
@@ -134,6 +137,26 @@ impl DatasetTable {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MutationConfig {
+    pub(crate) update_ratio: f64,
+    pub(crate) delete_ratio: f64,
+}
+
+impl MutationConfig {
+    pub fn new(update_ratio: f64, delete_ratio: f64) -> Self {
+        let total = update_ratio + delete_ratio;
+        if total > 1.0 {
+            panic!("Mutation ratios must sum to 1.0 or less");
+        }
+
+        Self {
+            update_ratio,
+            delete_ratio,
+        }
+    }
+}
+
 #[async_trait]
 pub trait Dataset: Send + Sync {
     /// Creates a new instance of this dataset from the given configuration.
@@ -143,13 +166,12 @@ pub trait Dataset: Send + Sync {
     ///
     /// The default implementation returns an error; concrete dataset types
     /// should override this.
-    fn create(config: &DatasetConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    fn create(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+    ) -> anyhow::Result<Arc<dyn Dataset>>
     where
-        Self: Sized + 'static,
-    {
-        let _ = config;
-        anyhow::bail!("create() is not implemented for this dataset type")
-    }
+        Self: Sized + 'static;
 
     /// Returns the batch IDs that would be produced for a given table after a
     /// successful generation run.
@@ -264,6 +286,12 @@ pub trait Dataset: Send + Sync {
         }
     }
 
+    /// Returns the primary key column names for the given table.
+    ///
+    /// The returned `Vec` may contain multiple column names for composite keys.
+    /// Returns an empty `Vec` if the table has no defined primary key.
+    fn primary_key(&self, table: &str) -> Vec<String>;
+
     /// Returns the tables this dataset produces, including metadata, keyed by table name.
     fn tables(&self) -> HashMap<String, DatasetTable>;
 
@@ -282,6 +310,22 @@ pub trait Dataset: Send + Sync {
 
 #[async_trait]
 impl Dataset for Arc<dyn Dataset> {
+    fn create(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+    ) -> anyhow::Result<Arc<dyn Dataset>>
+    where
+        Self: Sized + 'static,
+    {
+        match config.dataset_type.as_str() {
+            "tpch" => TpchDataset::create(config, mutations),
+            "simple_sequence" => SimpleSequenceDataset::create(config, mutations),
+            other => {
+                anyhow::bail!("Unknown dataset type: {other}. Supported: tpch, simple_sequence")
+            }
+        }
+    }
+
     fn batch_ids(&self, table: &str) -> VecDeque<u64> {
         (**self).batch_ids(table)
     }
@@ -300,6 +344,10 @@ impl Dataset for Arc<dyn Dataset> {
 
     async fn next_batches(&self) -> anyhow::Result<Option<HashMap<String, RecordBatch>>> {
         (**self).next_batches().await
+    }
+
+    fn primary_key(&self, table: &str) -> Vec<String> {
+        (**self).primary_key(table)
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {
