@@ -473,7 +473,10 @@ async fn run_pipeline(
                     };
 
                     // 3. Write to target. TODO: support different insert operations
-                    if let Err(e) = data_sink.write(&table_name, batch_id, rehydrated, InsertOp::Append).await {
+                    if let Err(e) = data_sink
+                        .write(&table_name, batch_id, rehydrated, InsertOp::Append)
+                        .await
+                    {
                         error!(
                             table = %table_name,
                             batch_id,

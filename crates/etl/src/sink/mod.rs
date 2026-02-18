@@ -23,25 +23,37 @@ use data_generation::storage::{DataStorage, s3::S3Storage};
 pub enum InsertOp {
     Overwrite,
     Append,
-    Delete
+    Delete,
 }
 
 #[async_trait]
 pub trait Sink: Send + Sync + 'static {
-    async fn write(&self, table_name: &str, batch_id: u64, batch: RecordBatch, insert_op: InsertOp) -> anyhow::Result<()>;
+    async fn write(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+        batch: RecordBatch,
+        insert_op: InsertOp,
+    ) -> anyhow::Result<()>;
     fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value>;
 }
 
 #[async_trait]
 impl Sink for S3Storage {
-    async fn write(&self, table_name: &str, batch_id: u64, batch: RecordBatch, insert_op: InsertOp) -> anyhow::Result<()> {
+    async fn write(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+        batch: RecordBatch,
+        insert_op: InsertOp,
+    ) -> anyhow::Result<()> {
         // For simplicity, S3Storage only supports Append (i.e. writing new batches, create operations)
-        
+
         match insert_op {
             InsertOp::Append => {
                 DataStorage::write(self, table_name, batch_id, batch).await?;
                 Ok(())
-            },
+            }
             _ => anyhow::bail!("S3Storage only supports Append insert operations"),
         }
     }
