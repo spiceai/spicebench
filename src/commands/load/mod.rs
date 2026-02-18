@@ -24,6 +24,7 @@ use test_framework::{
     arrow::util::pretty::print_batches,
     metrics::{MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, StatisticsCollector},
     opentelemetry::KeyValue,
+    opentelemetry_sdk::Resource,
     spicetest::{SpiceTest, datasets::NotStarted},
     telemetry::streaming::StreamingOtlpExporter,
 };
@@ -115,6 +116,19 @@ pub(crate) async fn run(
     adbc_conn: adbc_client::AdbcConnection,
 ) -> anyhow::Result<()> {
     scenario.load_query_set()?;
+
+    let load_resource = Resource::builder_empty()
+        .with_attributes(vec![
+            KeyValue::new("service.name", "spicebench"),
+            KeyValue::new("type", "spicebench"),
+            KeyValue::new("adapter_name", common_args.system_adapter_name.clone()),
+            KeyValue::new("scenario", scenario.to_string()),
+        ])
+        .build();
+
+    // Create telemetry with resource upfront, before any metrics calls
+    let telemetry = super::create_telemetry_with_resource(common_args, load_resource);
+
     // Create the appropriate query executor based on args
     let executor = Box::new(adbc_executor::AdbcDirectQueryExecutor::new(adbc_conn));
 
@@ -261,5 +275,8 @@ pub(crate) async fn run(
     }
 
     println!("Benchmark completed");
+
+    telemetry.emit().await?;
+
     Ok(())
 }
