@@ -17,6 +17,14 @@ on:
         options:
           - spidapter
           - databricks
+      databricks_variant:
+        description: 'Databricks adapter variant (databricks or lakebase)'
+        required: false
+        default: 'databricks'
+        type: choice
+        options:
+          - databricks
+          - lakebase
       etl_bucket:
         description: 'S3 bucket for ETL source and target data'
         required: true
@@ -117,6 +125,7 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+          DATABRICKS_VARIANT: ${{ github.event.inputs.databricks_variant || 'databricks' }}
           DATABRICKS_TABLE_FORMAT: ${{ github.event.inputs.table_format || 'parquet' }}
         run: |
           set -euo pipefail
@@ -145,6 +154,11 @@ jobs:
               ;;
 
             databricks)
+              if [ "${DATABRICKS_VARIANT}" != "databricks" ] && [ "${DATABRICKS_VARIANT}" != "lakebase" ]; then
+                echo "DATABRICKS_VARIANT must be either 'databricks' or 'lakebase'"
+                exit 1
+              fi
+
               for required_var in DATABRICKS_ENDPOINT DATABRICKS_TOKEN DATABRICKS_HTTP_PATH DATABRICKS_SQL_WAREHOUSE_ID; do
                 if [ -z "${!required_var:-}" ]; then
                   echo "${required_var} must be set for databricks adapter mode"
@@ -200,6 +214,7 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+          DATABRICKS_VARIANT: ${{ github.event.inputs.databricks_variant || 'databricks' }}
           DATABRICKS_TABLE_FORMAT: ${{ github.event.inputs.table_format || 'parquet' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
@@ -228,7 +243,7 @@ jobs:
           if [ "${SYSTEM_ADAPTER}" = "databricks" ]; then
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
-            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
+            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_VARIANT=${DATABRICKS_VARIANT} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
 
             if [ -n "${DATABRICKS_CATALOG}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"
