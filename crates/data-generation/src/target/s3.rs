@@ -15,71 +15,20 @@ limitations under the License.
 */
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
-use object_store::aws::AmazonS3Builder;
-use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutPayload};
+use object_store::PutPayload;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 
-use crate::config::TargetConfig;
+use crate::storage::s3::S3Storage;
 
 use super::{Target, WriteResult};
 
-#[derive(Clone)]
-pub struct S3Target {
-    store: Arc<dyn ObjectStore>,
-    bucket: String,
-    prefix: String,
-    table_format: String,
-    executor_instance_type: String,
-    region: Option<String>,
-}
-
-impl S3Target {
-    pub fn new(config: &TargetConfig) -> anyhow::Result<Self> {
-        let mut builder = AmazonS3Builder::from_env().with_bucket_name(&config.bucket);
-
-        if let Some(region) = &config.region {
-            tracing::info!("S3 Target with region: {region}");
-            builder = builder.with_region(region);
-        }
-        if let Some(endpoint) = &config.endpoint
-            && !endpoint.is_empty()
-        {
-            builder = builder.with_endpoint(endpoint);
-            if endpoint.starts_with("http://") {
-                builder = builder.with_allow_http(true);
-            }
-        }
-
-        let store = Arc::new(builder.build()?);
-        Ok(Self {
-            store,
-            bucket: config.bucket.clone(),
-            prefix: config.prefix.clone(),
-            table_format: config.table_format.to_string(),
-            executor_instance_type: config.executor_instance_type.clone(),
-            region: config.region.clone(),
-        })
-    }
-
-    /// Returns the S3 URI for a given table name (e.g. `s3://bucket/prefix/customer/`).
-    pub fn table_s3_path(&self, table_name: &str) -> String {
-        if self.prefix.is_empty() {
-            format!("s3://{}/{table_name}/", self.bucket)
-        } else {
-            format!("s3://{}/{}/{table_name}/", self.bucket, self.prefix)
-        }
-    }
-}
-
 #[async_trait]
-impl Target for S3Target {
+impl Target for S3Storage {
     fn expected_files(&self, table_name: &str, batch_ids: &[u64]) -> Vec<String> {
         batch_ids
             .iter()
@@ -109,14 +58,6 @@ impl Target for S3Target {
         params.insert(
             "file_format".to_string(),
             serde_json::Value::String("parquet".to_string()),
-        );
-        params.insert(
-            "table_format".to_string(),
-            serde_json::Value::String(self.table_format.clone()),
-        );
-        params.insert(
-            "executor_instance_type".to_string(),
-            serde_json::Value::String(self.executor_instance_type.clone()),
         );
 
         if let Some(region) = &self.region {
@@ -151,14 +92,7 @@ impl Target for S3Target {
         let bytes_written = buf.len() as u64;
 
         // Upload to S3 with per-table directory structure
-        let path = if self.prefix.is_empty() {
-            ObjectPath::from(format!("{table_name}/batch-{batch_id:06}.parquet"))
-        } else {
-            ObjectPath::from(format!(
-                "{}/{table_name}/batch-{batch_id:06}.parquet",
-                self.prefix
-            ))
-        };
+        let path = self.batch_object_path(table_name, batch_id);
 
         self.store.put(&path, PutPayload::from(buf)).await?;
 
