@@ -408,16 +408,16 @@ pub(crate) async fn run(args: &BenchRunArgs) -> anyhow::Result<()> {
 
     // Stop SUT metrics scraper
     sut_scraper_token.cancel();
-    if let Some(handle) = sut_scraper_handle {
-        if let Ok(Some(last_sut_metrics)) = handle.await {
-            println!(
-                "Final SUT metrics: cpu={:?}%, mem={:?}B, ingested_rows={:?}, ingested_bytes={:?}",
-                last_sut_metrics.resource.cpu_usage_percent,
-                last_sut_metrics.resource.memory_usage_bytes,
-                last_sut_metrics.ingestion.rows_ingested,
-                last_sut_metrics.ingestion.bytes_ingested,
-            );
-        }
+    if let Some(handle) = sut_scraper_handle
+        && let Ok(Some(last_sut_metrics)) = handle.await
+    {
+        println!(
+            "Final SUT metrics: cpu={:?}%, mem={:?}B, ingested_rows={:?}, ingested_bytes={:?}",
+            last_sut_metrics.resource.cpu_usage_percent,
+            last_sut_metrics.resource.memory_usage_bytes,
+            last_sut_metrics.ingestion.rows_ingested,
+            last_sut_metrics.ingestion.bytes_ingested,
+        );
     }
 
     println!("Baseline metrics:");
