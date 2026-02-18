@@ -125,10 +125,6 @@ jobs:
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
           dbc install flightsql
 
-      - name: Install dbc and ADBC FlightSQL driver
-        run: |
-          curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          dbc install flightsql
 
       - name: Run spicebench
         env:
