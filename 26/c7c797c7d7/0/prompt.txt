@@ -1,0 +1,9 @@
+`name: Commit fixes` in .github/workflows/pr.yml does not trigger CI checks because its not a Github app?
+
+---
+
+go with option 1, update the workflow
+
+---
+
+commit this. Make PR with details to user to know what they need to make. Do not coauthor with claude
