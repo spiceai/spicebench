@@ -124,6 +124,7 @@ jobs:
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           RUSTFLAGS: '-A warnings'
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
         run: |
