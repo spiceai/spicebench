@@ -102,7 +102,7 @@ impl Dataset for SimpleSequenceDataset {
             DatasetTable {
                 name: "integer_sequence".to_string(),
                 schema: Self::schema(),
-                time_column: Some("inserted_at".to_string()),
+                time_column: "inserted_at".to_string(),
             },
         )])
     }
