@@ -127,7 +127,7 @@ pub(crate) async fn run(
         .build();
 
     // Create telemetry with resource upfront, before any metrics calls
-    let telemetry = super::create_telemetry_with_resource(&common_args, load_resource);
+    let telemetry = super::create_telemetry_with_resource(common_args, load_resource);
 
     // Create the appropriate query executor based on args
     let executor = Box::new(adbc_executor::AdbcDirectQueryExecutor::new(adbc_conn));
