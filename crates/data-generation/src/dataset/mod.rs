@@ -17,7 +17,6 @@ limitations under the License.
 pub mod tpch;
 pub mod simple_sequence;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
@@ -34,21 +33,31 @@ pub struct DatasetTable {
     pub time_column: Option<String>,
 }
 
+/// A generated batch associated with the table it belongs to.
+#[derive(Debug, Clone)]
+pub struct DatasetBatch {
+    /// The table this batch belongs to.
+    pub table_name: String,
+    /// The Arrow record batch payload.
+    pub batch: RecordBatch,
+}
+
 pub trait Dataset: Send {
     /// Returns the next raw batch of data for the given table, or `None` if exhausted.
     ///
     /// Most callers should use [`next_batch`]
     /// instead, which validates the table name and output schema.
-    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>>;
+    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<DatasetBatch>>;
 
     /// Returns the next batch of data for the given table, or `None` if exhausted.
     ///
     /// Validates that `table` is a known table for this dataset, delegates to
     /// [`raw_next_batch`], and verifies the returned batch matches the expected schema.
-    fn next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+    fn next_batch(&mut self, table: &str) -> anyhow::Result<Option<DatasetBatch>> {
         let tables = self.tables();
         let dataset_table = tables
-            .get(table)
+            .iter()
+            .find(|t| t.name == table)
             .ok_or_else(|| anyhow::anyhow!("Unknown table: {table}"))?;
         let expected_schema = Arc::clone(&dataset_table.schema);
 
@@ -56,10 +65,10 @@ pub trait Dataset: Send {
             return Ok(None);
         };
 
-        if batch.schema() != expected_schema {
+        if batch.batch.schema() != expected_schema {
             anyhow::bail!(
                 "Schema mismatch for table '{table}': expected {expected_schema}, got {}",
-                batch.schema()
+                batch.batch.schema()
             );
         }
 
@@ -67,12 +76,12 @@ pub trait Dataset: Send {
     }
 
     /// Returns a batch for every table. Returns `None` if all tables are exhausted.
-    fn next_batches(&mut self) -> anyhow::Result<Option<HashMap<String, RecordBatch>>> {
+    fn next_batches(&mut self) -> anyhow::Result<Option<Vec<DatasetBatch>>> {
         let tables = self.tables();
-        let mut batches = HashMap::new();
-        for (name, _) in &tables {
-            if let Some(batch) = self.next_batch(name)? {
-                batches.insert(name.clone(), batch);
+        let mut batches = Vec::new();
+        for table in &tables {
+            if let Some(batch) = self.next_batch(&table.name)? {
+                batches.push(batch);
             }
         }
         if batches.is_empty() {
@@ -82,24 +91,24 @@ pub trait Dataset: Send {
         }
     }
 
-    /// Returns the tables this dataset produces, including metadata, keyed by table name.
-    fn tables(&self) -> HashMap<String, DatasetTable>;
+    /// Returns the list of tables this dataset produces, including metadata.
+    fn tables(&self) -> Vec<DatasetTable>;
 }
 
 impl Dataset for Box<dyn Dataset> {
-    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<DatasetBatch>> {
         (**self).raw_next_batch(table)
     }
 
-    fn next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+    fn next_batch(&mut self, table: &str) -> anyhow::Result<Option<DatasetBatch>> {
         (**self).next_batch(table)
     }
 
-    fn next_batches(&mut self) -> anyhow::Result<Option<HashMap<String, RecordBatch>>> {
+    fn next_batches(&mut self) -> anyhow::Result<Option<Vec<DatasetBatch>>> {
         (**self).next_batches()
     }
 
-    fn tables(&self) -> HashMap<String, DatasetTable> {
+    fn tables(&self) -> Vec<DatasetTable> {
         (**self).tables()
     }
 }
