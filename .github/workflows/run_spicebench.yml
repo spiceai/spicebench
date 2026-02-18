@@ -5,46 +5,46 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Scenario/query set to run (e.g. tpch)'
+        description: "Scenario/query set to run (e.g. tpch)"
         required: true
-        default: 'tpch'
+        default: "tpch"
         type: string
       run_data_generation:
-        description: 'Run data-generation before spicebench'
+        description: "Run data-generation before spicebench"
         required: false
         default: false
         type: boolean
       data_generation_runner_type:
-        description: 'Runner label for data-generation job'
+        description: "Runner label for data-generation job"
         required: false
-        default: 'ubuntu-latest'
+        default: "ubuntu-latest"
         type: string
       data_generation_scale_factor:
-        description: 'Data-generation scale factor'
+        description: "Data-generation scale factor"
         required: false
-        default: '1.0'
+        default: "1.0"
         type: string
       data_generation_bucket:
-        description: 'S3 bucket for generated data (required if run_data_generation=true)'
+        description: "S3 bucket for generated data (required if run_data_generation=true)"
         required: false
         type: string
       data_generation_prefix:
-        description: 'Base S3 prefix for generated data (scenario appended automatically)'
+        description: "Base S3 prefix for generated data (scenario appended automatically)"
         required: false
-        default: 'data-gen'
+        default: "data-gen"
         type: string
       data_generation_max_concurrency:
-        description: 'Data-generation max concurrent S3 writes'
+        description: "Data-generation max concurrent S3 writes"
         required: false
-        default: '8'
+        default: "8"
         type: string
       data_generation_region:
-        description: 'AWS region for data-generation'
+        description: "AWS region for data-generation"
         required: false
-        default: 'us-east-1'
+        default: "us-east-1"
         type: string
       data_generation_skip_initial:
-        description: 'Skip data-generation initial ingest'
+        description: "Skip data-generation initial ingest"
         required: false
         default: false
         type: boolean
@@ -125,17 +125,15 @@ jobs:
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
           dbc install flightsql
 
-
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
-          RUSTFLAGS: '-A warnings'
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
         run: |
           ~/.spice/bin/spicebench \
             --concurrency 2  \
-            --query-set "${SCENARIO}" \
+            --scenario "${SCENARIO}" \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL ghcr.io/spiceai/spidapter:latest stdio --verbose"
