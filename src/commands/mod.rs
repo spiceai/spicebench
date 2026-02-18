@@ -255,12 +255,7 @@ impl test_framework::execution::QueryExecutor for AdbcDirectQueryExecutor {
             )
             .await?;
 
-        ctx.register_table("spicebench_direct_query", Arc::new(table))?;
-        let batches = ctx
-            .sql("SELECT * FROM spicebench_direct_query")
-            .await?
-            .collect()
-            .await?;
+        let batches = ctx.read_table(Arc::new(table))?.collect().await?;
         let row_count = batches.iter().map(arrow::record_batch::RecordBatch::num_rows).sum();
 
         Ok(test_framework::execution::ExecutionResult {
@@ -334,7 +329,6 @@ async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<Option<Syst
             .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?;
         return Ok(Some(client));
     }
-
     Ok(None)
 }
 
