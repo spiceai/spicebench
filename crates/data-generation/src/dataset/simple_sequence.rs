@@ -49,9 +49,6 @@ impl SimpleSequenceDataset {
     }
 
     /// Returns the static Arrow schema for the `integer_sequence` table.
-    ///
-    /// The time column (`inserted_at`) is not included; it will be added during
-    /// ETL rehydration.
     pub fn schema() -> SchemaRef {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
