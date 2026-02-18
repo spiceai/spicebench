@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
@@ -24,7 +24,7 @@ use tracing::info;
 
 use crate::config::DatasetConfig;
 
-use super::{Dataset, DatasetBatch, DatasetTable};
+use super::{Dataset, DatasetTable};
 
 /// TPC-H table definitions: (table_name, time_column, schema_fn).
 const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
@@ -230,7 +230,7 @@ impl TpchDataset {
 }
 
 impl Dataset for TpchDataset {
-    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<DatasetBatch>> {
+    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
         // If all tables consumed for current step, advance to next step
         if self.consumed_tables.len() >= TPCH_TABLE_TIME_COLUMNS.len() {
             if self.current_step > 0 {
@@ -271,19 +271,23 @@ impl Dataset for TpchDataset {
             return Ok(None);
         }
 
-        Ok(Some(DatasetBatch {
-            table_name: table.to_string(),
-            batch: batches.into_iter().next().expect("checked non-empty"),
-        }))
+        Ok(Some(
+            batches.into_iter().next().expect("checked non-empty"),
+        ))
     }
 
-    fn tables(&self) -> Vec<DatasetTable> {
+    fn tables(&self) -> HashMap<String, DatasetTable> {
         TPCH_TABLE_TIME_COLUMNS
             .iter()
-            .map(|(name, time_col)| DatasetTable {
-                name: (*name).to_string(),
-                schema: tpch_schema(name, time_col),
-                time_column: Some((*time_col).to_string()),
+            .map(|(name, time_col)| {
+                (
+                    (*name).to_string(),
+                    DatasetTable {
+                        name: (*name).to_string(),
+                        schema: tpch_schema(name, time_col),
+                        time_column: Some((*time_col).to_string()),
+                    },
+                )
             })
             .collect()
     }
