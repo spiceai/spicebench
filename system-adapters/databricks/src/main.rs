@@ -17,6 +17,7 @@ limitations under the License.
 use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Result, anyhow};
+use arrow_schema::DataType;
 use async_trait::async_trait;
 use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::StatusCode;
@@ -54,6 +55,15 @@ struct StdioArgs {
     /// SQL Warehouse HTTP path (used for ADBC URI), e.g. sql/protocolv1/o/123/0123-456789-abcdef
     #[arg(long, env = "DATABRICKS_HTTP_PATH")]
     databricks_http_path: String,
+
+    /// Databricks adapter variant.
+    #[arg(
+        long,
+        env = "DATABRICKS_VARIANT",
+        value_enum,
+        default_value = "databricks"
+    )]
+    databricks_variant: DatabricksVariant,
 
     /// Databricks compute mode for setup/teardown SQL operations.
     #[arg(
@@ -119,6 +129,22 @@ struct StdioArgs {
         default_value_t = false
     )]
     drop_tables_on_teardown: bool,
+
+    /// Table format to use when creating Lakebase tables.
+    #[arg(
+        long,
+        env = "DATABRICKS_TABLE_FORMAT",
+        value_enum,
+        default_value = "parquet"
+    )]
+    databricks_table_format: TableFormat,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+#[value(rename_all = "kebab-case")]
+enum DatabricksVariant {
+    Databricks,
+    Lakebase,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -126,6 +152,33 @@ struct StdioArgs {
 enum ComputeMode {
     SqlWarehouse,
     SparkCluster,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum TableFormat {
+    Parquet,
+    Delta,
+    Iceberg,
+}
+
+impl TableFormat {
+    fn as_sql_using(self) -> &'static str {
+        match self {
+            Self::Parquet => "PARQUET",
+            Self::Delta => "DELTA",
+            Self::Iceberg => "ICEBERG",
+        }
+    }
+
+    fn from_metadata_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "parquet" => Some(Self::Parquet),
+            "delta" => Some(Self::Delta),
+            "iceberg" => Some(Self::Iceberg),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +199,9 @@ struct AdapterConfig {
     endpoint: String,
     token: String,
     http_path: String,
+    variant: DatabricksVariant,
+    table_format: TableFormat,
+    warehouse_id: String,
     compute_target: ComputeTarget,
     catalog: String,
     schema: String,
@@ -197,16 +253,16 @@ impl AdapterConfig {
             return Err(anyhow!("Databricks HTTP path must not be empty"));
         }
 
+        let warehouse_id = args.databricks_sql_warehouse_id.unwrap_or_else(|| {
+            args.databricks_http_path
+                .rsplit('/')
+                .find(|s| !s.is_empty())
+                .unwrap_or_default()
+                .to_string()
+        });
+
         let compute_target = match args.databricks_compute_mode {
             ComputeMode::SqlWarehouse => {
-                let warehouse_id = args.databricks_sql_warehouse_id.unwrap_or_else(|| {
-                    args.databricks_http_path
-                        .rsplit('/')
-                        .find(|s| !s.is_empty())
-                        .unwrap_or_default()
-                        .to_string()
-                });
-
                 if warehouse_id.is_empty() {
                     return Err(anyhow!(
                         "Missing Databricks warehouse ID. Set --databricks-sql-warehouse-id or provide it in --databricks-http-path"
@@ -257,10 +313,21 @@ impl AdapterConfig {
             }
         };
 
+        if args.databricks_variant == DatabricksVariant::Lakebase
+            && !matches!(args.databricks_compute_mode, ComputeMode::SqlWarehouse)
+        {
+            return Err(anyhow!(
+                "Lakebase variant requires --databricks-compute-mode=sql-warehouse"
+            ));
+        }
+
         Ok(Self {
             endpoint: args.databricks_endpoint,
             token: args.databricks_token,
             http_path: args.databricks_http_path,
+            variant: args.databricks_variant,
+            table_format: args.databricks_table_format,
+            warehouse_id,
             compute_target,
             catalog: args.databricks_catalog,
             schema: args.databricks_schema,
@@ -298,6 +365,88 @@ impl DatabricksAdapter {
             "{}.{}.{}",
             self.config.catalog, self.config.schema, table_name
         )
+    }
+
+    fn quoted_identifier(identifier: &str) -> String {
+        format!("`{}`", identifier.replace('`', "``"))
+    }
+
+    fn lakebase_table_full_name(&self, table_name: &str) -> String {
+        format!(
+            "{}.{}.{}",
+            Self::quoted_identifier(&self.config.catalog),
+            Self::quoted_identifier(&self.config.schema),
+            Self::quoted_identifier(table_name)
+        )
+    }
+
+    fn sql_type_for_arrow(data_type: &DataType) -> Result<String> {
+        match data_type {
+            DataType::Boolean => Ok("BOOLEAN".to_string()),
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::UInt8
+            | DataType::UInt16 => Ok("INT".to_string()),
+            DataType::Int64 | DataType::UInt32 | DataType::UInt64 => Ok("BIGINT".to_string()),
+            DataType::Float16 | DataType::Float32 => Ok("FLOAT".to_string()),
+            DataType::Float64 => Ok("DOUBLE".to_string()),
+            DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING".to_string()),
+            DataType::Date32 => Ok("DATE".to_string()),
+            DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
+            DataType::Decimal128(precision, scale) => {
+                let precision = (*precision).min(38);
+                Ok(format!("DECIMAL({precision}, {scale})"))
+            }
+            other => Err(anyhow!(
+                "Unsupported Arrow data type for Lakebase table creation: {other:?}"
+            )),
+        }
+    }
+
+    fn lakebase_table_ddl(
+        &self,
+        table_name: &str,
+        dataset_cfg: &DatasetConfig,
+        table_format: TableFormat,
+    ) -> Result<String> {
+        let columns = dataset_cfg
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let col_type = Self::sql_type_for_arrow(field.data_type())?;
+                Ok::<_, anyhow::Error>(format!(
+                    "{} {}",
+                    Self::quoted_identifier(field.name()),
+                    col_type
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+
+        Ok(format!(
+            "CREATE TABLE {} ({columns}) USING {}",
+            self.lakebase_table_full_name(table_name),
+            table_format.as_sql_using()
+        ))
+    }
+
+    fn table_format_from_setup_metadata(
+        &self,
+        metadata: &HashMap<String, Value>,
+    ) -> Result<TableFormat> {
+        if let Some(value) = metadata.get("table_format")
+            && let Some(s) = value.as_str()
+        {
+            return TableFormat::from_metadata_value(s).ok_or_else(|| {
+                anyhow!(
+                    "Unsupported table_format '{s}'. Allowed values: parquet, delta, iceberg"
+                )
+            });
+        }
+
+        Ok(self.config.table_format)
     }
 
     async fn ensure_uc_schema_exists(&self) -> Result<()> {
@@ -374,6 +523,93 @@ impl DatabricksAdapter {
         Err(anyhow!(
             "Databricks Unity Catalog tables/delete failed ({status}) for '{full_name}': {body}"
         ))
+    }
+
+    async fn execute_sql_statement(&self, statement: &str) -> Result<()> {
+        let execute_url = format!("https://{}/api/2.0/sql/statements/", self.config.endpoint);
+        let payload = json!({
+            "warehouse_id": self.config.warehouse_id,
+            "catalog": self.config.catalog,
+            "schema": self.config.schema,
+            "statement": statement,
+            "wait_timeout": "20s",
+        });
+
+        let response = self
+            .client
+            .post(execute_url)
+            .bearer_auth(&self.config.token)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Databricks SQL statement execute failed ({status}): {body}"
+            ));
+        }
+
+        let body: StatementResponse = response.json().await?;
+        match body.status.state {
+            StatementState::Succeeded => Ok(()),
+            StatementState::Failed => {
+                Err(anyhow!("Databricks SQL statement failed: {}", body.status.error_message()))
+            }
+            StatementState::Canceled => Err(anyhow!("Databricks SQL statement canceled")),
+            StatementState::Pending | StatementState::Running => {
+                self.wait_for_statement_completion(&body.statement_id).await
+            }
+        }
+    }
+
+    async fn wait_for_statement_completion(&self, statement_id: &str) -> Result<()> {
+        let status_url = format!(
+            "https://{}/api/2.0/sql/statements/{statement_id}",
+            self.config.endpoint
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(anyhow!(
+                    "Timed out waiting for Databricks SQL statement {statement_id}"
+                ));
+            }
+
+            let response = self
+                .client
+                .get(&status_url)
+                .bearer_auth(&self.config.token)
+                .send()
+                .await?;
+
+            if response.status() != StatusCode::OK {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!(
+                    "Databricks SQL statement status check failed ({status}): {body}"
+                ));
+            }
+
+            let body: StatementResponse = response.json().await?;
+            match body.status.state {
+                StatementState::Succeeded => return Ok(()),
+                StatementState::Failed => {
+                    return Err(anyhow!(
+                        "Databricks SQL statement failed: {}",
+                        body.status.error_message()
+                    ));
+                }
+                StatementState::Canceled => {
+                    return Err(anyhow!("Databricks SQL statement canceled"));
+                }
+                StatementState::Pending | StatementState::Running => {
+                    tokio::time::sleep(Duration::from_millis(750)).await;
+                }
+            }
+        }
     }
 
     async fn ensure_cluster_ready(&self) -> Result<(String, bool)> {
@@ -564,6 +800,44 @@ impl DatabricksAdapter {
 
 }
 
+#[derive(Debug, Deserialize)]
+struct StatementResponse {
+    statement_id: String,
+    status: StatementStatus,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatementStatus {
+    state: StatementState,
+    #[serde(default)]
+    error: Option<StatementError>,
+}
+
+impl StatementStatus {
+    fn error_message(&self) -> String {
+        self.error
+            .as_ref()
+            .and_then(|error| error.message.clone())
+            .unwrap_or_else(|| "unknown error".to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StatementError {
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum StatementState {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Canceled,
+}
+
 #[derive(Debug, Serialize)]
 struct UcSchemaCreateRequest {
     catalog_name: String,
@@ -596,7 +870,7 @@ impl Handler for DatabricksAdapter {
         &mut self,
         run_id: Uuid,
         datasets: HashMap<String, DatasetConfig>,
-        _metadata: HashMap<String, Value>,
+        metadata: HashMap<String, Value>,
     ) -> std::result::Result<SetupResponse, String> {
         eprintln!(
             "[databricks-adapter] setup: run_id={run_id}, datasets={}",
@@ -614,18 +888,61 @@ impl Handler for DatabricksAdapter {
             ComputeTarget::SqlWarehouse => (None, false),
         };
 
-        self.ensure_uc_schema_exists()
-            .await
-            .map_err(|e| format!("Failed to ensure Unity Catalog schema exists: {e}"))?;
+        match self.config.variant {
+            DatabricksVariant::Databricks => {
+                self.ensure_uc_schema_exists()
+                    .await
+                    .map_err(|e| format!("Failed to ensure Unity Catalog schema exists: {e}"))?;
+            }
+            DatabricksVariant::Lakebase => {
+                let schema_sql = format!(
+                    "CREATE SCHEMA IF NOT EXISTS {}.{}",
+                    Self::quoted_identifier(&self.config.catalog),
+                    Self::quoted_identifier(&self.config.schema),
+                );
+                self.execute_sql_statement(&schema_sql)
+                    .await
+                    .map_err(|e| format!("Failed to ensure Lakebase schema exists: {e}"))?;
+            }
+        }
 
         let mut created_tables = Vec::with_capacity(datasets.len());
+        let table_format = self
+            .table_format_from_setup_metadata(&metadata)
+            .map_err(|e| format!("Invalid setup metadata: {e}"))?;
 
-        for (dataset_name, _dataset_cfg) in datasets {
+        for (dataset_name, dataset_cfg) in datasets {
             let table_name = dataset_name;
 
-            eprintln!(
-                "[databricks-adapter] setup: table '{table_name}' will be loaded via ADBC DDL sink"
-            );
+            match self.config.variant {
+                DatabricksVariant::Databricks => {
+                    eprintln!(
+                        "[databricks-adapter] setup: table '{table_name}' will be loaded via ADBC DDL sink"
+                    );
+                }
+                DatabricksVariant::Lakebase => {
+                    let drop_sql = format!(
+                        "DROP TABLE IF EXISTS {}",
+                        self.lakebase_table_full_name(&table_name)
+                    );
+                    self.execute_sql_statement(&drop_sql).await.map_err(|e| {
+                        format!(
+                            "Failed to drop existing Lakebase table '{table_name}' during setup: {e}"
+                        )
+                    })?;
+
+                    let create_sql = self
+                        .lakebase_table_ddl(&table_name, &dataset_cfg, table_format)
+                        .map_err(|e| {
+                            format!(
+                                "Failed to build Lakebase table DDL for '{table_name}': {e}"
+                            )
+                        })?;
+                    self.execute_sql_statement(&create_sql).await.map_err(|e| {
+                        format!("Failed to create Lakebase table '{table_name}': {e}")
+                    })?;
+                }
+            }
 
             created_tables.push(table_name);
         }
@@ -651,7 +968,17 @@ impl Handler for DatabricksAdapter {
 
         Ok(QueryMethodResponse {
             driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([("uri".to_string(), Value::String(self.databricks_uri()))]),
+            db_kwargs: HashMap::from([
+                ("uri".to_string(), Value::String(self.databricks_uri())),
+                (
+                    "catalog".to_string(),
+                    Value::String(self.config.catalog.clone()),
+                ),
+                (
+                    "schema".to_string(),
+                    Value::String(self.config.schema.clone()),
+                ),
+            ]),
         })
     }
 
@@ -664,13 +991,28 @@ impl Handler for DatabricksAdapter {
 
         if self.config.drop_tables_on_teardown {
             for table_name in &state.created_tables {
-                self.delete_uc_table_if_exists(table_name)
-                    .await
-                    .map_err(|e| {
-                        format!(
-                            "Failed to drop Unity Catalog table '{table_name}' during teardown: {e}"
-                        )
-                    })?;
+                match self.config.variant {
+                    DatabricksVariant::Databricks => {
+                        self.delete_uc_table_if_exists(table_name)
+                            .await
+                            .map_err(|e| {
+                                format!(
+                                    "Failed to drop Unity Catalog table '{table_name}' during teardown: {e}"
+                                )
+                            })?;
+                    }
+                    DatabricksVariant::Lakebase => {
+                        let sql = format!(
+                            "DROP TABLE IF EXISTS {}",
+                            self.lakebase_table_full_name(table_name)
+                        );
+                        self.execute_sql_statement(&sql).await.map_err(|e| {
+                            format!(
+                                "Failed to drop Lakebase table '{table_name}' during teardown: {e}"
+                            )
+                        })?;
+                    }
+                }
             }
         }
 
