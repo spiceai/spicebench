@@ -65,20 +65,21 @@ async fn main() -> anyhow::Result<()> {
     };
 
     #[expect(unused_variables)]
-    let adbc_conn =
+    let adbc_conn: Option<AdbcConnection> =
         match AdbcConnection::create(&adbc_driver.driver.to_string(), adbc_driver.db_kwargs) {
             Ok(conn) => {
                 println!(
                     "ADBC connection established (driver: {})",
                     adbc_driver.driver
                 );
-                conn
+                Some(conn)
             }
             Err(e) => {
                 eprintln!(
                     "Failed to create ADBC connection for driver {}: {e}",
                     adbc_driver.driver
                 );
+                None
             }
         };
 
