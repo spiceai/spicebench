@@ -16,7 +16,8 @@ limitations under the License.
 
 use std::time::Duration;
 
-use crate::args::{CommonArgs, DatasetTestArgs, SystemAdapterExecutionMode};
+use crate::args::{CommonArgs, DatasetTestArgs};
+use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder};
 use test_framework::{
     anyhow,
     anyhow::Context,
@@ -28,10 +29,6 @@ use test_framework::{
     spicepod_utils::from_app,
     spicetest::datasets::NotStarted,
     telemetry::{OtlpExporterConfig, Telemetry},
-};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command},
 };
 
 pub(crate) mod load;
@@ -130,60 +127,14 @@ pub(crate) async fn get_app_and_start_request(
 pub(crate) async fn maybe_dispatch_run_to_system_adapter(
     raw_cli_args: &[String],
     common_args: &CommonArgs,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<SystemAdapterClient>> {
     if !has_system_adapter_transport(common_args) {
-        return Ok(false);
+        return Ok(None);
     }
 
-    let mut adapter = SystemAdapterClient::connect(common_args)
-        .await?
-        .context("System adapter transport was configured but could not be initialized")?;
-
-    let methods = adapter.rpc_methods().await?;
-
-    if common_args.system_adapter_execution_mode == SystemAdapterExecutionMode::DirectQuery {
-        println!(
-            "Connected to system adapter '{}' via {} in direct-query mode (spicebench executes query/load path directly)",
-            common_args.system_adapter_name,
-            adapter.transport_name(),
-        );
-        return Ok(false);
-    }
-
-    let Some(method) = resolve_system_adapter_method(raw_cli_args) else {
-        anyhow::bail!(
-            "No JSON-RPC adapter method mapping for current command invocation: {:?}",
-            raw_cli_args
-        );
-    };
-
-    if !methods.iter().any(|available| available == method) {
-        anyhow::bail!(
-            "System adapter '{}' via {} does not support required method '{method}'",
-            common_args.system_adapter_name,
-            adapter.transport_name(),
-        );
-    }
-
-    let adapter_args = adapter_cli_args_for_run(raw_cli_args);
-    let mut params = serde_json::Map::new();
-    params.insert("args".to_string(), serde_json::to_value(adapter_args)?);
-
-    for (key, value) in &common_args.system_adapter_param {
-        params.insert(key.clone(), serde_json::Value::String(value.clone()));
-    }
-
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": method,
-        "params": serde_json::Value::Object(params),
-    });
-
-    let response = adapter.call(request).await?;
-    handle_adapter_execution_response(&response)?;
-
-    Ok(true)
+    connect_system_adapter(common_args)
+        .await
+        .context("System adapter transport was configured but could not be initialized")
 }
 
 fn resolve_system_adapter_method(raw_cli_args: &[String]) -> Option<&'static str> {
@@ -272,163 +223,59 @@ fn handle_adapter_execution_response(response: &serde_json::Value) -> anyhow::Re
     Ok(())
 }
 
-enum SystemAdapterClient {
-    Stdio {
-        _child: Box<Child>,
-        stdin: ChildStdin,
-        stdout: BufReader<ChildStdout>,
-    },
-    Http {
-        client: reqwest::Client,
-        endpoint: String,
-    },
-}
+/// Connect to a system adapter based on command-line arguments
+async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<Option<SystemAdapterClient>> {
+    let has_stdio = args.system_adapter_stdio_cmd.is_some();
+    let has_http = args.system_adapter_http_url.is_some();
 
-impl SystemAdapterClient {
-    async fn connect(args: &CommonArgs) -> anyhow::Result<Option<Self>> {
-        let has_stdio = args.system_adapter_stdio_cmd.is_some();
-        let has_http = args.system_adapter_http_url.is_some();
+    if has_stdio && has_http {
+        anyhow::bail!(
+            "Set only one system adapter transport: --system-adapter-stdio-cmd or --system-adapter-http-url"
+        );
+    }
 
-        if has_stdio && has_http {
+    if !has_stdio && !has_http {
+        if args.system_adapter_stdio_args.is_some()
+            || !args.system_adapter_param.is_empty()
+            || !args.system_adapter_env.is_empty()
+        {
             anyhow::bail!(
-                "Set only one system adapter transport: --system-adapter-stdio-cmd or --system-adapter-http-url"
+                "System adapter params were provided without a transport. Set either --system-adapter-stdio-cmd or --system-adapter-http-url."
             );
         }
-
-        if !has_stdio && !has_http {
-            if args.system_adapter_stdio_args.is_some()
-                || !args.system_adapter_param.is_empty()
-                || !args.system_adapter_env.is_empty()
-            {
-                anyhow::bail!(
-                    "System adapter params were provided without a transport. Set either --system-adapter-stdio-cmd or --system-adapter-http-url."
-                );
-            }
-            return Ok(None);
-        }
-
-        if has_http && !args.system_adapter_env.is_empty() {
-            anyhow::bail!(
-                "--system-adapter-env is only valid with --system-adapter-stdio-cmd transport."
-            );
-        }
-
-        if let Some(command) = &args.system_adapter_stdio_cmd {
-            let mut cmd = Command::new(command);
-
-            if let Some(raw_args) = &args.system_adapter_stdio_args {
-                cmd.args(raw_args.split_whitespace());
-            }
-
-            for (key, value) in &args.system_adapter_env {
-                cmd.env(key, value);
-            }
-
-            cmd.stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::inherit());
-
-            let mut child = cmd.spawn().map_err(|e| {
-                anyhow::anyhow!("Failed to start system adapter stdio command '{command}': {e}")
-            })?;
-
-            let stdin = child
-                .stdin
-                .take()
-                .context("System adapter stdio child missing stdin")?;
-            let stdout = child
-                .stdout
-                .take()
-                .context("System adapter stdio child missing stdout")?;
-
-            return Ok(Some(Self::Stdio {
-                _child: Box::new(child),
-                stdin,
-                stdout: BufReader::new(stdout),
-            }));
-        }
-
-        Ok(Some(Self::Http {
-            client: reqwest::Client::new(),
-            endpoint: args
-                .system_adapter_http_url
-                .clone()
-                .context("system adapter HTTP URL not provided")?,
-        }))
+        return Ok(None);
     }
 
-    fn transport_name(&self) -> &'static str {
-        match self {
-            Self::Stdio { .. } => "stdio",
-            Self::Http { .. } => "http",
-        }
+    if has_http && !args.system_adapter_env.is_empty() {
+        anyhow::bail!(
+            "--system-adapter-env is only valid with --system-adapter-stdio-cmd transport."
+        );
     }
 
-    async fn rpc_methods(&mut self) -> anyhow::Result<Vec<String>> {
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "rpc.methods"
-        });
-        let response = self.call(request).await?;
+    if let Some(command) = &args.system_adapter_stdio_cmd {
+        let args_vec = args
+            .system_adapter_stdio_args
+            .as_ref()
+            .map(|s| s.split_whitespace().map(String::from).collect())
+            .unwrap_or_default();
 
-        let methods = response
-            .get("result")
-            .and_then(|v| v.get("methods"))
-            .and_then(|v| v.as_array())
-            .context("System adapter response missing result.methods")?
-            .iter()
-            .filter_map(|v| v.as_str().map(ToString::to_string))
-            .collect();
-        Ok(methods)
+        let client = ClientBuilder::stdio(command)
+            .with_args(args_vec)
+            .with_env(args.system_adapter_env.clone().into_iter().collect())
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to create stdio client: {e}"))?;
+
+        return Ok(Some(client));
     }
 
-    async fn call(&mut self, request: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        match self {
-            Self::Stdio {
-                _child: _,
-                stdin,
-                stdout,
-            } => {
-                let payload = serde_json::to_string(&request)?;
-                stdin.write_all(payload.as_bytes()).await?;
-                stdin.write_all(b"\n").await?;
-                stdin.flush().await?;
-
-                let mut line = String::new();
-                let read = stdout.read_line(&mut line).await?;
-                if read == 0 {
-                    anyhow::bail!("System adapter stdio process closed stdout before responding");
-                }
-
-                let response: serde_json::Value = serde_json::from_str(line.trim_end())?;
-                if let Some(error) = response.get("error") {
-                    anyhow::bail!("System adapter returned JSON-RPC error: {error}");
-                }
-                Ok(response)
-            }
-            Self::Http { client, endpoint } => {
-                let response = client
-                    .post(endpoint.as_str())
-                    .json(&request)
-                    .send()
-                    .await
-                    .with_context(|| {
-                        format!("Failed to POST JSON-RPC request to system adapter at {endpoint}")
-                    })?;
-
-                let status = response.status();
-                let value: serde_json::Value = response.json().await.with_context(|| {
-                    format!("Failed to parse JSON-RPC response body from system adapter ({status})")
-                })?;
-
-                if let Some(error) = value.get("error") {
-                    anyhow::bail!("System adapter returned JSON-RPC error: {error}");
-                }
-                Ok(value)
-            }
-        }
+    if let Some(endpoint) = &args.system_adapter_http_url {
+        let client = ClientBuilder::http(endpoint)
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?;
+        return Ok(Some(client));
     }
+
+    Ok(None)
 }
 
 /// Create the appropriate query executor based on command-line arguments
@@ -502,101 +349,4 @@ fn metric_value(result: &serde_json::Value, metric_name: &str) -> Option<f64> {
         Some(serde_json::Value::String(s)) => s.parse::<f64>().ok(),
         _ => None,
     }
-}
-
-/// Process and display spiced runtime metrics fetched via system adapter JSON-RPC.
-pub(crate) async fn process_spiced_metrics(
-    common_args: &CommonArgs,
-    emit_to_telemetry: bool,
-    attributes: &[test_framework::opentelemetry::KeyValue],
-) {
-    if !common_args.scrape_spiced_metrics {
-        return;
-    }
-
-    if !has_system_adapter_transport(common_args) {
-        println!(
-            "Warning: --scrape-spiced-metrics requires a system adapter transport; skipping runtime metrics collection"
-        );
-        return;
-    }
-
-    let Ok(Some(mut adapter)) = SystemAdapterClient::connect(common_args).await else {
-        println!("Warning: Failed to initialize system adapter for runtime metrics collection");
-        return;
-    };
-
-    let methods = match adapter.rpc_methods().await {
-        Ok(methods) => methods,
-        Err(e) => {
-            println!("Warning: Failed to query system adapter methods for runtime metrics: {e}");
-            return;
-        }
-    };
-
-    let Some(method) = resolve_spiced_metrics_method(&methods) else {
-        println!(
-            "Warning: System adapter '{}' via {} does not expose a supported spiced metrics method",
-            common_args.system_adapter_name,
-            adapter.transport_name(),
-        );
-        return;
-    };
-
-    let mut params = serde_json::Map::new();
-    for (key, value) in &common_args.system_adapter_param {
-        params.insert(key.clone(), serde_json::Value::String(value.clone()));
-    }
-
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": method,
-        "params": serde_json::Value::Object(params),
-    });
-
-    let result = match adapter.call(request).await {
-        Ok(response) => {
-            let Some(result) = response.get("result") else {
-                println!("Warning: System adapter metrics response missing result payload");
-                return;
-            };
-            result.clone()
-        }
-        Err(e) => {
-            println!("Warning: Failed to fetch spiced runtime metrics from system adapter: {e}");
-            return;
-        }
-    };
-
-    println!("\n{}", vec!["="; 30].join(""));
-    println!("Spiced Runtime Metrics:");
-    println!("{}", vec!["="; 30].join(""));
-
-    if let Some(query_count) = metric_value(&result, "query_executions_total") {
-        println!("Total Queries Executed: {query_count}");
-        if emit_to_telemetry {
-            crate::metrics::SPICED_QUERY_COUNT.record(query_count, attributes);
-        }
-    }
-
-    if let Some(cache_hits) = metric_value(&result, "results_cache_hits_total")
-        && let Some(cache_requests) = metric_value(&result, "results_cache_requests_total")
-        && cache_requests > 0.0
-    {
-        let hit_rate = cache_hits / cache_requests;
-        println!("Cache Hit Rate: {:.2}%", hit_rate * 100.0);
-        if emit_to_telemetry {
-            crate::metrics::SPICED_CACHE_HIT_RATE.record(hit_rate, attributes);
-        }
-    }
-
-    if let Some(active_connections) = metric_value(&result, "query_active_count") {
-        println!("Peak Active Connections: {active_connections}");
-        if emit_to_telemetry {
-            crate::metrics::SPICED_ACTIVE_CONNECTIONS.record(active_connections, attributes);
-        }
-    }
-
-    println!("{}", vec!["="; 30].join(""));
 }

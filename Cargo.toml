@@ -8,6 +8,7 @@ members = [
     "crates/flight_client",
     "crates/otel-arrow",
     "crates/spicepod",
+    "crates/system-adapter-protocol",
     "crates/telemetry",
     "crates/test-framework",
     "crates/util",
@@ -147,6 +148,7 @@ serde_json.workspace = true
 yaml = { path = "crates/yaml" }
 spiceai.workspace = true
 spicepod = { path = "crates/spicepod" }
+system-adapter-protocol = { path = "crates/system-adapter-protocol" }
 test-framework = { path = "crates/test-framework" }
 rand.workspace = true
 tokio.workspace = true
