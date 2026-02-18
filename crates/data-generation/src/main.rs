@@ -15,15 +15,14 @@ limitations under the License.
 */
 
 use clap::Parser;
+use data_generation::generator::DataGenerator;
 use data_generation::storage::DataStorage;
 use tracing_subscriber::EnvFilter;
 
 use std::sync::Arc;
 
 use data_generation::config::{Cli, Command, CommonArgs};
-use data_generation::dataset;
-use data_generation::dataset::tpch::TpchDataset;
-use data_generation::generator::DataGenerator;
+use data_generation::dataset::{Dataset, MutationConfig};
 use data_generation::metrics::{IngestResult, Metrics};
 use data_generation::storage::s3::S3Storage;
 
@@ -64,10 +63,9 @@ fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
         "Configuration"
     );
 
-    let dataset: Arc<dyn dataset::Dataset> = match dataset_config.dataset_type.as_str() {
-        "tpch" => Arc::new(TpchDataset::new(&dataset_config)?),
-        other => anyhow::bail!("Unknown dataset type: {other}. Supported: tpch"),
-    };
+    let mutations_config = MutationConfig::new(0.1, 0.1);
+
+    let dataset: Arc<dyn Dataset> = Arc::create(&dataset_config, &mutations_config)?;
 
     let target = Arc::new(S3Storage::new(&target_config)?);
     let metrics = Metrics::new();
