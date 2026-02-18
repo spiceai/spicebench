@@ -52,9 +52,7 @@ impl DataGenerator {
     ///
     /// Pulls one batch per table from the dataset using `next_batches()`, then writes
     /// them sequentially so the data is guaranteed to be present when this returns.
-    pub async fn initialize(
-        &self,
-    ) -> anyhow::Result<IngestResult> {
+    pub async fn initialize(&self) -> anyhow::Result<IngestResult> {
         let table_count = self.dataset.tables().len();
 
         tracing::info!(
