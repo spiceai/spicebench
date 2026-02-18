@@ -2122,6 +2122,7 @@ name = "etl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrow",
  "clap",
  "data-generation",
  "system-adapter-protocol",

@@ -16,7 +16,9 @@ limitations under the License.
 #![allow(dead_code)]
 
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
+use arrow::array::{Array, TimestampMicrosecondArray};
 use etl::{ETLPipeline, PipelineState, StopReason};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use system_adapter_protocol::MetricsResponse;
@@ -118,6 +120,81 @@ fn spawn_sut_metrics_scraper(
     })
 }
 
+/// Spawn a task that periodically queries `SELECT MAX(__created_at)` for each
+/// table and records the freshness delay (`now − max_created_at`).
+///
+/// Returns a map of table name → vec of freshness samples (in milliseconds).
+fn spawn_e2e_latency_check(
+    conn: Arc<std::sync::Mutex<adbc_client::AdbcConnection>>,
+    table_names: Vec<String>,
+    token: CancellationToken,
+    interval: Duration,
+) -> tokio::task::JoinHandle<HashMap<String, Vec<f64>>> {
+    tokio::spawn(async move {
+        let mut samples_by_table: HashMap<String, Vec<f64>> = table_names
+            .iter()
+            .map(|t| (t.clone(), Vec::new()))
+            .collect();
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {}
+                () = token.cancelled() => break,
+            }
+
+            let conn = Arc::clone(&conn);
+            let tables = table_names.clone();
+            let results = tokio::task::spawn_blocking(move || {
+                let now_us = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros() as i64;
+                let mut out: Vec<(String, Option<f64>)> = Vec::new();
+                let mut guard = match conn.lock() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        eprintln!("E2E latency scraper: lock poisoned: {e}");
+                        return out;
+                    }
+                };
+                for table in &tables {
+                    let sql = format!("SELECT MAX(__created_at) FROM {table}");
+                    match guard.query(&sql) {
+                        Ok(batches) => {
+                            let sample = batches.first().and_then(|batch| {
+                                let col = batch.column(0);
+                                let ts_array =
+                                    col.as_any().downcast_ref::<TimestampMicrosecondArray>()?;
+                                if ts_array.is_null(0) {
+                                    return None;
+                                }
+                                let max_ts_us = ts_array.value(0);
+                                Some((now_us - max_ts_us) as f64 / 1000.0)
+                            });
+                            out.push((table.clone(), sample));
+                        }
+                        Err(e) => {
+                            eprintln!("E2E latency checker: query failed for {table}: {e}");
+                            out.push((table.clone(), None));
+                        }
+                    }
+                }
+                out
+            })
+            .await;
+
+            if let Ok(results) = results {
+                for (table, sample) in results {
+                    if let Some(ms) = sample {
+                        samples_by_table.entry(table).or_default().push(ms);
+                    }
+                }
+            }
+        }
+        samples_by_table
+    })
+}
+
 #[expect(clippy::too_many_lines)]
 pub(crate) async fn run(
     scenario: &Scenario,
@@ -141,8 +218,12 @@ pub(crate) async fn run(
     // Create telemetry with resource upfront, before any metrics calls
     let telemetry = super::create_telemetry_with_resource(common_args, load_resource);
 
-    // Create the appropriate query executor based on args
-    let executor = Box::new(adbc_executor::AdbcDirectQueryExecutor::new(adbc_conn));
+    // Create the appropriate query executor based on args, sharing the ADBC connection
+    // so the freshness scraper can also query through it.
+    let shared_conn = Arc::new(std::sync::Mutex::new(adbc_conn));
+    let executor = Box::new(adbc_executor::AdbcDirectQueryExecutor::from_shared(
+        Arc::clone(&shared_conn),
+    ));
 
     println!("Running benchmark");
 
@@ -173,6 +254,16 @@ pub(crate) async fn run(
     } else {
         None
     };
+
+    // Spawn freshness scraper
+    let table_names: Vec<String> = etl_pipeline.dataset().tables().keys().cloned().collect();
+    let e2e_latency_token = CancellationToken::new();
+    let e2e_latency_handle = spawn_e2e_latency_check(
+        Arc::clone(&shared_conn),
+        table_names,
+        e2e_latency_token.clone(),
+        Duration::from_secs(5),
+    );
 
     // Record client concurrency as a gauge
     crate::metrics::ACTIVE_CONNECTIONS.record(
@@ -323,6 +414,33 @@ pub(crate) async fn run(
             last_sut_metrics.ingestion.rows_ingested,
             last_sut_metrics.ingestion.bytes_ingested,
         );
+    }
+
+    // Stop freshness scraper and emit P99 metrics
+    e2e_latency_token.cancel();
+    if let Ok(samples_by_table) = e2e_latency_handle.await {
+        let mut all_samples: Vec<f64> = Vec::new();
+        for (table_name, samples) in &samples_by_table {
+            if !samples.is_empty() {
+                all_samples.extend(samples);
+                let mut sorted = samples.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let idx = ((sorted.len() as f64 * 0.99) as usize).min(sorted.len() - 1);
+                let p99 = sorted[idx];
+                let attrs = vec![KeyValue::new("table_name", table_name.clone())];
+                crate::metrics::E2E_LATENCY_P99_MS.record(p99, &attrs);
+            }
+        }
+        if !all_samples.is_empty() {
+            all_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let idx = ((all_samples.len() as f64 * 0.99) as usize).min(all_samples.len() - 1);
+            let p99 = all_samples[idx];
+            crate::metrics::E2E_LATENCY_P99_MS.record(p99, &[KeyValue::new("table_name", "")]);
+            println!(
+                "Data freshness P99: {p99:.1}ms ({} samples)",
+                all_samples.len()
+            );
+        }
     }
 
     println!("{}", vec!["-"; 30].join(""));
