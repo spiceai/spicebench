@@ -1,6 +1,7 @@
 [workspace]
 members = [
     ".",
+    "crates/adbc_client",
     "crates/app",
     "crates/data-generation",
     "crates/duration-parse",

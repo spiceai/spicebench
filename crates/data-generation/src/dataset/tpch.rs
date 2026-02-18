@@ -14,16 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
 use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use duckdb::Connection;
 use tracing::info;
 
 use crate::config::DatasetConfig;
 
-use super::{Dataset, DatasetBatch};
+use super::{Dataset, DatasetTable};
 
-/// TPC-H tables with their corresponding time column names.
-/// Matches the convention in `test-framework/src/queries/mod.rs`.
+/// TPC-H table definitions: (table_name, time_column, schema_fn).
 const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
     ("region", "r_created_at"),
     ("nation", "n_created_at"),
@@ -34,6 +37,100 @@ const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
     ("orders", "o_created_at"),
     ("lineitem", "l_created_at"),
 ];
+
+/// Returns the static Arrow schema for a TPC-H table (including the appended time column).
+fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
+    let ts = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+    let fields: Vec<Field> = match table {
+        "region" => vec![
+            Field::new("r_regionkey", DataType::Int32, false),
+            Field::new("r_name", DataType::Utf8, false),
+            Field::new("r_comment", DataType::Utf8, true),
+            Field::new(time_col, ts, true),
+        ],
+        "nation" => vec![
+            Field::new("n_nationkey", DataType::Int32, false),
+            Field::new("n_name", DataType::Utf8, false),
+            Field::new("n_regionkey", DataType::Int32, false),
+            Field::new("n_comment", DataType::Utf8, true),
+            Field::new(time_col, ts, true),
+        ],
+        "supplier" => vec![
+            Field::new("s_suppkey", DataType::Int32, false),
+            Field::new("s_name", DataType::Utf8, false),
+            Field::new("s_address", DataType::Utf8, false),
+            Field::new("s_nationkey", DataType::Int32, false),
+            Field::new("s_phone", DataType::Utf8, false),
+            Field::new("s_acctbal", DataType::Decimal128(15, 2), false),
+            Field::new("s_comment", DataType::Utf8, true),
+            Field::new(time_col, ts, true),
+        ],
+        "customer" => vec![
+            Field::new("c_custkey", DataType::Int32, false),
+            Field::new("c_name", DataType::Utf8, false),
+            Field::new("c_address", DataType::Utf8, false),
+            Field::new("c_nationkey", DataType::Int32, false),
+            Field::new("c_phone", DataType::Utf8, false),
+            Field::new("c_acctbal", DataType::Decimal128(15, 2), false),
+            Field::new("c_mktsegment", DataType::Utf8, false),
+            Field::new("c_comment", DataType::Utf8, true),
+            Field::new(time_col, ts, true),
+        ],
+        "part" => vec![
+            Field::new("p_partkey", DataType::Int32, false),
+            Field::new("p_name", DataType::Utf8, false),
+            Field::new("p_mfgr", DataType::Utf8, false),
+            Field::new("p_brand", DataType::Utf8, false),
+            Field::new("p_type", DataType::Utf8, false),
+            Field::new("p_size", DataType::Int32, false),
+            Field::new("p_container", DataType::Utf8, false),
+            Field::new("p_retailprice", DataType::Decimal128(15, 2), false),
+            Field::new("p_comment", DataType::Utf8, true),
+            Field::new(time_col, ts, true),
+        ],
+        "partsupp" => vec![
+            Field::new("ps_partkey", DataType::Int32, false),
+            Field::new("ps_suppkey", DataType::Int32, false),
+            Field::new("ps_availqty", DataType::Int32, false),
+            Field::new("ps_supplycost", DataType::Decimal128(15, 2), false),
+            Field::new("ps_comment", DataType::Utf8, true),
+            Field::new(time_col, ts, true),
+        ],
+        "orders" => vec![
+            Field::new("o_orderkey", DataType::Int32, false),
+            Field::new("o_custkey", DataType::Int32, false),
+            Field::new("o_orderstatus", DataType::Utf8, false),
+            Field::new("o_totalprice", DataType::Decimal128(15, 2), false),
+            Field::new("o_orderdate", DataType::Date32, false),
+            Field::new("o_orderpriority", DataType::Utf8, false),
+            Field::new("o_clerk", DataType::Utf8, false),
+            Field::new("o_shippriority", DataType::Int32, false),
+            Field::new("o_comment", DataType::Utf8, true),
+            Field::new(time_col, ts, true),
+        ],
+        "lineitem" => vec![
+            Field::new("l_orderkey", DataType::Int32, false),
+            Field::new("l_partkey", DataType::Int32, false),
+            Field::new("l_suppkey", DataType::Int32, false),
+            Field::new("l_linenumber", DataType::Int32, false),
+            Field::new("l_quantity", DataType::Decimal128(15, 2), false),
+            Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+            Field::new("l_discount", DataType::Decimal128(15, 2), false),
+            Field::new("l_tax", DataType::Decimal128(15, 2), false),
+            Field::new("l_returnflag", DataType::Utf8, false),
+            Field::new("l_linestatus", DataType::Utf8, false),
+            Field::new("l_shipdate", DataType::Date32, false),
+            Field::new("l_commitdate", DataType::Date32, false),
+            Field::new("l_receiptdate", DataType::Date32, false),
+            Field::new("l_shipinstruct", DataType::Utf8, false),
+            Field::new("l_shipmode", DataType::Utf8, false),
+            Field::new("l_comment", DataType::Utf8, true),
+            Field::new(time_col, ts, true),
+        ],
+        _ => unreachable!("unknown TPC-H table: {table}"),
+    };
+    Arc::new(Schema::new(fields))
+}
 
 /// Generates TPC-H data using DuckDB's built-in `dbgen` and yields Arrow `RecordBatch`es.
 ///
@@ -46,8 +143,8 @@ pub struct TpchDataset {
     conn: Connection,
     scale_factor: f64,
 
-    /// Index into `TPCH_TABLE_TIME_COLUMNS` for the current table being read.
-    table_index: usize,
+    /// Tables that have already been consumed in the current step.
+    consumed_tables: HashSet<String>,
 
     /// Step-based generation for continuous appends.
     /// Step 0 is the initial `dbgen` call; steps 1+ generate new non-overlapping data.
@@ -85,7 +182,7 @@ impl TpchDataset {
         Ok(Self {
             conn,
             scale_factor: config.scale_factor,
-            table_index: 0,
+            consumed_tables: HashSet::new(),
             current_step: 0,
             num_steps: config.num_steps,
         })
@@ -118,8 +215,6 @@ impl TpchDataset {
 
         info!(step = self.current_step, "Generated new TPC-H data step");
 
-        self.table_index = 0;
-
         Ok(true)
     }
 
@@ -135,54 +230,65 @@ impl TpchDataset {
 }
 
 impl Dataset for TpchDataset {
-    fn next_batch(&mut self) -> anyhow::Result<Option<DatasetBatch>> {
-        loop {
-            if self.table_index >= TPCH_TABLE_TIME_COLUMNS.len() {
-                // All tables exhausted for current step — drop _new tables and advance
-                if self.current_step > 0 {
-                    self.drop_step_tables()?;
-                }
-                if !self.advance_step()? {
-                    return Ok(None); // all steps exhausted
-                }
-                continue;
+    fn raw_next_batch(&mut self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+        // If all tables consumed for current step, advance to next step
+        if self.consumed_tables.len() >= TPCH_TABLE_TIME_COLUMNS.len() {
+            if self.current_step > 0 {
+                self.drop_step_tables()?;
             }
-
-            let (table, _) = TPCH_TABLE_TIME_COLUMNS[self.table_index];
-            let source_table = if self.current_step == 0 {
-                table.to_string()
-            } else {
-                format!("{table}_new")
-            };
-
-            let sql = format!("SELECT * FROM {source_table}");
-            let mut stmt = self.conn.prepare(&sql)?;
-            let batches: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
-
-            self.table_index += 1;
-
-            if batches.is_empty() || batches[0].num_rows() == 0 {
-                continue;
+            if !self.advance_step()? {
+                return Ok(None); // all steps exhausted
             }
-
-            return Ok(Some(DatasetBatch {
-                table_name: table.to_string(),
-                batch: batches.into_iter().next().expect("checked non-empty"),
-            }));
+            self.consumed_tables.clear();
         }
+
+        // If this table was already consumed in the current step
+        if self.consumed_tables.contains(table) {
+            return Ok(None);
+        }
+
+        // Validate the table name
+        if !TPCH_TABLE_TIME_COLUMNS
+            .iter()
+            .any(|(name, _)| *name == table)
+        {
+            anyhow::bail!("Unknown TPC-H table: {table}");
+        }
+
+        let source_table = if self.current_step == 0 {
+            table.to_string()
+        } else {
+            format!("{table}_new")
+        };
+
+        let sql = format!("SELECT * FROM {source_table}");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let batches: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
+
+        self.consumed_tables.insert(table.to_string());
+
+        if batches.is_empty() || batches[0].num_rows() == 0 {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            batches.into_iter().next().expect("checked non-empty"),
+        ))
     }
 
-    fn tables(&self) -> Vec<String> {
+    fn tables(&self) -> HashMap<String, DatasetTable> {
         TPCH_TABLE_TIME_COLUMNS
             .iter()
-            .map(|(name, _)| (*name).to_string())
+            .map(|(name, time_col)| {
+                (
+                    (*name).to_string(),
+                    DatasetTable {
+                        name: (*name).to_string(),
+                        schema: tpch_schema(name, time_col),
+                        time_column: Some((*time_col).to_string()),
+                    },
+                )
+            })
             .collect()
-    }
-
-    fn time_column(&self, table: &str) -> Option<String> {
-        TPCH_TABLE_TIME_COLUMNS
-            .iter()
-            .find(|(name, _)| *name == table)
-            .map(|(_, col)| (*col).to_string())
     }
 }

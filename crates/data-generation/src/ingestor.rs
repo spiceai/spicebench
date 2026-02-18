@@ -25,8 +25,6 @@ use crate::dataset::Dataset;
 use crate::metrics::{IngestResult, Metrics};
 use crate::target::Target;
 
-use std::collections::HashSet;
-
 pub struct Ingestor<S: Dataset, T: Target> {
     dataset: S,
     target: T,
@@ -48,9 +46,8 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
 
     /// Seed the target with initial data — writes at least one batch per table.
     ///
-    /// Pulls batches from the dataset until every table has been written at least once,
-    /// then returns. Writes are performed sequentially (no concurrency) so the data is
-    /// guaranteed to be present when this returns.
+    /// Pulls one batch per table from the dataset using `next_batches()`, then writes
+    /// them sequentially so the data is guaranteed to be present when this returns.
     ///
     /// If `table_location_fn` is provided, prints a JSON object mapping each table to
     /// its connector and location, e.g.:
@@ -62,7 +59,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
         // Print table locations as JSON
         if let Some(loc_fn) = table_location_fn {
             let mut map = serde_json::Map::new();
-            for table in self.dataset.tables() {
+            for (name, table) in self.dataset.tables() {
                 let mut entry = serde_json::Map::new();
                 entry.insert(
                     "connector".to_string(),
@@ -70,55 +67,50 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
                 );
                 entry.insert(
                     "location".to_string(),
-                    serde_json::Value::String(loc_fn(&table)),
+                    serde_json::Value::String(loc_fn(&name)),
                 );
-                if let Some(time_col) = self.dataset.time_column(&table) {
+                if let Some(ref time_col) = table.time_column {
                     entry.insert(
                         "time_column".to_string(),
-                        serde_json::Value::String(time_col),
+                        serde_json::Value::String(time_col.clone()),
                     );
                 }
-                map.insert(table, serde_json::Value::Object(entry));
+                map.insert(name, serde_json::Value::Object(entry));
             }
             println!("{}", serde_json::Value::Object(map));
         }
 
-        let all_tables: HashSet<String> = self.dataset.tables().into_iter().collect();
-        let mut tables_written: HashSet<String> = HashSet::new();
+        let table_count = self.dataset.tables().len();
 
         tracing::info!(
-            table_count = all_tables.len(),
+            table_count,
             "Initializing target with seed data for all tables"
         );
 
-        while tables_written.len() < all_tables.len() {
-            let source_batch = match self.dataset.next_batch() {
-                Ok(Some(batch)) => batch,
-                Ok(None) => {
-                    let missing: Vec<_> = all_tables.difference(&tables_written).collect();
-                    tracing::warn!(?missing, "Dataset exhausted before all tables were written");
-                    break;
+        match self.dataset.next_batches() {
+            Ok(Some(batches)) => {
+                for (table_name, batch) in batches {
+                    self.metrics.record_generation();
+
+                    let start = Instant::now();
+                    let result = self
+                        .target
+                        .write(&table_name, self.batch_id, batch)
+                        .await?;
+                    self.metrics.record_write(&result, start.elapsed());
+                    self.batch_id += 1;
                 }
-                Err(e) => return Err(e),
-            };
-            self.metrics.record_generation();
-
-            tables_written.insert(source_batch.table_name.clone());
-
-            let start = Instant::now();
-            let result = self
-                .target
-                .write(&source_batch.table_name, self.batch_id, source_batch.batch)
-                .await?;
-            self.metrics.record_write(&result, start.elapsed());
-            self.batch_id += 1;
+            }
+            Ok(None) => {
+                tracing::warn!("Dataset exhausted during initialization");
+            }
+            Err(e) => return Err(e),
         }
 
         let summary = self.metrics.summary();
         tracing::info!(
             rows = summary.rows_written,
             batches = summary.batches_written,
-            tables = tables_written.len(),
             "Initialization complete"
         );
 
@@ -127,31 +119,25 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
 
     /// Skip the initial batches that `initialize()` would have written.
     ///
-    /// Consumes batches from the dataset until every table has been seen at least once,
-    /// without writing them to the target. This advances the dataset past the
-    /// initialization records so that `run()` only processes new data.
+    /// Consumes one round of batches (one per table) from the dataset without writing
+    /// them to the target. This advances the dataset past the initialization records
+    /// so that `run()` only processes new data.
     pub fn skip_initial_batches(&mut self) -> anyhow::Result<()> {
-        let all_tables: HashSet<String> = self.dataset.tables().into_iter().collect();
-        let mut tables_seen: HashSet<String> = HashSet::new();
+        let table_count = self.dataset.tables().len();
 
         tracing::info!(
-            table_count = all_tables.len(),
+            table_count,
             "Skipping initial batches for all tables"
         );
 
-        while tables_seen.len() < all_tables.len() {
-            match self.dataset.next_batch() {
-                Ok(Some(batch)) => {
-                    tables_seen.insert(batch.table_name);
-                    self.batch_id += 1;
-                }
-                Ok(None) => {
-                    let missing: Vec<_> = all_tables.difference(&tables_seen).collect();
-                    tracing::warn!(?missing, "Dataset exhausted before all tables were skipped");
-                    break;
-                }
-                Err(e) => return Err(e),
+        match self.dataset.next_batches() {
+            Ok(Some(batches)) => {
+                self.batch_id += batches.len() as u64;
             }
+            Ok(None) => {
+                tracing::warn!("Dataset exhausted before all tables were skipped");
+            }
+            Err(e) => return Err(e),
         }
 
         tracing::info!(batches_skipped = self.batch_id, "Initial batches skipped");
@@ -178,39 +164,40 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
         });
 
         loop {
-            let source_batch = match self.dataset.next_batch() {
-                Ok(Some(batch)) => batch,
+            let source_batches = match self.dataset.next_batches() {
+                Ok(Some(batches)) => batches,
                 Ok(None) => break,
                 Err(e) => {
                     tracing::error!("Dataset error: {e}");
                     break;
                 }
             };
-            self.metrics.record_generation();
 
-            // Acquire semaphore permit — creates backpressure if all write slots are busy
-            let permit = Arc::clone(&self.semaphore).acquire_owned().await?;
+            for (table_name, batch) in source_batches {
+                self.metrics.record_generation();
 
-            let target = self.target.clone();
-            let metrics = self.metrics.clone();
-            let current_batch_id = self.batch_id;
-            let table_name = source_batch.table_name;
-            let batch = source_batch.batch;
-            self.batch_id += 1;
+                // Acquire semaphore permit — creates backpressure if all write slots are busy
+                let permit = Arc::clone(&self.semaphore).acquire_owned().await?;
 
-            join_set.spawn(async move {
-                let start = Instant::now();
-                match target.write(&table_name, current_batch_id, batch).await {
-                    Ok(result) => {
-                        metrics.record_write(&result, start.elapsed());
+                let target = self.target.clone();
+                let metrics = self.metrics.clone();
+                let current_batch_id = self.batch_id;
+                self.batch_id += 1;
+
+                join_set.spawn(async move {
+                    let start = Instant::now();
+                    match target.write(&table_name, current_batch_id, batch).await {
+                        Ok(result) => {
+                            metrics.record_write(&result, start.elapsed());
+                        }
+                        Err(e) => {
+                            metrics.record_error();
+                            tracing::error!(batch_id = current_batch_id, "Write failed: {e}");
+                        }
                     }
-                    Err(e) => {
-                        metrics.record_error();
-                        tracing::error!(batch_id = current_batch_id, "Write failed: {e}");
-                    }
-                }
-                drop(permit);
-            });
+                    drop(permit);
+                });
+            }
         }
 
         // Wait for all in-flight writes

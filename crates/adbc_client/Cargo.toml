@@ -1,0 +1,16 @@
+[package]
+edition.workspace = true
+exclude.workspace = true
+homepage.workspace = true
+license.workspace = true
+name = "adbc_client"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+adbc_core = "0.22"
+adbc_driver_manager = "0.22"
+arrow.workspace = true
+arrow-array = { workspace = true }
+snafu.workspace = true

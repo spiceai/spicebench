@@ -302,10 +302,12 @@ macro_rules! wait_test_and_memory {
     };
 }
 
-fn resolve_spiced_metrics_method(methods: &[String]) -> Option<&'static str> {
+fn resolve_sut_metrics_method(methods: &[String]) -> Option<&'static str> {
     const CANDIDATES: &[&str] = &[
-        "spiced.metrics",
-        "metrics.spiced",
+        "sut.metrics",
+        "metrics.sut",
+        "system.metrics",
+        "metrics.system",
         "metrics.scrape",
         "run.metrics",
     ];
