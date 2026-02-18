@@ -26,9 +26,9 @@ jobs:
       - name: pull spidapter image
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
-      - name: Cache spicebench binary
+      - name: Restore spicebench cache
         id: cache-spicebench
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.spice/bin/spicebench
           key: spicebench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
@@ -43,11 +43,19 @@ jobs:
           cache: false
 
       - name: Build spicebench
+        id: build-spicebench
         if: steps.cache-spicebench.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.spice/bin
           cargo build -p spicebench
           install -m 755 target/debug/spicebench ~/.spice/bin/spicebench
+
+      - name: Save spicebench cache
+        if: steps.build-spicebench.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.spice/bin/spicebench
+          key: spicebench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
 
       - name: Run spicebench
         env:

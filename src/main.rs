@@ -75,10 +75,10 @@ async fn main() -> anyhow::Result<()> {
                 conn
             }
             Err(e) => {
-                return Err(anyhow::anyhow!(
+                eprintln!(
                     "Failed to create ADBC connection for driver {}: {e}",
                     adbc_driver.driver
-                ));
+                );
             }
         };
 
