@@ -17,7 +17,7 @@ limitations under the License.
 use std::time::Duration;
 
 use crate::args::{CommonArgs, DatasetTestArgs};
-use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder};
+use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder, JsonRpcRequest};
 use test_framework::{
     anyhow,
     anyhow::Context,
@@ -325,10 +325,12 @@ macro_rules! wait_test_and_memory {
     };
 }
 
-fn resolve_spiced_metrics_method(methods: &[String]) -> Option<&'static str> {
+fn resolve_sut_metrics_method(methods: &[String]) -> Option<&'static str> {
     const CANDIDATES: &[&str] = &[
-        "spiced.metrics",
-        "metrics.spiced",
+        "sut.metrics",
+        "metrics.sut",
+        "system.metrics",
+        "metrics.system",
         "metrics.scrape",
         "run.metrics",
     ];
@@ -349,4 +351,96 @@ fn metric_value(result: &serde_json::Value, metric_name: &str) -> Option<f64> {
         Some(serde_json::Value::String(s)) => s.parse::<f64>().ok(),
         _ => None,
     }
+}
+
+/// Process and display SUT metrics fetched via system adapter JSON-RPC.
+pub(crate) async fn process_sut_metrics(
+    common_args: &CommonArgs,
+    emit_to_telemetry: bool,
+    attributes: &[test_framework::opentelemetry::KeyValue],
+) {
+    if !common_args.scrape_sut_metrics {
+        return;
+    }
+
+    if !has_system_adapter_transport(common_args) {
+        println!(
+            "Warning: --scrape-sut-metrics requires a system adapter transport; skipping SUT metrics collection"
+        );
+        return;
+    }
+
+    let Ok(Some(mut adapter)) = connect_system_adapter(common_args).await else {
+        println!("Warning: Failed to initialize system adapter for SUT metrics collection");
+        return;
+    };
+
+    let methods = match adapter.rpc_methods().await {
+        Ok(methods) => methods,
+        Err(e) => {
+            println!("Warning: Failed to query system adapter methods for SUT metrics: {e}");
+            return;
+        }
+    };
+
+    let Some(method) = resolve_sut_metrics_method(&methods) else {
+        println!(
+            "Warning: System adapter '{}' via {} does not expose a supported SUT metrics method",
+            common_args.system_adapter_name,
+            adapter.transport_name(),
+        );
+        return;
+    };
+
+    let mut params = serde_json::Map::new();
+    for (key, value) in &common_args.system_adapter_param {
+        params.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
+
+    let request = JsonRpcRequest::new(3, method, serde_json::Value::Object(params));
+
+    let result = match adapter.call_typed::<_, serde_json::Value>(request).await {
+        Ok(response) => {
+            let Some(result) = response.result else {
+                println!("Warning: System adapter metrics response missing result payload");
+                return;
+            };
+            result
+        }
+        Err(e) => {
+            println!("Warning: Failed to fetch SUT metrics from system adapter: {e}");
+            return;
+        }
+    };
+
+    println!("\n{}", vec!["="; 30].join(""));
+    println!("SUT Metrics:");
+    println!("{}", vec!["="; 30].join(""));
+
+    if let Some(query_count) = metric_value(&result, "query_executions_total") {
+        println!("Total Queries Executed: {query_count}");
+        if emit_to_telemetry {
+            crate::metrics::SUT_QUERY_COUNT.record(query_count, attributes);
+        }
+    }
+
+    if let Some(cache_hits) = metric_value(&result, "results_cache_hits_total")
+        && let Some(cache_requests) = metric_value(&result, "results_cache_requests_total")
+        && cache_requests > 0.0
+    {
+        let hit_rate = cache_hits / cache_requests;
+        println!("Cache Hit Rate: {:.2}%", hit_rate * 100.0);
+        if emit_to_telemetry {
+            crate::metrics::SUT_CACHE_HIT_RATE.record(hit_rate, attributes);
+        }
+    }
+
+    if let Some(active_connections) = metric_value(&result, "query_active_count") {
+        println!("Peak Active Connections: {active_connections}");
+        if emit_to_telemetry {
+            crate::metrics::SUT_ACTIVE_CONNECTIONS.record(active_connections, attributes);
+        }
+    }
+
+    println!("{}", vec!["="; 30].join(""));
 }
