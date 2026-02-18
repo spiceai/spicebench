@@ -1,0 +1,44 @@
+name: "Build spicebench"
+description: "Builds spicebench and caches the binary. Restores from cache if available."
+
+inputs:
+  lookup-only:
+    description: "Only check if the cache exists, don't restore the binary"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Restore spicebench cache
+      id: cache-spicebench
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.spice/bin/spicebench
+        key: spicebench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
+        restore-keys: |
+          spicebench-${{ runner.os }}-
+        lookup-only: ${{ inputs.lookup-only }}
+
+    - name: Setup Rust toolchain
+      if: steps.cache-spicebench.outputs.cache-hit != 'true'
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: 1.91
+        cache: true
+
+    - name: Build spicebench
+      id: build-spicebench
+      if: steps.cache-spicebench.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p ~/.spice/bin
+        cargo build -p spicebench
+        install -m 755 target/debug/spicebench ~/.spice/bin/spicebench
+
+    - name: Save spicebench cache
+      if: steps.build-spicebench.outcome == 'success'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.spice/bin/spicebench
+        key: spicebench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
