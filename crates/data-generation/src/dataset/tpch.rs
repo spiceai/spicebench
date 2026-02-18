@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use arrow::array::RecordBatch;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use duckdb::Connection;
 use tracing::info;
@@ -40,22 +40,21 @@ const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
     ("lineitem", "l_created_at"),
 ];
 
-/// Returns the static Arrow schema for a TPC-H table (including the appended time column).
-fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
-    let ts = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+/// Returns the static Arrow schema for a TPC-H table (without time column).
+///
+/// The time column is not included because it will be added during ETL rehydration.
+fn tpch_schema(table: &str) -> SchemaRef {
     let fields: Vec<Field> = match table {
         "region" => vec![
             Field::new("r_regionkey", DataType::Int32, false),
             Field::new("r_name", DataType::Utf8, false),
             Field::new("r_comment", DataType::Utf8, true),
-            Field::new(time_col, ts, true),
         ],
         "nation" => vec![
             Field::new("n_nationkey", DataType::Int32, false),
             Field::new("n_name", DataType::Utf8, false),
             Field::new("n_regionkey", DataType::Int32, false),
             Field::new("n_comment", DataType::Utf8, true),
-            Field::new(time_col, ts, true),
         ],
         "supplier" => vec![
             Field::new("s_suppkey", DataType::Int32, false),
@@ -65,7 +64,6 @@ fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
             Field::new("s_phone", DataType::Utf8, false),
             Field::new("s_acctbal", DataType::Decimal128(15, 2), false),
             Field::new("s_comment", DataType::Utf8, true),
-            Field::new(time_col, ts, true),
         ],
         "customer" => vec![
             Field::new("c_custkey", DataType::Int32, false),
@@ -76,7 +74,6 @@ fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
             Field::new("c_acctbal", DataType::Decimal128(15, 2), false),
             Field::new("c_mktsegment", DataType::Utf8, false),
             Field::new("c_comment", DataType::Utf8, true),
-            Field::new(time_col, ts, true),
         ],
         "part" => vec![
             Field::new("p_partkey", DataType::Int32, false),
@@ -88,7 +85,6 @@ fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
             Field::new("p_container", DataType::Utf8, false),
             Field::new("p_retailprice", DataType::Decimal128(15, 2), false),
             Field::new("p_comment", DataType::Utf8, true),
-            Field::new(time_col, ts, true),
         ],
         "partsupp" => vec![
             Field::new("ps_partkey", DataType::Int32, false),
@@ -96,7 +92,6 @@ fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
             Field::new("ps_availqty", DataType::Int32, false),
             Field::new("ps_supplycost", DataType::Decimal128(15, 2), false),
             Field::new("ps_comment", DataType::Utf8, true),
-            Field::new(time_col, ts, true),
         ],
         "orders" => vec![
             Field::new("o_orderkey", DataType::Int32, false),
@@ -108,7 +103,6 @@ fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
             Field::new("o_clerk", DataType::Utf8, false),
             Field::new("o_shippriority", DataType::Int32, false),
             Field::new("o_comment", DataType::Utf8, true),
-            Field::new(time_col, ts, true),
         ],
         "lineitem" => vec![
             Field::new("l_orderkey", DataType::Int32, false),
@@ -127,7 +121,6 @@ fn tpch_schema(table: &str, time_col: &str) -> SchemaRef {
             Field::new("l_shipinstruct", DataType::Utf8, false),
             Field::new("l_shipmode", DataType::Utf8, false),
             Field::new("l_comment", DataType::Utf8, true),
-            Field::new(time_col, ts, true),
         ],
         _ => unreachable!("unknown TPC-H table: {table}"),
     };
@@ -160,18 +153,11 @@ impl TpchDataset {
         let conn = Connection::open_in_memory()?;
 
         // Generate initial TPC-H data (step 0)
-        let mut sql = format!(
+        let sql = format!(
             "INSTALL tpch; LOAD tpch; CALL dbgen(sf={sf}, children={num_steps}, step=0);",
             sf = config.scale_factor,
             num_steps = config.num_steps,
         );
-
-        // Add time columns to each table
-        for (table, time_col) in TPCH_TABLE_TIME_COLUMNS {
-            sql.push_str(&format!(
-                "ALTER TABLE {table} ADD COLUMN {time_col} TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;"
-            ));
-        }
 
         conn.execute_batch(&sql)?;
 
@@ -199,19 +185,12 @@ impl TpchDataset {
             return Ok(false);
         }
 
-        let mut sql = format!(
+        let sql = format!(
             "CALL dbgen(sf={sf}, children={num_steps}, step={step}, suffix='_new');",
             sf = self.scale_factor,
             num_steps = self.num_steps,
             step = new_step,
         );
-
-        // Add time columns to _new tables
-        for (table, time_col) in TPCH_TABLE_TIME_COLUMNS {
-            sql.push_str(&format!(
-                "ALTER TABLE {table}_new ADD COLUMN {time_col} TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;"
-            ));
-        }
 
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
         conn.execute_batch(&sql)?;
@@ -235,6 +214,17 @@ impl TpchDataset {
 
 #[async_trait]
 impl Dataset for TpchDataset {
+    fn num_batches(&self, table: &str) -> u64 {
+        if !TPCH_TABLE_TIME_COLUMNS
+            .iter()
+            .any(|(name, _)| *name == table)
+        {
+            return 0;
+        }
+        // TPC-H produces one batch per table per step.
+        u64::from(self.num_steps)
+    }
+
     async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
         // If all tables consumed for current step, advance to next step
         {
@@ -305,7 +295,7 @@ impl Dataset for TpchDataset {
                     (*name).to_string(),
                     DatasetTable {
                         name: (*name).to_string(),
-                        schema: tpch_schema(name, time_col),
+                        schema: tpch_schema(name),
                         time_column: Some((*time_col).to_string()),
                     },
                 )

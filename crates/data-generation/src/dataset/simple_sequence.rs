@@ -17,10 +17,9 @@ limitations under the License.
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow::array::{Int64Array, RecordBatch, TimestampMicrosecondArray};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow::array::{Int64Array, RecordBatch};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 
 use crate::config::DatasetConfig;
@@ -33,6 +32,7 @@ use super::{Dataset, DatasetTable};
 /// and `value = id * 10`. After `num_steps` batches the dataset is exhausted.
 pub struct SimpleSequenceDataset {
     batch_size: usize,
+    num_steps: u16,
     current_offset: AtomicI64,
     remaining_steps: AtomicU16,
 }
@@ -42,27 +42,31 @@ impl SimpleSequenceDataset {
         let batch_size = (config.scale_factor * 1000.0) as usize;
         Self {
             batch_size,
+            num_steps: config.num_steps,
             current_offset: AtomicI64::new(0),
             remaining_steps: AtomicU16::new(config.num_steps),
         }
     }
 
     /// Returns the static Arrow schema for the `integer_sequence` table.
+    ///
+    /// The time column (`inserted_at`) is not included; it will be added during
+    /// ETL rehydration.
     pub fn schema() -> SchemaRef {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("value", DataType::Int64, false),
-            Field::new(
-                "inserted_at",
-                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                true,
-            ),
         ]))
     }
 }
 
 #[async_trait]
 impl Dataset for SimpleSequenceDataset {
+    fn num_batches(&self, _table: &str) -> u64 {
+        // One batch per step for the single table.
+        u64::from(self.num_steps)
+    }
+
     async fn raw_next_batch(&self, _table: &str) -> anyhow::Result<Option<RecordBatch>> {
         let prev = self.remaining_steps.fetch_sub(1, Ordering::SeqCst);
         if prev == 0 {
@@ -71,11 +75,6 @@ impl Dataset for SimpleSequenceDataset {
             return Ok(None);
         }
 
-        let now_us = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before UNIX epoch")
-            .as_micros() as i64;
-
         let offset = self.current_offset.fetch_add(self.batch_size as i64, Ordering::SeqCst);
 
         let ids: Int64Array = (offset..offset + self.batch_size as i64)
@@ -83,12 +82,10 @@ impl Dataset for SimpleSequenceDataset {
         let values: Int64Array = (offset..offset + self.batch_size as i64)
             .map(|id| id * 10)
             .collect();
-        let timestamps = TimestampMicrosecondArray::from(vec![Some(now_us); self.batch_size])
-            .with_timezone("UTC");
 
         let batch = RecordBatch::try_new(
             Self::schema(),
-            vec![Arc::new(ids), Arc::new(values), Arc::new(timestamps)],
+            vec![Arc::new(ids), Arc::new(values)],
         )?;
 
         Ok(Some(batch))

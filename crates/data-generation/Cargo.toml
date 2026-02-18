@@ -12,6 +12,10 @@ version.workspace = true
 name = "data_generation"
 path = "src/lib.rs"
 
+[[bin]]
+name = "data-generation"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 arrow = { workspace = true }
@@ -20,10 +24,12 @@ arrow-schema.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 clap = { workspace = true, features = ["derive"] }
+futures.workspace = true
 duckdb = { workspace = true, features = ["bundled", "vtab", "vtab-arrow"] }
 object_store = { workspace = true }
 parquet.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4"] }

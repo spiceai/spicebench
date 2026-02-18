@@ -24,7 +24,6 @@ use object_store::{ObjectStore, PutPayload};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
-use uuid::Uuid;
 
 use crate::config::TargetConfig;
 
@@ -73,6 +72,25 @@ impl S3Target {
 
 #[async_trait]
 impl Target for S3Target {
+    fn expected_files(&self, table_name: &str, batch_ids: &[u64]) -> Vec<String> {
+        batch_ids
+            .iter()
+            .map(|id| {
+                if self.prefix.is_empty() {
+                    format!(
+                        "s3://{}/{table_name}/batch-{id:06}.parquet",
+                        self.bucket
+                    )
+                } else {
+                    format!(
+                        "s3://{}/{}/{table_name}/batch-{id:06}.parquet",
+                        self.bucket, self.prefix
+                    )
+                }
+            })
+            .collect()
+    }
+
     async fn write(
         &self,
         table_name: &str,
@@ -95,12 +113,11 @@ impl Target for S3Target {
         let bytes_written = buf.len() as u64;
 
         // Upload to S3 with per-table directory structure
-        let uuid = Uuid::new_v4();
         let path = if self.prefix.is_empty() {
-            ObjectPath::from(format!("{table_name}/batch-{batch_id:06}-{uuid}.parquet"))
+            ObjectPath::from(format!("{table_name}/batch-{batch_id:06}.parquet"))
         } else {
             ObjectPath::from(format!(
-                "{}/{table_name}/batch-{batch_id:06}-{uuid}.parquet",
+                "{}/{table_name}/batch-{batch_id:06}.parquet",
                 self.prefix
             ))
         };

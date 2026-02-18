@@ -1764,11 +1764,13 @@ dependencies = [
  "bytes",
  "clap",
  "duckdb",
+ "futures",
  "object_store",
  "parquet",
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
