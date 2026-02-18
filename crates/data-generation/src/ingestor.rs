@@ -87,7 +87,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
             "Initializing target with seed data for all tables"
         );
 
-        match self.dataset.next_batches() {
+        match self.dataset.next_batches().await {
             Ok(Some(batches)) => {
                 for (table_name, batch) in batches {
                     self.metrics.record_generation();
@@ -122,7 +122,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
     /// Consumes one round of batches (one per table) from the dataset without writing
     /// them to the target. This advances the dataset past the initialization records
     /// so that `run()` only processes new data.
-    pub fn skip_initial_batches(&mut self) -> anyhow::Result<()> {
+    pub async fn skip_initial_batches(&mut self) -> anyhow::Result<()> {
         let table_count = self.dataset.tables().len();
 
         tracing::info!(
@@ -130,7 +130,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
             "Skipping initial batches for all tables"
         );
 
-        match self.dataset.next_batches() {
+        match self.dataset.next_batches().await {
             Ok(Some(batches)) => {
                 self.batch_id += batches.len() as u64;
             }
@@ -164,7 +164,7 @@ impl<S: Dataset, T: Target> Ingestor<S, T> {
         });
 
         loop {
-            let source_batches = match self.dataset.next_batches() {
+            let source_batches = match self.dataset.next_batches().await {
                 Ok(Some(batches)) => batches,
                 Ok(None) => break,
                 Err(e) => {
