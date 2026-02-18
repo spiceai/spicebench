@@ -28,8 +28,8 @@ use crate::config::DatasetConfig;
 
 use super::{Dataset, DatasetTable};
 
-/// TPC-H table definitions: (table_name, time_column, schema_fn).
-const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
+/// TPC-H table definitions: `(table_name, time_column)`.
+const TPCH_TABLES: &[(&str, &str)] = &[
     ("region", "r_created_at"),
     ("nation", "n_created_at"),
     ("supplier", "s_created_at"),
@@ -206,7 +206,7 @@ impl TpchDataset {
     /// Drop the `_new` tables created by `advance_step()`.
     fn drop_step_tables(&self) -> anyhow::Result<()> {
         let mut sql = String::new();
-        for (table, _) in TPCH_TABLE_TIME_COLUMNS {
+        for (table, _) in TPCH_TABLES {
             sql.push_str(&format!("DROP TABLE IF EXISTS {table}_new;"));
         }
         let conn = self
@@ -228,7 +228,7 @@ impl Dataset for TpchDataset {
     }
 
     fn num_batches(&self, table: &str) -> u64 {
-        if !TPCH_TABLE_TIME_COLUMNS
+        if !TPCH_TABLES
             .iter()
             .any(|(name, _)| *name == table)
         {
@@ -246,7 +246,7 @@ impl Dataset for TpchDataset {
                 .consumed_tables
                 .read()
                 .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-            if consumed.len() >= TPCH_TABLE_TIME_COLUMNS.len() {
+            if consumed.len() >= TPCH_TABLES.len() {
                 drop(consumed);
                 if self.current_step.load(Ordering::SeqCst) > 0 {
                     self.drop_step_tables()?;
@@ -274,7 +274,7 @@ impl Dataset for TpchDataset {
         }
 
         // Validate the table name
-        if !TPCH_TABLE_TIME_COLUMNS
+        if !TPCH_TABLES
             .iter()
             .any(|(name, _)| *name == table)
         {
@@ -315,7 +315,7 @@ impl Dataset for TpchDataset {
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {
-        TPCH_TABLE_TIME_COLUMNS
+        TPCH_TABLES
             .iter()
             .map(|(name, time_col)| {
                 (
