@@ -175,7 +175,7 @@ impl Client {
         Ok(methods)
     }
 
-    /// Setup a benchmark run with ETL configuration
+    /// Setup a benchmark run
     pub async fn setup(
         &mut self,
         run_id: uuid::Uuid,

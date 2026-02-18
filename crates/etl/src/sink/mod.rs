@@ -1,5 +1,5 @@
 /*
-Copyright 2024-2025 The Spice.ai OSS Authors
+Copyright 2026 The Spice.ai OSS Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,16 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::HashMap;
-
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
-use data_generation::storage::{DataStorage, s3::S3Storage};
 
+pub mod adbc;
+
+#[derive(Debug, Clone)]
 pub enum InsertOp {
-    Overwrite,
-    Append,
-    Delete,
+    Insert,
+    Update { key_columns: Vec<String> },
+    Delete { key_columns: Vec<String> },
 }
 
 #[async_trait]
@@ -33,32 +33,6 @@ pub trait Sink: Send + Sync + 'static {
         table_name: &str,
         batch_id: u64,
         batch: RecordBatch,
-        insert_op: InsertOp,
+        op: InsertOp,
     ) -> anyhow::Result<()>;
-    fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value>;
-}
-
-#[async_trait]
-impl Sink for S3Storage {
-    async fn write(
-        &self,
-        table_name: &str,
-        batch_id: u64,
-        batch: RecordBatch,
-        insert_op: InsertOp,
-    ) -> anyhow::Result<()> {
-        // For simplicity, S3Storage only supports Append (i.e. writing new batches, create operations)
-
-        match insert_op {
-            InsertOp::Append => {
-                DataStorage::write(self, table_name, batch_id, batch).await?;
-                Ok(())
-            }
-            _ => anyhow::bail!("S3Storage only supports Append insert operations"),
-        }
-    }
-
-    fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value> {
-        DataStorage::table_params(self, table_name)
-    }
 }

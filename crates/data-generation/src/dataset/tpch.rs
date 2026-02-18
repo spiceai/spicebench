@@ -42,8 +42,8 @@ use crate::dataset::key_set::{IndexedKeySet, PrimaryKeyValue};
 
 use super::{Dataset, DatasetTable};
 
-/// TPC-H table definitions: (table_name, time_column).
-const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
+/// TPC-H table definitions: `(table_name, time_column)`.
+const TPCH_TABLES: &[(&str, &str)] = &[
     ("region", "r_created_at"),
     ("nation", "n_created_at"),
     ("supplier", "s_created_at"),
@@ -416,10 +416,7 @@ impl Dataset for TpchDataset {
     }
 
     fn num_batches(&self, table: &str) -> u64 {
-        if !TPCH_TABLE_TIME_COLUMNS
-            .iter()
-            .any(|(name, _)| *name == table)
-        {
+        if !TPCH_TABLES.iter().any(|(name, _)| *name == table) {
             return 0;
         }
 
@@ -562,7 +559,7 @@ impl Dataset for TpchDataset {
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {
-        TPCH_TABLE_TIME_COLUMNS
+        TPCH_TABLES
             .iter()
             .map(|(name, time_col)| {
                 (

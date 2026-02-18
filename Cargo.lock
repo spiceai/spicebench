@@ -2080,9 +2080,11 @@ dependencies = [
 name = "etl"
 version = "0.1.0"
 dependencies = [
+ "adbc_client",
  "anyhow",
  "arrow",
  "async-trait",
+ "chrono",
  "clap",
  "data-generation",
  "serde_json",
@@ -2091,7 +2093,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

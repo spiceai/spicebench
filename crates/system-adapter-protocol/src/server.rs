@@ -71,7 +71,7 @@ pub type Result<T> = std::result::Result<T, ServerError>;
 /// setup, query_method, and teardown requests.
 #[async_trait]
 pub trait Handler: Send + Sync {
-    /// Setup a benchmark run with ETL configuration
+    /// Setup a benchmark run
     async fn setup(
         &mut self,
         run_id: Uuid,

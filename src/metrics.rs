@@ -219,7 +219,6 @@ pub static EFFICIENCY_QUERIES_PER_CORE: LazyLock<Gauge<f64>> = LazyLock::new(|| 
 
 // --- E2E Latency ---
 
-#[allow(dead_code)]
 pub static E2E_LATENCY_P99_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
     meter()
         .f64_histogram("e2e_latency_p99_ms")
