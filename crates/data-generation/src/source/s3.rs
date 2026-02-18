@@ -14,62 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use futures::TryStreamExt;
-use object_store::ObjectStore;
-use object_store::aws::AmazonS3Builder;
-use object_store::path::Path as ObjectPath;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-use crate::config::TargetConfig;
+use crate::storage::s3::S3Storage;
 
 use super::{ReadResult, Source};
 
-/// Reads Parquet data from S3 (or S3-compatible storage).
-#[derive(Clone)]
-pub struct S3Source {
-    store: Arc<dyn ObjectStore>,
-    prefix: String,
-}
-
-impl S3Source {
-    /// Create a new [`S3Source`] from the same config used for [`S3Target`].
-    ///
-    /// The source and target typically share the same bucket/prefix, so they
-    /// reuse [`TargetConfig`] to avoid duplicating configuration structs.
-    pub fn new(config: &TargetConfig) -> anyhow::Result<Self> {
-        let mut builder = AmazonS3Builder::from_env().with_bucket_name(&config.bucket);
-
-        if let Some(region) = &config.region {
-            builder = builder.with_region(region);
-        }
-        if let Some(endpoint) = &config.endpoint
-            && !endpoint.is_empty()
-        {
-            builder = builder.with_endpoint(endpoint);
-            if endpoint.starts_with("http://") {
-                builder = builder.with_allow_http(true);
-            }
-        }
-
-        let store = Arc::new(builder.build()?);
-        Ok(Self {
-            store,
-            prefix: config.prefix.clone(),
-        })
-    }
-}
-
 #[async_trait]
-impl Source for S3Source {
+impl Source for S3Storage {
     async fn list_batches(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
-        let prefix = if self.prefix.is_empty() {
-            ObjectPath::from(format!("{table_name}/"))
-        } else {
-            ObjectPath::from(format!("{}/{table_name}/", self.prefix))
-        };
+        let prefix = self.table_object_prefix(table_name);
 
         let objects: Vec<_> = self.store.list(Some(&prefix)).try_collect().await?;
 
@@ -87,14 +43,7 @@ impl Source for S3Source {
         table_name: &str,
         batch_id: u64,
     ) -> anyhow::Result<Option<ReadResult>> {
-        let location = if self.prefix.is_empty() {
-            ObjectPath::from(format!("{table_name}/batch-{batch_id:06}.parquet"))
-        } else {
-            ObjectPath::from(format!(
-                "{}/{table_name}/batch-{batch_id:06}.parquet",
-                self.prefix
-            ))
-        };
+        let location = self.batch_object_path(table_name, batch_id);
 
         let get_result = match self.store.get(&location).await {
             Ok(r) => r,

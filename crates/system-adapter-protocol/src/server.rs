@@ -76,6 +76,7 @@ pub trait Handler: Send + Sync {
         &mut self,
         run_id: Uuid,
         datasets: HashMap<String, DatasetConfig>,
+        metadata: HashMap<String, serde_json::Value>,
     ) -> std::result::Result<SetupResponse, String>;
 
     /// Get query method/driver information for a benchmark run
@@ -241,7 +242,12 @@ impl<H: Handler> Server<H> {
             Ok(r) => r,
             Err(e) => return e,
         };
-        Self::handler_response(self.handler.setup(req.run_id, req.datasets).await, id)
+        Self::handler_response(
+            self.handler
+                .setup(req.run_id, req.datasets, req.metadata)
+                .await,
+            id,
+        )
     }
 
     async fn handle_query_method(
@@ -299,6 +305,7 @@ mod tests {
             &mut self,
             _run_id: Uuid,
             _datasets: HashMap<String, DatasetConfig>,
+            _metadata: HashMap<String, serde_json::Value>,
         ) -> std::result::Result<SetupResponse, String> {
             Ok(SetupResponse { ok: true })
         }
@@ -328,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_setup() {
         let mut server = Server::new(TestHandler);
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}"#;
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{},"metadata":{}}}"#;
         let response = server.handle_request(request).await;
 
         assert!(response.get("result").is_some());

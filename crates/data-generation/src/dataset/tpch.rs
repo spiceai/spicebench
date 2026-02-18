@@ -365,7 +365,7 @@ impl Dataset for TpchDataset {
                     DatasetTable {
                         name: (*name).to_string(),
                         schema: tpch_schema(name),
-                        time_column: Some((*time_col).to_string()),
+                        time_column: (*time_col).to_string(),
                     },
                 )
             })

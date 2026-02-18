@@ -41,7 +41,7 @@ limitations under the License.
 //!
 //! // Setup a benchmark run
 //! let run_id = Uuid::new_v4();
-//! let setup_response = client.setup(run_id, HashMap::new()).await?;
+//! let setup_response = client.setup(run_id, HashMap::new(), HashMap::new()).await?;
 //!
 //! // Get query method information
 //! let query_response = client.query_method(run_id).await?;
@@ -74,8 +74,10 @@ limitations under the License.
 //!         &mut self,
 //!         run_id: Uuid,
 //!         datasets: HashMap<String, DatasetConfig>,
+//!         metadata: HashMap<String, serde_json::Value>,
 //!     ) -> Result<SetupResponse, String> {
 //!         // Your setup logic here
+//!         let _ = metadata;
 //!         Ok(SetupResponse { ok: true })
 //!     }
 //!
@@ -150,6 +152,10 @@ pub struct DatasetConfig {
     pub schema: SchemaRef,
     /// ETL-specific configuration parameters
     pub params: HashMap<String, serde_json::Value>,
+    /// The time column to use for append/change-stream capture for the dataset
+    pub time_column: String,
+    /// The table paritioning scheme to use for this dataset
+    pub partitions: Vec<String>,
 }
 
 /// Request to setup a benchmark run with ETL configuration
@@ -161,6 +167,9 @@ pub struct SetupRequest {
     pub run_id: Uuid,
     /// Map of dataset name to its ETL configuration
     pub datasets: HashMap<String, DatasetConfig>,
+    /// Arbitrary run metadata propagated from spicebench to adapters
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
 }
 
 /// Response from setup request

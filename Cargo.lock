@@ -4929,6 +4929,7 @@ dependencies = [
  "etl",
  "reqwest",
  "serde",
+ "serde_json",
  "system-adapter-protocol",
  "test-framework",
  "tokio",
