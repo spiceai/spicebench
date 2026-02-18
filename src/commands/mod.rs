@@ -125,7 +125,6 @@ pub(crate) async fn get_app_and_start_request(
 }
 
 pub(crate) async fn maybe_dispatch_run_to_system_adapter(
-    raw_cli_args: &[String],
     common_args: &CommonArgs,
 ) -> anyhow::Result<Option<SystemAdapterClient>> {
     if !has_system_adapter_transport(common_args) {
@@ -137,90 +136,8 @@ pub(crate) async fn maybe_dispatch_run_to_system_adapter(
         .context("System adapter transport was configured but could not be initialized")
 }
 
-fn resolve_system_adapter_method(raw_cli_args: &[String]) -> Option<&'static str> {
-    match raw_cli_args.first().map(String::as_str) {
-        Some("run") => Some("run.load"),
-        _ => None,
-    }
-}
-
 fn has_system_adapter_transport(args: &CommonArgs) -> bool {
     args.system_adapter_stdio_cmd.is_some() || args.system_adapter_http_url.is_some()
-}
-
-fn adapter_cli_args_for_run(raw_cli_args: &[String]) -> Vec<String> {
-    let mut filtered = Vec::new();
-    let mut skip_next = false;
-
-    for (index, arg) in raw_cli_args.iter().enumerate() {
-        if index == 0 && arg == "run" {
-            continue;
-        }
-
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-
-        let takes_value = [
-            "--system-adapter-name",
-            "--system-adapter-execution-mode",
-            "--system-adapter-stdio-cmd",
-            "--system-adapter-stdio-args",
-            "--system-adapter-http-url",
-            "--system-adapter-param",
-            "--system-adapter-env",
-        ];
-
-        if takes_value.contains(&arg.as_str()) {
-            skip_next = true;
-            continue;
-        }
-
-        if takes_value
-            .iter()
-            .any(|flag| arg.starts_with(&format!("{flag}=")))
-        {
-            continue;
-        }
-
-        filtered.push(arg.clone());
-    }
-
-    filtered
-}
-
-fn handle_adapter_execution_response(response: &serde_json::Value) -> anyhow::Result<()> {
-    let result = response
-        .get("result")
-        .context("System adapter response missing JSON-RPC result payload")?;
-
-    if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str())
-        && !stdout.is_empty()
-    {
-        print!("{stdout}");
-    }
-
-    if let Some(stderr) = result.get("stderr").and_then(|v| v.as_str())
-        && !stderr.is_empty()
-    {
-        eprint!("{stderr}");
-    }
-
-    let success = result
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let exit_code = result
-        .get("exit_code")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(1);
-
-    if !success || exit_code != 0 {
-        anyhow::bail!("System adapter command failed (success={success}, exit_code={exit_code})");
-    }
-
-    Ok(())
 }
 
 /// Connect to a system adapter based on command-line arguments

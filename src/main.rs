@@ -36,11 +36,10 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::CryptoProvider::install_default(
         rustls::crypto::aws_lc_rs::default_provider(),
     );
-    let raw_cli_args: Vec<String> = std::env::args().skip(1).collect();
     let cli = Cli::parse();
 
     if let Ok(Some(system_adapter_client)) =
-        commands::maybe_dispatch_run_to_system_adapter(&raw_cli_args, &cli.args.test_args.common)
+        commands::maybe_dispatch_run_to_system_adapter(&cli.args.test_args.common)
             .await
     {
         println!(
