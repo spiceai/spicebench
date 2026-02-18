@@ -27,8 +27,8 @@ on:
         required: false
         default: 'data-gen/tpch_sf1'
         type: string
-      etl_target_prefix:
-        description: 'S3 key prefix for ETL target (rehydrated) data'
+      etl_target_base_prefix:
+        description: 'Base S3 key prefix for ETL target (rehydrated) data. A random suffix is appended per run.'
         required: false
         default: 'rehydrated/tpch_sf1'
         type: string
@@ -197,7 +197,7 @@ jobs:
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_SOURCE_PREFIX: ${{ github.event.inputs.etl_source_prefix }}
-          ETL_TARGET_PREFIX: ${{ github.event.inputs.etl_target_prefix }}
+          ETL_TARGET_BASE_PREFIX: ${{ github.event.inputs.etl_target_base_prefix }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
           ETL_NUM_STEPS: ${{ github.event.inputs.etl_num_steps || '25' }}
@@ -209,8 +209,8 @@ jobs:
           if [ -n "${ETL_SOURCE_PREFIX}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-source-prefix ${ETL_SOURCE_PREFIX}"
           fi
-          if [ -n "${ETL_TARGET_PREFIX}" ]; then
-            ETL_ARGS="${ETL_ARGS} --etl-target-prefix ${ETL_TARGET_PREFIX}"
+          if [ -n "${ETL_TARGET_BASE_PREFIX}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-target-base-prefix ${ETL_TARGET_BASE_PREFIX}"
           fi
           if [ -n "${ETL_REGION}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"

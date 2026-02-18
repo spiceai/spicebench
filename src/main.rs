@@ -82,9 +82,17 @@ async fn main() -> anyhow::Result<()> {
         endpoint: cli.common.etl_endpoint.clone(),
     };
 
+    let run_suffix = Uuid::new_v4().to_string();
+    let target_prefix = if cli.common.etl_target_base_prefix.is_empty() {
+        run_suffix.clone()
+    } else {
+        format!("{}/{run_suffix}", cli.common.etl_target_base_prefix)
+    };
+    tracing::info!(target_prefix = %target_prefix, "Generated unique ETL target prefix");
+
     let target_config = TargetConfig {
         bucket: cli.common.etl_bucket.clone(),
-        prefix: cli.common.etl_target_prefix.clone(),
+        prefix: target_prefix,
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
     };
