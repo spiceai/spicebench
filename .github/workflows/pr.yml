@@ -16,10 +16,30 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/pr.yml'
+
   check:
     name: cargo check + test
     runs-on: spiceai-macos
     timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v6
 
@@ -39,6 +59,8 @@ jobs:
     name: cargo clippy
     runs-on: spiceai-macos
     timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v6
 
