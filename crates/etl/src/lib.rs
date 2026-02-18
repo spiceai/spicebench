@@ -181,7 +181,7 @@ impl ETLPipeline {
                 let config = ProtocolDatasetConfig {
                     etl_type: EtlType::S3,
                     schema: table.rehydrated_schema(),
-                    params: HashMap::new(),
+                    params: self.target.table_params(&name),
                 };
                 (name, config)
             })
