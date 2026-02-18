@@ -29,7 +29,6 @@ use test_framework::{
     spicetest::datasets::NotStarted,
     telemetry::{OtlpExporterConfig, Telemetry},
 };
-use tokio::sync::Mutex;
 
 pub(crate) mod load;
 
@@ -154,94 +153,26 @@ pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemA
     Err(anyhow::anyhow!("No system adapter transport configured"))
 }
 
-/// Create the appropriate query executor based on command-line arguments
-///
-/// This helper function centralizes the executor creation logic to avoid duplication
-/// across different test commands (bench, throughput, load, query).
 pub(crate) async fn create_query_executor(
     args: &DatasetTestArgs,
     spiced_instance: &test_framework::spiced::SpicedInstance,
 ) -> anyhow::Result<Box<dyn test_framework::execution::QueryExecutor>> {
-    match args.common.system_adapter_execution_mode {
-        SystemAdapterExecutionMode::DirectQuery => {
-            let fallback_flight_sql_uri = if args.common.is_external_instance() {
-                args.common.spiced_path.clone()
-            } else {
-                let http_base = spiced_instance.http_base_url();
-                if let Some(last_colon) = http_base.rfind(':') {
-                    format!("{}:50051", &http_base[..last_colon])
-                } else {
-                    "http://127.0.0.1:50051".to_string()
-                }
-            };
-
-            let mut adapter = connect_system_adapter(&args.common)
-                .await?
-                .context(
-                    "Direct query mode requires system adapter transport to fetch ADBC parameters",
-                )?;
-
-            let methods = adapter.rpc_methods().await?;
-            if !methods
-                .iter()
-                .any(|method| method == adapter_methods::QUERY_METHOD)
-            {
-                anyhow::bail!(
-                    "System adapter '{}' does not support required method '{}'. Available methods: {:?}",
-                    args.common.system_adapter_name,
-                    adapter_methods::QUERY_METHOD,
-                    methods
-                );
-            }
-
-            let request = JsonRpcRequest::new(
-                4,
-                adapter_methods::QUERY_METHOD,
-                QueryMethodRequest {
-                    run_id: uuid::Uuid::new_v4(),
-                },
-            );
-
-            let response = adapter
-                .call_typed::<_, QueryMethodResponse>(request)
-                .await?
-                .result
-                .context("System adapter query_method response missing result payload")?;
-
-            let flight_sql_uri =
-                flight_sql_uri_from_query_method(&response, Some(fallback_flight_sql_uri))?;
-
-            Ok(Box::new(AdbcDirectQueryExecutor { flight_sql_uri }))
-        }
-        SystemAdapterExecutionMode::AdapterCommand => {
-            let mut adapter = connect_system_adapter(&args.common)
-                .await?
-                .context("System adapter transport was configured but could not be initialized")?;
-
-            let methods = adapter.rpc_methods().await?;
-            if !methods
-                .iter()
-                .any(|method| method == SYSTEM_ADAPTER_ASYNC_QUERY_METHOD)
-            {
-                anyhow::bail!(
-                    "System adapter '{}' does not support required async query method '{}'. Available methods: {:?}",
-                    args.common.system_adapter_name,
-                    SYSTEM_ADAPTER_ASYNC_QUERY_METHOD,
-                    methods
-                );
-            }
-
-            let mut base_params = serde_json::Map::new();
-            for (key, value) in &args.common.system_adapter_param {
-                base_params.insert(key.clone(), serde_json::Value::String(value.clone()));
-            }
-
-            Ok(Box::new(SystemAdapterAsyncQueryExecutor {
-                adapter: std::sync::Arc::new(Mutex::new(adapter)),
-                base_params,
-            }))
-        }
-    }
+    let executor: Box<dyn test_framework::execution::QueryExecutor> = if args.distributed {
+        let http_client = spiced_instance.http_client()?;
+        let base_url = spiced_instance.http_base_url().to_string();
+        Box::new(test_framework::execution::DistributedExecutor::new(
+            http_client,
+            base_url,
+        ))
+    } else {
+        let http_client = spiced_instance.http_client()?;
+        let base_url = spiced_instance.http_base_url().to_string();
+        Box::new(test_framework::execution::HttpExecutor::new(
+            http_client,
+            base_url,
+        ))
+    };
+    Ok(executor)
 }
 
 #[macro_export]
@@ -256,4 +187,3 @@ macro_rules! wait_test_and_memory {
         }
     };
 }
-
