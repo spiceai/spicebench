@@ -213,7 +213,12 @@ impl TpchDataset {
 }
 
 #[async_trait]
-impl Dataset for TpchDataset {
+impl Dataset for TpchDataset {    fn create(config: &DatasetConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    where
+        Self: Sized + 'static,
+    {
+        Ok(Arc::new(Self::new(config)?))
+    }
     fn num_batches(&self, table: &str) -> u64 {
         if !TPCH_TABLE_TIME_COLUMNS
             .iter()

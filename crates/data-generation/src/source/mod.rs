@@ -26,7 +26,7 @@ pub struct ReadResult {
 }
 
 #[async_trait]
-pub trait Source: Send + Sync + Clone + 'static {
+pub trait Source: Send + Sync + 'static {
     /// List available batch object paths for a given table.
     async fn list_batches(&self, table_name: &str) -> anyhow::Result<Vec<String>>;
 

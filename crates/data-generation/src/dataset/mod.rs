@@ -25,6 +25,8 @@ use arrow::array::{RecordBatch, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, Field, SchemaRef, TimeUnit};
 use async_trait::async_trait;
 
+use crate::config::DatasetConfig;
+
 /// Metadata about a table in a dataset.
 #[derive(Debug, Clone)]
 pub struct DatasetTable {
@@ -91,6 +93,21 @@ impl DatasetTable {
 
 #[async_trait]
 pub trait Dataset: Send + Sync {
+    /// Creates a new instance of this dataset from the given configuration.
+    ///
+    /// This is a factory method that returns an `Arc<dyn Dataset>` without any
+    /// external side-effects beyond initialising in-memory state.
+    ///
+    /// The default implementation returns an error; concrete dataset types
+    /// should override this.
+    fn create(config: &DatasetConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    where
+        Self: Sized + 'static,
+    {
+        let _ = config;
+        anyhow::bail!("create() is not implemented for this dataset type")
+    }
+
     /// Returns the batch IDs that would be produced for a given table after a
     /// successful generation run.
     ///
