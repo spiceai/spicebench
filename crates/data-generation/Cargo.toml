@@ -22,8 +22,9 @@ arrow = { workspace = true }
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures.workspace = true
-duckdb = { workspace = true, features = ["bundled", "vtab", "vtab-arrow"] }
 object_store = { workspace = true }
+tpchgen.workspace = true
+tpchgen-arrow.workspace = true
 parquet.workspace = true
 rand.workspace = true
 serde_json.workspace = true

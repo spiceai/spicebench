@@ -14,22 +14,35 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
-use arrow::array::{Int64Array, RecordBatch, StringArray};
+use arrow::array::{
+    Array, ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, RecordBatch,
+    StringArray, StringViewArray, new_null_array,
+};
+use arrow::compute;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
-use duckdb::Connection;
+use rand::Rng;
+use tpchgen::generators::{
+    CustomerGenerator, LineItemGenerator, NationGenerator, OrderGenerator, PartGenerator,
+    PartSuppGenerator, RegionGenerator, SupplierGenerator,
+};
+use tpchgen_arrow::{
+    CustomerArrow, LineItemArrow, NationArrow, OrderArrow, PartArrow, PartSuppArrow, RegionArrow,
+    SupplierArrow,
+};
 use tracing::info;
 
 use crate::config::DatasetConfig;
 use crate::dataset::MutationConfig;
+use crate::dataset::key_set::{IndexedKeySet, PrimaryKeyValue};
 
 use super::{Dataset, DatasetTable};
 
-/// TPC-H table definitions: (table_name, time_column, schema_fn).
+/// TPC-H table definitions: (table_name, time_column).
 const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
     ("region", "r_created_at"),
     ("nation", "n_created_at"),
@@ -41,191 +54,338 @@ const TPCH_TABLE_TIME_COLUMNS: &[(&str, &str)] = &[
     ("lineitem", "l_created_at"),
 ];
 
-/// Returns the static Arrow schema for a TPC-H table (without time column).
+/// Number of rows each TPC-H table produces at Scale Factor 1 (SF1).
 ///
-/// The time column is not included because it will be added during ETL rehydration.
-/// Includes `_op` and `_op_index` columns for change-tracking.
-fn tpch_schema(table: &str) -> SchemaRef {
-    let mut fields: Vec<Field> = match table {
-        "region" => vec![
-            Field::new("r_regionkey", DataType::Int32, true),
-            Field::new("r_name", DataType::Utf8, true),
-            Field::new("r_comment", DataType::Utf8, true),
-        ],
-        "nation" => vec![
-            Field::new("n_nationkey", DataType::Int32, true),
-            Field::new("n_name", DataType::Utf8, true),
-            Field::new("n_regionkey", DataType::Int32, true),
-            Field::new("n_comment", DataType::Utf8, true),
-        ],
-        "supplier" => vec![
-            Field::new("s_suppkey", DataType::Int64, true),
-            Field::new("s_name", DataType::Utf8, true),
-            Field::new("s_address", DataType::Utf8, true),
-            Field::new("s_nationkey", DataType::Int32, true),
-            Field::new("s_phone", DataType::Utf8, true),
-            Field::new("s_acctbal", DataType::Decimal128(15, 2), true),
-            Field::new("s_comment", DataType::Utf8, true),
-        ],
-        "customer" => vec![
-            Field::new("c_custkey", DataType::Int64, true),
-            Field::new("c_name", DataType::Utf8, true),
-            Field::new("c_address", DataType::Utf8, true),
-            Field::new("c_nationkey", DataType::Int32, true),
-            Field::new("c_phone", DataType::Utf8, true),
-            Field::new("c_acctbal", DataType::Decimal128(15, 2), true),
-            Field::new("c_mktsegment", DataType::Utf8, true),
-            Field::new("c_comment", DataType::Utf8, true),
-        ],
-        "part" => vec![
-            Field::new("p_partkey", DataType::Int64, true),
-            Field::new("p_name", DataType::Utf8, true),
-            Field::new("p_mfgr", DataType::Utf8, true),
-            Field::new("p_brand", DataType::Utf8, true),
-            Field::new("p_type", DataType::Utf8, true),
-            Field::new("p_size", DataType::Int32, true),
-            Field::new("p_container", DataType::Utf8, true),
-            Field::new("p_retailprice", DataType::Decimal128(15, 2), true),
-            Field::new("p_comment", DataType::Utf8, true),
-        ],
-        "partsupp" => vec![
-            Field::new("ps_partkey", DataType::Int64, true),
-            Field::new("ps_suppkey", DataType::Int64, true),
-            Field::new("ps_availqty", DataType::Int64, true),
-            Field::new("ps_supplycost", DataType::Decimal128(15, 2), true),
-            Field::new("ps_comment", DataType::Utf8, true),
-        ],
-        "orders" => vec![
-            Field::new("o_orderkey", DataType::Int64, true),
-            Field::new("o_custkey", DataType::Int64, true),
-            Field::new("o_orderstatus", DataType::Utf8, true),
-            Field::new("o_totalprice", DataType::Decimal128(15, 2), true),
-            Field::new("o_orderdate", DataType::Date32, true),
-            Field::new("o_orderpriority", DataType::Utf8, true),
-            Field::new("o_clerk", DataType::Utf8, true),
-            Field::new("o_shippriority", DataType::Int32, true),
-            Field::new("o_comment", DataType::Utf8, true),
-        ],
-        "lineitem" => vec![
-            Field::new("l_orderkey", DataType::Int64, true),
-            Field::new("l_partkey", DataType::Int64, true),
-            Field::new("l_suppkey", DataType::Int64, true),
-            Field::new("l_linenumber", DataType::Int64, true),
-            Field::new("l_quantity", DataType::Decimal128(15, 2), true),
-            Field::new("l_extendedprice", DataType::Decimal128(15, 2), true),
-            Field::new("l_discount", DataType::Decimal128(15, 2), true),
-            Field::new("l_tax", DataType::Decimal128(15, 2), true),
-            Field::new("l_returnflag", DataType::Utf8, true),
-            Field::new("l_linestatus", DataType::Utf8, true),
-            Field::new("l_shipdate", DataType::Date32, true),
-            Field::new("l_commitdate", DataType::Date32, true),
-            Field::new("l_receiptdate", DataType::Date32, true),
-            Field::new("l_shipinstruct", DataType::Utf8, true),
-            Field::new("l_shipmode", DataType::Utf8, true),
-            Field::new("l_comment", DataType::Utf8, true),
-        ],
+/// These counts are used to calculate how many rows to emit per step when
+/// partitioning the full dataset into `num_steps` batches. The total rows for
+/// a given scale factor is `SF1_ROW_COUNTS[table] * scale_factor` (except for
+/// region and nation which are fixed).
+const SF1_ROW_COUNTS: &[(&str, u64)] = &[
+    ("region", 5),
+    ("nation", 25),
+    ("supplier", 10_000),
+    ("customer", 150_000),
+    ("part", 200_000),
+    ("partsupp", 800_000),
+    ("orders", 1_500_000),
+    ("lineitem", 6_001_215),
+];
+
+/// Returns the expected total number of rows for a given table at the
+/// specified scale factor.
+fn total_rows_for_table(table: &str, scale_factor: f64) -> u64 {
+    let sf1_count = SF1_ROW_COUNTS
+        .iter()
+        .find(|(name, _)| *name == table)
+        .map(|(_, count)| *count)
+        .unwrap_or(0);
+
+    // Region and nation are fixed regardless of scale factor.
+    match table {
+        "region" | "nation" => sf1_count,
+        _ => (sf1_count as f64 * scale_factor).round() as u64,
+    }
+}
+
+/// Returns the native Arrow schema for a TPC-H table (without `_op`/`_op_index`),
+/// derived from `tpchgen-arrow`'s generated schema.
+///
+/// All fields are set to nullable so that delete-mutation rows (which contain
+/// nulls for non-PK columns) can be represented in the same batch.
+fn native_tpch_schema(table: &str) -> SchemaRef {
+    use tpchgen_arrow::RecordBatchIterator as _;
+
+    let schema: SchemaRef = match table {
+        "region" => RegionArrow::new(RegionGenerator::new(1.0, 1, 1))
+            .schema()
+            .clone(),
+        "nation" => NationArrow::new(NationGenerator::new(1.0, 1, 1))
+            .schema()
+            .clone(),
+        "supplier" => SupplierArrow::new(SupplierGenerator::new(1.0, 1, 1))
+            .schema()
+            .clone(),
+        "customer" => CustomerArrow::new(CustomerGenerator::new(1.0, 1, 1))
+            .schema()
+            .clone(),
+        "part" => PartArrow::new(PartGenerator::new(1.0, 1, 1))
+            .schema()
+            .clone(),
+        "partsupp" => PartSuppArrow::new(PartSuppGenerator::new(1.0, 1, 1))
+            .schema()
+            .clone(),
+        "orders" => OrderArrow::new(OrderGenerator::new(1.0, 1, 1))
+            .schema()
+            .clone(),
+        "lineitem" => LineItemArrow::new(LineItemGenerator::new(1.0, 1, 1))
+            .schema()
+            .clone(),
         _ => unreachable!("unknown TPC-H table: {table}"),
     };
+
+    // Ensure all fields are nullable (needed for delete mutation rows).
+    let fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone().with_nullable(true))
+        .collect();
+    Arc::new(Schema::new(fields))
+}
+
+/// Returns the full Arrow schema for a TPC-H table, including the
+/// `_op` (operation type) and `_op_index` (replay ordering) columns
+/// used for change-tracking.
+fn tpch_schema(table: &str) -> SchemaRef {
+    let native = native_tpch_schema(table);
+    let mut fields: Vec<Field> = native.fields().iter().map(|f| f.as_ref().clone()).collect();
     fields.push(Field::new("_op", DataType::Utf8, false));
     fields.push(Field::new("_op_index", DataType::Int64, false));
     Arc::new(Schema::new(fields))
 }
 
-/// Generates TPC-H data using DuckDB's built-in `dbgen` and yields Arrow `RecordBatch`es.
+// ---------------------------------------------------------------------------
+// Helper: convert tpchgen rows to Arrow RecordBatch
+// ---------------------------------------------------------------------------
+
+/// Generates a raw [`RecordBatch`] (without `_op`/`_op_index`) from
+/// `tpchgen-arrow` by producing `skip + count` rows in one batch and then
+/// slicing off the first `skip` rows.
+fn generate_raw_batch(table: &str, scale_factor: f64, part: i32, part_count: i32) -> RecordBatch {
+    // Use a batch size large enough to capture all rows for this part in one call.
+    let batch_size = total_rows_for_table(table, scale_factor) as usize;
+
+    let batch: Option<RecordBatch> = match table {
+        "region" => RegionArrow::new(RegionGenerator::new(scale_factor, part, part_count))
+            .with_batch_size(batch_size)
+            .next(),
+        "nation" => NationArrow::new(NationGenerator::new(scale_factor, part, part_count))
+            .with_batch_size(batch_size)
+            .next(),
+        "supplier" => SupplierArrow::new(SupplierGenerator::new(scale_factor, part, part_count))
+            .with_batch_size(batch_size)
+            .next(),
+        "customer" => CustomerArrow::new(CustomerGenerator::new(scale_factor, part, part_count))
+            .with_batch_size(batch_size)
+            .next(),
+        "part" => PartArrow::new(PartGenerator::new(scale_factor, part, part_count))
+            .with_batch_size(batch_size)
+            .next(),
+        "partsupp" => PartSuppArrow::new(PartSuppGenerator::new(scale_factor, part, part_count))
+            .with_batch_size(batch_size)
+            .next(),
+        "orders" => OrderArrow::new(OrderGenerator::new(scale_factor, part, part_count))
+            .with_batch_size(batch_size)
+            .next(),
+        "lineitem" => LineItemArrow::new(LineItemGenerator::new(scale_factor, part, part_count))
+            .with_batch_size(batch_size)
+            .next(),
+        _ => unreachable!("unknown TPC-H table: {table}"),
+    };
+
+    batch.unwrap_or_else(|| RecordBatch::new_empty(native_tpch_schema(table)))
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions for mutation (update / delete) generation
+// ---------------------------------------------------------------------------
+
+/// Generates a random alphanumeric string of the specified length.
+fn random_alphanumeric_string(rng: &mut impl Rng, len: usize) -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    (0..len)
+        .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
+        .collect()
+}
+
+/// Extracts an `i64` value from an Arrow array at the given row index.
+/// Supports [`Int32Array`] (widened to `i64`) and [`Int64Array`].
+fn get_i64_from_array(array: &dyn Array, row: usize) -> i64 {
+    if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+        arr.value(row)
+    } else if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
+        i64::from(arr.value(row))
+    } else {
+        panic!(
+            "PK column must be Int32 or Int64, got {:?}",
+            array.data_type()
+        );
+    }
+}
+
+/// Extracts primary key values from all rows in a [`RecordBatch`].
 ///
-/// Data is partitioned into `num_steps` steps using `dbgen(children=N, step=S)`.
-/// Step 0 is generated on construction. Each subsequent step generates non-overlapping
-/// data into temporary `_new` tables that are read and then dropped.
+/// Returns [`PrimaryKeyValue::Single`] for single-column PKs and
+/// [`PrimaryKeyValue::Composite`] for multi-column PKs.
+fn extract_pk_values(
+    batch: &RecordBatch,
+    pk_columns: &[String],
+) -> anyhow::Result<Vec<PrimaryKeyValue>> {
+    let col_indices: Vec<usize> = pk_columns
+        .iter()
+        .map(|name| {
+            batch
+                .schema()
+                .index_of(name)
+                .map_err(|e| anyhow::anyhow!("PK column '{name}' not found in batch: {e}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok((0..batch.num_rows())
+        .map(|row| {
+            if col_indices.len() == 1 {
+                PrimaryKeyValue::single(get_i64_from_array(
+                    batch.column(col_indices[0]).as_ref(),
+                    row,
+                ))
+            } else {
+                let values: Vec<i64> = col_indices
+                    .iter()
+                    .map(|&idx| get_i64_from_array(batch.column(idx).as_ref(), row))
+                    .collect();
+                PrimaryKeyValue::composite(&values)
+            }
+        })
+        .collect())
+}
+
+/// Builds an Arrow array containing primary key values extracted from
+/// [`PrimaryKeyValue`]s at the given `pk_position` index.
+fn build_pk_array(keys: &[PrimaryKeyValue], pk_position: usize, data_type: &DataType) -> ArrayRef {
+    let values: Vec<i64> = keys
+        .iter()
+        .map(|k| match k {
+            PrimaryKeyValue::Single(v) => *v,
+            PrimaryKeyValue::Composite(v) => v[pk_position],
+        })
+        .collect();
+
+    match data_type {
+        DataType::Int32 => Arc::new(Int32Array::from(
+            values.iter().map(|v| *v as i32).collect::<Vec<_>>(),
+        )),
+        DataType::Int64 => Arc::new(Int64Array::from(values)),
+        _ => unreachable!("PK column type must be Int32 or Int64, got {data_type:?}"),
+    }
+}
+
+/// Generates an array of `num_rows` random values matching the given Arrow
+/// [`DataType`]. Used to populate non-PK columns for update mutations.
+fn build_random_array(
+    num_rows: usize,
+    data_type: &DataType,
+    rng: &mut impl Rng,
+) -> anyhow::Result<ArrayRef> {
+    match data_type {
+        DataType::Int32 => {
+            let values: Vec<i32> = (0..num_rows)
+                .map(|_| rng.random_range(1..1_000_000i32))
+                .collect();
+            Ok(Arc::new(Int32Array::from(values)))
+        }
+        DataType::Int64 => {
+            let values: Vec<i64> = (0..num_rows)
+                .map(|_| rng.random_range(1..1_000_000_000i64))
+                .collect();
+            Ok(Arc::new(Int64Array::from(values)))
+        }
+        DataType::Utf8 | DataType::LargeUtf8 => {
+            let values: Vec<String> = (0..num_rows)
+                .map(|_| random_alphanumeric_string(rng, 10))
+                .collect();
+            Ok(Arc::new(StringArray::from(
+                values.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            )))
+        }
+        DataType::Utf8View => {
+            let values: Vec<String> = (0..num_rows)
+                .map(|_| random_alphanumeric_string(rng, 10))
+                .collect();
+            Ok(Arc::new(StringViewArray::from(
+                values.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            )))
+        }
+        DataType::Decimal128(precision, scale) => {
+            let scale_u32 = u32::try_from(*scale).map_err(|_| {
+                anyhow::anyhow!("Decimal128 scale must be non-negative, got {scale}")
+            })?;
+            let scale_mult = 10i64.pow(scale_u32);
+            let values: Vec<i128> = (0..num_rows)
+                .map(|_| {
+                    let whole = rng.random_range(0..1_000_000i64);
+                    let frac = rng.random_range(0..scale_mult);
+                    i128::from(whole * scale_mult + frac)
+                })
+                .collect();
+            Ok(Arc::new(
+                Decimal128Array::from_iter_values(values)
+                    .with_precision_and_scale(*precision, *scale)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "invalid Decimal128 precision/scale ({precision}, {scale}): {e}"
+                        )
+                    })?,
+            ))
+        }
+        DataType::Date32 => {
+            // Random dates roughly between 1992 and 2025 (epoch day offsets).
+            let values: Vec<i32> = (0..num_rows)
+                .map(|_| rng.random_range(8000..20000i32))
+                .collect();
+            Ok(Arc::new(Date32Array::from(values)))
+        }
+        other => Err(anyhow::anyhow!(
+            "unsupported data type for random generation: {other:?}"
+        )),
+    }
+}
+
+/// Generates TPC-H data using `tpchgen-rs` iterators and yields Arrow `RecordBatch`es.
 ///
-/// Each call to `next_batch()` returns all rows from one table for the current step.
+/// Data is partitioned into `num_steps` steps by dividing the total row count
+/// for each table at the configured scale factor. Each call to `next_batch()`
+/// returns all rows for one table in the current step.
 pub struct TpchDataset {
-    conn: Mutex<Connection>,
     scale_factor: f64,
 
-    /// Tables that have already been consumed in the current step.
-    consumed_tables: RwLock<HashSet<String>>,
-
-    /// Step-based generation for continuous appends.
-    /// Step 0 is the initial `dbgen` call; steps 1+ generate new non-overlapping data.
-    current_step: AtomicU16,
-    /// Total number of step partitions for `dbgen(children=...)`.
+    /// Total number of step partitions (tpchgen `part_count`).
     num_steps: u16,
-    /// Configuration for data mutations
-    #[expect(dead_code)] // mutations implemented soon
+    /// Configuration for data mutations (update/delete ratios).
     mutations: MutationConfig,
+    /// Per-table step counter tracking which part to generate next (0-indexed).
+    table_steps: HashMap<String, AtomicU16>,
+    /// Per-table primary key tracking for update/delete targeting.
+    key_sets: HashMap<String, Mutex<IndexedKeySet<PrimaryKeyValue>>>,
     /// Global monotonically increasing operation counter for replay ordering.
     op_counter: AtomicI64,
 }
 
 impl TpchDataset {
     pub fn new(config: &DatasetConfig, mutations: &MutationConfig) -> anyhow::Result<Self> {
-        let conn = Connection::open_in_memory()?;
-
-        // Generate initial TPC-H data (step 0)
-        let sql = format!(
-            "INSTALL tpch; LOAD tpch; CALL dbgen(sf={sf}, children={num_steps}, step=0);",
-            sf = config.scale_factor,
-            num_steps = config.num_steps,
-        );
-
-        conn.execute_batch(&sql)?;
-
         info!(
             scale_factor = config.scale_factor,
             num_steps = config.num_steps,
-            "DuckDB TPC-H dataset initialized (step 0)"
+            "tpchgen-rs TPC-H dataset initialized"
         );
+
+        let key_sets: HashMap<String, Mutex<IndexedKeySet<PrimaryKeyValue>>> =
+            TPCH_TABLE_TIME_COLUMNS
+                .iter()
+                .map(|(name, _)| (name.to_string(), Mutex::new(IndexedKeySet::new())))
+                .collect();
+
+        let table_steps: HashMap<String, AtomicU16> = TPCH_TABLE_TIME_COLUMNS
+            .iter()
+            .map(|(name, _)| (name.to_string(), AtomicU16::new(0)))
+            .collect();
 
         Ok(Self {
-            conn: Mutex::new(conn),
             scale_factor: config.scale_factor,
-            consumed_tables: RwLock::new(HashSet::new()),
-            current_step: AtomicU16::new(0),
             num_steps: config.num_steps,
             mutations: mutations.clone(),
+            table_steps,
+            key_sets,
             op_counter: AtomicI64::new(0),
         })
-    }
-
-    /// Advance to the next step of TPC-H data generation.
-    /// Generates new data into `_new` tables (read by `next_batch`, dropped when exhausted).
-    /// Returns `false` if all steps are exhausted.
-    fn advance_step(&self) -> anyhow::Result<bool> {
-        let new_step = self.current_step.fetch_add(1, Ordering::SeqCst) + 1;
-        if new_step >= self.num_steps {
-            return Ok(false);
-        }
-
-        let sql = format!(
-            "CALL dbgen(sf={sf}, children={num_steps}, step={step}, suffix='_new');",
-            sf = self.scale_factor,
-            num_steps = self.num_steps,
-            step = new_step,
-        );
-
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        conn.execute_batch(&sql)?;
-
-        info!(step = new_step, "Generated new TPC-H data step");
-
-        Ok(true)
-    }
-
-    /// Drop the `_new` tables created by `advance_step()`.
-    fn drop_step_tables(&self) -> anyhow::Result<()> {
-        let mut sql = String::new();
-        for (table, _) in TPCH_TABLE_TIME_COLUMNS {
-            sql.push_str(&format!("DROP TABLE IF EXISTS {table}_new;"));
-        }
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-        conn.execute_batch(&sql)?;
-        Ok(())
     }
 }
 
@@ -263,96 +423,140 @@ impl Dataset for TpchDataset {
             return 0;
         }
 
-        // TPC-H produces one batch per table per step.
+        // One batch per table per step.
         u64::from(self.num_steps)
     }
 
     async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
-        // If all tables consumed for current step, advance to next step
-        {
-            let consumed = self
-                .consumed_tables
-                .read()
-                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-            if consumed.len() >= TPCH_TABLE_TIME_COLUMNS.len() {
-                drop(consumed);
-                if self.current_step.load(Ordering::SeqCst) > 0 {
-                    self.drop_step_tables()?;
-                }
-                if !self.advance_step()? {
-                    return Ok(None); // all steps exhausted
-                }
-                let mut consumed = self
-                    .consumed_tables
-                    .write()
-                    .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-                consumed.clear();
-            }
+        // Each table independently tracks which step (part) it is on.
+        let step_counter = self
+            .table_steps
+            .get(table)
+            .ok_or_else(|| anyhow::anyhow!("Unknown TPC-H table: {table}"))?;
+
+        let current_step = step_counter.fetch_add(1, Ordering::SeqCst);
+        if current_step >= self.num_steps {
+            return Ok(None); // all parts exhausted for this table
         }
 
-        // If this table was already consumed in the current step
-        {
-            let consumed = self
-                .consumed_tables
-                .read()
-                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-            if consumed.contains(table) {
-                return Ok(None);
-            }
-        }
+        // Generate the raw batch using tpchgen part/part_count for correct partitioning.
+        // Parts are 1-indexed in tpchgen; part_count = num_steps.
+        let part = i32::from(current_step) + 1;
+        let part_count = i32::from(self.num_steps);
+        let batch = generate_raw_batch(table, self.scale_factor, part, part_count);
+        let num_creates = batch.num_rows();
 
-        // Validate the table name
-        if !TPCH_TABLE_TIME_COLUMNS
-            .iter()
-            .any(|(name, _)| *name == table)
-        {
-            anyhow::bail!("Unknown TPC-H table: {table}");
-        }
-
-        let current_step = self.current_step.load(Ordering::SeqCst);
-        let source_table = if current_step == 0 {
-            table.to_string()
-        } else {
-            format!("{table}_new")
-        };
-
-        let batches = {
-            let conn = self
-                .conn
-                .lock()
-                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-            let sql = format!("SELECT * FROM {source_table}");
-            let mut stmt = conn.prepare(&sql)?;
-            let batches: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
-            batches
-        };
-
-        {
-            let mut consumed = self
-                .consumed_tables
-                .write()
-                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-            consumed.insert(table.to_string());
-        }
-
-        if batches.is_empty() || batches[0].num_rows() == 0 {
+        if num_creates == 0 {
             return Ok(None);
         }
 
-        let batch = batches.into_iter().next().expect("checked non-empty");
-        let num_rows = batch.num_rows();
+        // --- Primary key tracking and mutation planning ---
+        let pk_columns = self.primary_key(table);
+        let create_pks = extract_pk_values(&batch, &pk_columns)?;
 
-        // Reserve a contiguous range of op indices for this batch.
-        let op_base = self.op_counter.fetch_add(num_rows as i64, Ordering::SeqCst);
+        let key_set_mutex = self
+            .key_sets
+            .get(table)
+            .ok_or_else(|| anyhow::anyhow!("No key set for table: {table}"))?;
 
-        // All rows are creates for now.
-        let ops = StringArray::from(vec!["c"; num_rows]);
-        let op_indices = Int64Array::from((op_base..op_base + num_rows as i64).collect::<Vec<_>>());
+        let (num_updates, num_deletes, update_keys, delete_keys) = {
+            let mut ks = key_set_mutex
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
 
+            // Register all newly created primary keys.
+            for pk in &create_pks {
+                ks.insert(pk.clone());
+            }
+
+            let existing_count = ks.len();
+
+            let mut rng = rand::rng();
+            let jitter = |base: usize, rng: &mut rand::rngs::ThreadRng| -> usize {
+                if base == 0 {
+                    return 0;
+                }
+                let lo = (base as f64 * 0.75).floor() as usize;
+                let hi = (base as f64 * 1.25).ceil() as usize;
+                rng.random_range(lo..=hi.max(lo))
+            };
+
+            let base_updates =
+                ((num_creates as f64) * self.mutations.update_ratio).round() as usize;
+            let base_deletes =
+                ((num_creates as f64) * self.mutations.delete_ratio).round() as usize;
+
+            let mut num_updates = jitter(base_updates, &mut rng);
+            let mut num_deletes = jitter(base_deletes, &mut rng);
+
+            // Cap mutations to available distinct keys.
+            if num_updates + num_deletes > existing_count {
+                let scale = existing_count as f64 / (num_updates + num_deletes) as f64;
+                num_updates = (num_updates as f64 * scale).floor() as usize;
+                num_deletes = (num_deletes as f64 * scale).floor() as usize;
+            }
+
+            let mutation_keys = ks.sample_keys(num_updates + num_deletes, &mut rng);
+            let update_keys = mutation_keys[..num_updates].to_vec();
+            let delete_keys = mutation_keys[num_updates..].to_vec();
+
+            for k in &delete_keys {
+                ks.remove(k);
+            }
+
+            (num_updates, num_deletes, update_keys, delete_keys)
+        };
+
+        let total_rows = num_creates + num_updates + num_deletes;
+
+        // Reserve a contiguous range of op indices for the full batch.
+        let op_base = self
+            .op_counter
+            .fetch_add(total_rows as i64, Ordering::SeqCst);
+
+        // --- Build the combined batch (creates + updates + deletes) ---
         let schema = tpch_schema(table);
-        let mut columns: Vec<Arc<dyn arrow::array::Array>> = batch.columns().to_vec();
-        columns.push(Arc::new(ops));
-        columns.push(Arc::new(op_indices));
+        let native_field_count = schema.fields().len() - 2; // exclude _op, _op_index
+        let mut rng = rand::rng();
+        let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+
+        for col_idx in 0..native_field_count {
+            let field = &schema.fields()[col_idx];
+            let creates_col = batch.column(col_idx);
+            let pk_col_position = pk_columns.iter().position(|n| n == field.name());
+
+            // Update values: PK columns use sampled keys, others get random data.
+            let update_arr: ArrayRef = if let Some(pk_pos) = pk_col_position {
+                build_pk_array(&update_keys, pk_pos, field.data_type())
+            } else {
+                build_random_array(num_updates, field.data_type(), &mut rng)?
+            };
+
+            // Delete values: PK columns use sampled keys, others are null.
+            let delete_arr: ArrayRef = if let Some(pk_pos) = pk_col_position {
+                build_pk_array(&delete_keys, pk_pos, field.data_type())
+            } else {
+                new_null_array(field.data_type(), num_deletes)
+            };
+
+            let combined = compute::concat(&[
+                creates_col.as_ref(),
+                update_arr.as_ref(),
+                delete_arr.as_ref(),
+            ])?;
+            columns.push(combined);
+        }
+
+        // _op column: "c" for creates, "u" for updates, "d" for deletes.
+        let ops: Vec<&str> = std::iter::repeat_n("c", num_creates)
+            .chain(std::iter::repeat_n("u", num_updates))
+            .chain(std::iter::repeat_n("d", num_deletes))
+            .collect();
+        columns.push(Arc::new(StringArray::from(ops)));
+
+        // _op_index column: monotonically increasing replay counter.
+        let op_indices: Vec<i64> = (op_base..op_base + total_rows as i64).collect();
+        columns.push(Arc::new(Int64Array::from(op_indices)));
 
         Ok(Some(RecordBatch::try_new(schema, columns)?))
     }
