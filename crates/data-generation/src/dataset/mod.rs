@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub mod tpch;
 pub mod simple_sequence;
+pub mod tpch;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -60,7 +60,10 @@ impl DatasetTable {
     /// The batch schema must match [`schema`] (i.e. without the time column).
     pub fn rehydrate(&self, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
         if self.time_column.is_none() {
-            anyhow::bail!("Cannot rehydrate table '{}' without a time column", self.name);
+            anyhow::bail!(
+                "Cannot rehydrate table '{}' without a time column",
+                self.name
+            );
         }
 
         if batch.schema() != self.schema {
@@ -78,8 +81,8 @@ impl DatasetTable {
             .as_micros() as i64;
 
         let num_rows = batch.num_rows();
-        let timestamps = TimestampMicrosecondArray::from(vec![Some(now_us); num_rows])
-            .with_timezone("UTC");
+        let timestamps =
+            TimestampMicrosecondArray::from(vec![Some(now_us); num_rows]).with_timezone("UTC");
 
         let rehydrated_schema = self.rehydrated_schema();
         let mut columns: Vec<_> = batch.columns().to_vec();

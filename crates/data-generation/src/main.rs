@@ -23,9 +23,9 @@ use std::sync::Arc;
 use data_generation::config::{Cli, Command, CommonArgs};
 use data_generation::dataset;
 use data_generation::dataset::tpch::TpchDataset;
+use data_generation::ingestor::Ingestor;
 use data_generation::metrics::{IngestResult, Metrics};
 use data_generation::target::s3::S3Target;
-use data_generation::ingestor::Ingestor;
 
 fn print_summary(result: &IngestResult) {
     println!("  Duration:          {:?}", result.elapsed);
@@ -50,9 +50,7 @@ fn print_summary(result: &IngestResult) {
     println!("  Avg write latency: {:?}", result.avg_write_latency);
 }
 
-fn build(
-    args: &CommonArgs,
-) -> anyhow::Result<(Ingestor, Arc<S3Target>)> {
+fn build(args: &CommonArgs) -> anyhow::Result<(Ingestor, Arc<S3Target>)> {
     let dataset_config = args.dataset_config();
     let target_config = args.target_config();
     let ingestor_config = args.ingestor_config();
@@ -74,7 +72,12 @@ fn build(
     let target = Arc::new(S3Target::new(&target_config)?);
     let metrics = Metrics::new();
 
-    let ingestor = Ingestor::new(dataset, Arc::clone(&target) as Arc<dyn Target>, &ingestor_config, metrics);
+    let ingestor = Ingestor::new(
+        dataset,
+        Arc::clone(&target) as Arc<dyn Target>,
+        &ingestor_config,
+        metrics,
+    );
     Ok((ingestor, target))
 }
 

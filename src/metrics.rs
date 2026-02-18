@@ -224,4 +224,3 @@ pub static E2E_LATENCY_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
         .with_unit("ms")
         .build()
 });
-

@@ -18,9 +18,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::TryStreamExt;
+use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectPath;
-use object_store::ObjectStore;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use crate::config::TargetConfig;
@@ -71,11 +71,7 @@ impl Source for S3Source {
             ObjectPath::from(format!("{}/{table_name}/", self.prefix))
         };
 
-        let objects: Vec<_> = self
-            .store
-            .list(Some(&prefix))
-            .try_collect()
-            .await?;
+        let objects: Vec<_> = self.store.list(Some(&prefix)).try_collect().await?;
 
         let paths: Vec<String> = objects
             .into_iter()

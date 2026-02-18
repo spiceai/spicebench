@@ -192,7 +192,10 @@ impl TpchDataset {
             step = new_step,
         );
 
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
         conn.execute_batch(&sql)?;
 
         info!(step = new_step, "Generated new TPC-H data step");
@@ -206,7 +209,10 @@ impl TpchDataset {
         for (table, _) in TPCH_TABLE_TIME_COLUMNS {
             sql.push_str(&format!("DROP TABLE IF EXISTS {table}_new;"));
         }
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
         conn.execute_batch(&sql)?;
         Ok(())
     }
@@ -228,7 +234,10 @@ impl Dataset for TpchDataset {
     async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
         // If all tables consumed for current step, advance to next step
         {
-            let consumed = self.consumed_tables.read().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            let consumed = self
+                .consumed_tables
+                .read()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
             if consumed.len() >= TPCH_TABLE_TIME_COLUMNS.len() {
                 drop(consumed);
                 if self.current_step.load(Ordering::SeqCst) > 0 {
@@ -237,14 +246,20 @@ impl Dataset for TpchDataset {
                 if !self.advance_step()? {
                     return Ok(None); // all steps exhausted
                 }
-                let mut consumed = self.consumed_tables.write().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+                let mut consumed = self
+                    .consumed_tables
+                    .write()
+                    .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
                 consumed.clear();
             }
         }
 
         // If this table was already consumed in the current step
         {
-            let consumed = self.consumed_tables.read().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            let consumed = self
+                .consumed_tables
+                .read()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
             if consumed.contains(table) {
                 return Ok(None);
             }
@@ -266,7 +281,10 @@ impl Dataset for TpchDataset {
         };
 
         let batches = {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
             let sql = format!("SELECT * FROM {source_table}");
             let mut stmt = conn.prepare(&sql)?;
             let batches: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
@@ -274,7 +292,10 @@ impl Dataset for TpchDataset {
         };
 
         {
-            let mut consumed = self.consumed_tables.write().map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+            let mut consumed = self
+                .consumed_tables
+                .write()
+                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
             consumed.insert(table.to_string());
         }
 
@@ -282,9 +303,7 @@ impl Dataset for TpchDataset {
             return Ok(None);
         }
 
-        Ok(Some(
-            batches.into_iter().next().expect("checked non-empty"),
-        ))
+        Ok(Some(batches.into_iter().next().expect("checked non-empty")))
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {

@@ -198,7 +198,8 @@ pub(crate) async fn run(
     let health_monitor = HealthMonitor::spawn()?;
 
     // Create the appropriate query executor based on args
-    let executor = super::create_query_executor(&args.test_args, &spiced_instance, adbc_conn).await?;
+    let executor =
+        super::create_query_executor(&args.test_args, &spiced_instance, adbc_conn).await?;
 
     // warm up run
     println!("Performing warm up");
@@ -388,13 +389,8 @@ pub(crate) async fn run(
     crate::metrics::MEDIAN_MEMORY_USAGE.record(median_memory * 1024.0, &[]);
 
     // Query throughput metrics
-    let total_iterations: u64 = metrics
-        .metrics
-        .iter()
-        .map(|q| q.iterations as u64)
-        .sum();
-    let test_duration_secs =
-        (metrics.finished_at - metrics.started_at) as f64 / 1000.0;
+    let total_iterations: u64 = metrics.metrics.iter().map(|q| q.iterations as u64).sum();
+    let test_duration_secs = (metrics.finished_at - metrics.started_at) as f64 / 1000.0;
     crate::metrics::QUERIES_TOTAL.add(total_iterations, &[]);
     if test_duration_secs > 0.0 {
         let qps = total_iterations as f64 / test_duration_secs;
@@ -405,8 +401,7 @@ pub(crate) async fn run(
             .map(|n| n.get() as f64)
             .unwrap_or(1.0);
         if cpu_cores > 0.0 {
-            crate::metrics::EFFICIENCY_QUERIES_PER_CORE
-                .record(qps / cpu_cores, &[]);
+            crate::metrics::EFFICIENCY_QUERIES_PER_CORE.record(qps / cpu_cores, &[]);
         }
     }
 
