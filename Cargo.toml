@@ -7,6 +7,7 @@ members = [
     "crates/flight_client",
     "crates/otel-arrow",
     "crates/spicepod",
+    "crates/system-adapter-protocol",
     "crates/telemetry",
     "crates/test-framework",
     "crates/util",
