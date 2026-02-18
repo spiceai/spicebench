@@ -54,7 +54,6 @@ impl DatasetTable {
     ///
     /// The batch schema must match [`schema`] (i.e. without the time column).
     pub fn rehydrate(&self, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
-
         if batch.schema() != self.schema {
             let mut diffs = Vec::new();
             let expected_fields = self.schema.fields();
