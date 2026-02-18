@@ -111,12 +111,14 @@ pub struct CommonArgs {
 impl CommonArgs {
     /// Check if `spiced_path` is a URL to an external instance
     #[must_use]
+    #[allow(dead_code)]
     pub fn is_external_instance(&self) -> bool {
         self.spiced_path.starts_with("http://") || self.spiced_path.starts_with("https://")
     }
 
     /// Get the spiced path as a `PathBuf` (only valid when not an external instance)
     #[must_use]
+    #[allow(dead_code)]
     pub fn spiced_path_buf(&self) -> PathBuf {
         PathBuf::from(&self.spiced_path)
     }
