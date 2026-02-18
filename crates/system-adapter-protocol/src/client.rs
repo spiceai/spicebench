@@ -180,8 +180,13 @@ impl Client {
         &mut self,
         run_id: uuid::Uuid,
         datasets: std::collections::HashMap<String, crate::DatasetConfig>,
+        metadata: std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<crate::SetupResponse> {
-        let request = crate::SetupRequest { run_id, datasets };
+        let request = crate::SetupRequest {
+            run_id,
+            datasets,
+            metadata,
+        };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::SETUP, request);
         let response = self.call_typed(rpc_request).await?;
         response

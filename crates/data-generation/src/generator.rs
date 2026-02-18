@@ -26,14 +26,14 @@ use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
 use super::target::Target;
 
-pub struct Ingestor {
+pub struct DataGenerator {
     dataset: Arc<dyn Dataset>,
     target: Arc<dyn Target>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
 }
 
-impl Ingestor {
+impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
         target: Arc<dyn Target>,
@@ -52,38 +52,7 @@ impl Ingestor {
     ///
     /// Pulls one batch per table from the dataset using `next_batches()`, then writes
     /// them sequentially so the data is guaranteed to be present when this returns.
-    ///
-    /// If `table_location_fn` is provided, prints a JSON object mapping each table to
-    /// its connector and location, e.g.:
-    /// `{"customer": {"connector": "s3", "location": "s3://bucket/prefix/customer/"}, ...}`
-    pub async fn initialize(
-        &self,
-        table_location_fn: Option<&dyn Fn(&str) -> String>,
-    ) -> anyhow::Result<IngestResult> {
-        // Print table locations as JSON
-        if let Some(loc_fn) = table_location_fn {
-            let mut map = serde_json::Map::new();
-            for (name, table) in self.dataset.tables() {
-                let mut entry = serde_json::Map::new();
-                entry.insert(
-                    "connector".to_string(),
-                    serde_json::Value::String("s3".to_string()),
-                );
-                entry.insert(
-                    "location".to_string(),
-                    serde_json::Value::String(loc_fn(&name)),
-                );
-                if let Some(ref time_col) = table.time_column {
-                    entry.insert(
-                        "time_column".to_string(),
-                        serde_json::Value::String(time_col.clone()),
-                    );
-                }
-                map.insert(name, serde_json::Value::Object(entry));
-            }
-            println!("{}", serde_json::Value::Object(map));
-        }
-
+    pub async fn initialize(&self) -> anyhow::Result<IngestResult> {
         let table_count = self.dataset.tables().len();
 
         tracing::info!(
