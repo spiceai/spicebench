@@ -1,4 +1,4 @@
-.PHONY: lint check test clippy fmt fmt-check clippy-fix fix
+.PHONY: lint check test clippy fmt fmt-check clippy-fix fix build build-dev install install-dev
 
 # Run all CI checks (matches .github/workflows/pr.yml)
 lint: check test clippy
@@ -26,3 +26,25 @@ clippy-fix:
 
 # Run all fixes
 fix: fmt clippy-fix
+
+################################################################################
+# Build targets                                                                #
+################################################################################
+
+build:
+	cargo build --release -p spicebench
+
+build-dev:
+	cargo build -p spicebench
+
+################################################################################
+# Install targets                                                              #
+################################################################################
+
+install: build
+	mkdir -p ~/.spice/bin
+	install -m 755 target/release/spicebench ~/.spice/bin/spicebench
+
+install-dev: build-dev
+	mkdir -p ~/.spice/bin
+	install -m 755 target/debug/spicebench ~/.spice/bin/spicebench
