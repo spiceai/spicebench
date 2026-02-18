@@ -226,6 +226,11 @@ jobs:
               ;;
           esac
 
+      - name: Install ADBC FlightSQL driver
+        run: |
+          curl -LsSf https://dbc.columnar.tech/install.sh | sh
+          dbc install flightsql
+
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
