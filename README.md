@@ -268,6 +268,13 @@ Build the adapter:
 cargo build --manifest-path system-adapters/databricks/Cargo.toml
 ```
 
+Install the Databricks ADBC driver used by `spicebench` query execution:
+
+```bash
+curl -LsSf https://dbc.columnar.tech/install.sh | sh
+dbc install databricks
+```
+
 Run `spicebench` with the adapter over stdio:
 
 ```bash

@@ -196,10 +196,18 @@ jobs:
               exit 1
               ;;
           esac
-      - name: Install ADBC FlightSQL driver
+      - name: Install ADBC driver
+        env:
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_adapter || 'spidapter' }}
         run: |
+          set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          dbc install flightsql
+
+          if [ "${SYSTEM_ADAPTER}" = "databricks" ]; then
+            dbc install databricks
+          else
+            dbc install flightsql
+          fi
 
       - name: Run spicebench
         env:
