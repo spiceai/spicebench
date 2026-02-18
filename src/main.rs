@@ -64,17 +64,26 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let adbc_conn = match AdbcConnection::create(&adbc_driver.driver.to_string(), adbc_driver.db_kwargs) {
-        Ok(conn) => {
-            println!("ADBC connection established (driver: {})", adbc_driver.driver);
-            conn
-        }
-        Err(e) => {
-            return Err(anyhow::anyhow!("Failed to create ADBC connection for driver {}: {e}", adbc_driver.driver));
-        }
-    };
+    #[expect(clippy::unused_variables)]
+    let adbc_conn =
+        match AdbcConnection::create(&adbc_driver.driver.to_string(), adbc_driver.db_kwargs) {
+            Ok(conn) => {
+                println!(
+                    "ADBC connection established (driver: {})",
+                    adbc_driver.driver
+                );
+                conn
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to create ADBC connection for driver {}: {e}",
+                    adbc_driver.driver
+                ));
+            }
+        };
 
-    commands::load::run(&cli.args, Some(adbc_conn)).await?;
+    // TODO: Add back when `load::run` is only responsible for running query load and measuring latency.
+    // commands::load::run(&cli.args, Some(adbc_conn)).await?;
 
     if let Err(e) = system_adapter_client.teardown(run_id).await {
         return Err(anyhow::anyhow!("Failed to teardown system adapter: {e}"));
