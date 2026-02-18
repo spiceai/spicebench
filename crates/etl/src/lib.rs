@@ -27,6 +27,7 @@ use data_generation::dataset::{Dataset, MutationConfig};
 use data_generation::storage::{BatchOperation, DataStorage};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use system_adapter_protocol::DatasetConfig as ProtocolDatasetConfig;
@@ -110,6 +111,9 @@ pub enum PipelineState {
     /// The pipeline is actively rehydrating batches (in order of batch ID) from
     /// the configured [`Source`] into the configured [`Target`].
     Running,
+    /// The pipeline has processed the requested number of steps and is waiting
+    /// for [`continue_pipeline`](ETLPipeline::continue_pipeline) to be called.
+    Paused,
     /// The pipeline has completed, was cancelled, or encountered an error in its
     /// background task.
     Stopped(StopReason),
@@ -126,6 +130,19 @@ pub enum StopReason {
     Error(String),
 }
 
+/// Shared mutable state for work remaining in the pipeline.
+///
+/// This is stored behind an `Arc<StdMutex<...>>` so the spawned background
+/// task can hand back unconsumed work when it pauses or finishes.
+struct PipelineWorkState {
+    /// Remaining steps grouped by batch ID (ascending). Each entry maps a
+    /// batch ID to the list of tables that still need to be processed for
+    /// that batch.
+    steps: BTreeMap<u64, Vec<String>>,
+    /// Tables whose data has been fully consumed (source returned `None`).
+    finished_tables: HashSet<String>,
+}
+
 /// An ETL pipeline that reads batches from [`DataStorage`], rehydrates them
 /// using a [`Dataset`], and writes them to a [`Sink`].
 ///
@@ -139,7 +156,10 @@ pub enum StopReason {
 ///    The system adapter can now discover initial data.
 /// 3. **[`Running`](PipelineState::Running)** — the pipeline is actively processing
 ///    remaining batches (batch 1+).
-/// 4. **[`Stopped`](PipelineState::Stopped)** — the pipeline finished, was cancelled,
+/// 4. **[`Paused`](PipelineState::Paused)** — the pipeline processed the requested
+///    number of steps and is waiting to be resumed via
+///    [`continue_pipeline`](ETLPipeline::continue_pipeline).
+/// 5. **[`Stopped`](PipelineState::Stopped)** — the pipeline finished, was cancelled,
 ///    or hit an error.
 pub struct ETLPipeline {
     dataset_source: DatasetSource,
@@ -150,6 +170,11 @@ pub struct ETLPipeline {
     state_tx: Arc<watch::Sender<PipelineState>>,
     cancel_token: CancellationToken,
     handle: Option<JoinHandle<()>>,
+    /// How many steps to process per `run` / `continue_pipeline` invocation.
+    /// `None` means unlimited (process everything).
+    batch_budget: Option<usize>,
+    /// Shared work state handed between the pipeline and its background task.
+    work_state: Arc<StdMutex<PipelineWorkState>>,
 }
 
 impl ETLPipeline {
@@ -176,6 +201,11 @@ impl ETLPipeline {
             state_tx: Arc::new(state_tx),
             cancel_token: CancellationToken::new(),
             handle: None,
+            batch_budget: None,
+            work_state: Arc::new(StdMutex::new(PipelineWorkState {
+                steps: BTreeMap::new(),
+                finished_tables: HashSet::new(),
+            })),
         })
     }
 
@@ -339,36 +369,109 @@ impl ETLPipeline {
             );
         }
 
-        let _ = self.state_tx.send(PipelineState::Running);
+        self.batch_budget = None;
+        self.build_work_plan();
+        self.spawn_run_task(None);
+        Ok(())
+    }
 
-        let dataset = Arc::clone(&self.dataset);
-        let source = Arc::clone(&self.data_storage);
-        let target = Arc::clone(&self.data_sink);
-        let cancel = self.cancel_token.clone();
-        let state_tx = Arc::clone(&self.state_tx);
+    /// Starts the ETL pipeline and processes at most `step_count` steps (batch
+    /// ID groups) before transitioning to [`PipelineState::Paused`].
+    ///
+    /// Each step processes all active tables for a single batch ID
+    /// concurrently. After `step_count` steps the pipeline pauses and can be
+    /// resumed by calling [`continue_pipeline`](ETLPipeline::continue_pipeline),
+    /// which will process another `step_count` steps.
+    ///
+    /// If there are fewer remaining steps than `step_count`, all remaining
+    /// steps are processed and the pipeline transitions directly to
+    /// [`PipelineState::Stopped(StopReason::Completed)`].
+    ///
+    /// Returns an error if the pipeline is not in the [`Initialized`] state.
+    pub fn run(&mut self, step_count: usize) -> anyhow::Result<()> {
+        let current_state = self.state_rx.borrow().clone();
+        if current_state != PipelineState::Initialized {
+            anyhow::bail!(
+                "Cannot run pipeline: current state is {:?} (must be Initialized)",
+                current_state
+            );
+        }
 
-        // Build the ordered work plan: Vec<(table_name, batch_id)> sorted by
-        // batch_id so all tables advance together.
+        self.batch_budget = Some(step_count);
+        self.build_work_plan();
+        self.spawn_run_task(Some(step_count));
+        Ok(())
+    }
+
+    /// Resumes a paused pipeline for another batch of steps.
+    ///
+    /// The pipeline processes up to the same `step_count` that was originally
+    /// passed to [`run`](ETLPipeline::run). If all remaining steps are
+    /// consumed, the pipeline transitions to
+    /// [`PipelineState::Stopped(StopReason::Completed)`] instead of
+    /// [`PipelineState::Paused`].
+    ///
+    /// Returns an error if the pipeline is not in the [`Paused`] state.
+    pub fn continue_pipeline(&mut self) -> anyhow::Result<()> {
+        let current_state = self.state_rx.borrow().clone();
+        if current_state != PipelineState::Paused {
+            anyhow::bail!(
+                "Cannot continue pipeline: current state is {:?} (must be Paused)",
+                current_state
+            );
+        }
+
+        // Wait for the previous background task to finish (it should already
+        // be done since it transitioned to Paused).
+        if let Some(handle) = self.handle.take() {
+            // The task should already be finished, but drop the handle cleanly.
+            handle.abort();
+        }
+
+        self.spawn_run_task(self.batch_budget);
+        Ok(())
+    }
+
+    /// Build the initial work plan from the dataset and store it in
+    /// `self.work_state`.
+    fn build_work_plan(&self) {
+        let dataset = &self.dataset;
         let tables = dataset.tables();
-        let mut work: Vec<(String, u64)> = Vec::new();
+        let mut steps: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+
         for name in tables.keys() {
             for id in dataset.batch_ids(name) {
                 // Skip batch 0 — it was already processed during initialize().
                 if id == 0 {
                     continue;
                 }
-                work.push((name.clone(), id));
+                steps.entry(id).or_default().push(name.clone());
             }
         }
-        work.sort_by_key(|(_, id)| *id);
+
+        let mut state = self.work_state.lock().expect("work_state lock poisoned");
+        state.steps = steps;
+        state.finished_tables.clear();
+    }
+
+    /// Spawn the background task that processes steps from the shared work
+    /// state. If `step_limit` is `Some(n)`, at most `n` steps are processed
+    /// before the pipeline transitions to [`PipelineState::Paused`].
+    fn spawn_run_task(&mut self, step_limit: Option<usize>) {
+        let _ = self.state_tx.send(PipelineState::Running);
+
+        let source = Arc::clone(&self.data_storage);
+        let target = Arc::clone(&self.data_sink);
+        let cancel = self.cancel_token.clone();
+        let state_tx = Arc::clone(&self.state_tx);
+        let work_state = Arc::clone(&self.work_state);
 
         let handle = tokio::spawn(async move {
-            let reason = run_pipeline(source, target, work, cancel).await;
-            let _ = state_tx.send(PipelineState::Stopped(reason));
+            let outcome = run_pipeline(source, target, work_state, cancel, step_limit).await;
+            let _ = state_tx.send(outcome);
         });
 
         self.handle = Some(handle);
-        Ok(())
     }
 
     /// Waits for the pipeline background task to finish and returns the final
@@ -376,7 +479,7 @@ impl ETLPipeline {
     ///
     /// If the pipeline has not been started, this returns immediately with the
     /// current state.
-    pub async fn wait(mut self) -> PipelineState {
+    pub async fn wait(&mut self) -> PipelineState {
         if let Some(handle) = self.handle.take() {
             let _ = handle.await;
         }
@@ -386,35 +489,46 @@ impl ETLPipeline {
 
 /// Core loop executed inside the spawned task.
 ///
-/// Groups work items by batch ID and processes all tables within each step
-/// concurrently, checking for cancellation between steps.
+/// Processes steps from the shared work state, removing each step as it is
+/// consumed. If `step_limit` is `Some(n)`, at most `n` steps are processed
+/// before the function returns [`PipelineState::Paused`]. Unconsumed steps
+/// remain in the shared work state for a subsequent call.
 async fn run_pipeline(
     data_storage: Arc<dyn DataStorage>,
     data_sink: Arc<dyn Sink>,
-    work: Vec<(String, u64)>,
+    work_state: Arc<StdMutex<PipelineWorkState>>,
     cancel: CancellationToken,
-) -> StopReason {
-    // Group work by batch_id so all tables in a step run in parallel.
-    let mut steps: BTreeMap<u64, Vec<String>> = BTreeMap::new();
-    for (table_name, batch_id) in &work {
-        steps.entry(*batch_id).or_default().push(table_name.clone());
-    }
+    step_limit: Option<usize>,
+) -> PipelineState {
+    // Take a snapshot of total counts for logging.
+    let (total_steps, total_batches) = {
+        let state = work_state.lock().expect("work_state lock poisoned");
+        let total_steps = state.steps.len();
+        let total_batches: usize = state.steps.values().map(|v| v.len()).sum();
+        (total_steps, total_batches)
+    };
 
-    let total_steps = steps.len();
-    let total_batches = work.len();
-    info!(total_steps, total_batches, "ETL pipeline started");
+    let limit_label = step_limit
+        .map(|n| format!("{n}"))
+        .unwrap_or_else(|| "unlimited".to_string());
+    info!(
+        total_steps,
+        total_batches,
+        step_limit = %limit_label,
+        "ETL pipeline run started"
+    );
 
     // Shared progress counters for periodic logging.
     let steps_completed = StdArc::new(AtomicU64::new(0));
     let batches_processed = StdArc::new(AtomicU64::new(0));
-    let tables_finished = StdArc::new(AtomicU64::new(0));
+    let tables_finished_counter = StdArc::new(AtomicU64::new(0));
     let pipeline_start = Instant::now();
 
     // Spawn periodic progress logger (every 5 seconds).
     let progress_logger = {
         let steps_completed = StdArc::clone(&steps_completed);
         let batches_processed = StdArc::clone(&batches_processed);
-        let tables_finished = StdArc::clone(&tables_finished);
+        let tables_finished_counter = StdArc::clone(&tables_finished_counter);
         let cancel = cancel.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -428,7 +542,7 @@ async fn run_pipeline(
                         }
                         let steps_done = steps_completed.load(Ordering::Relaxed);
                         let batches_done = batches_processed.load(Ordering::Relaxed);
-                        let tables_done = tables_finished.load(Ordering::Relaxed);
+                        let tables_done = tables_finished_counter.load(Ordering::Relaxed);
                         info!(
                             elapsed_secs = format!("{secs:.1}"),
                             steps = format!("{steps_done}/{total_steps}"),
@@ -444,24 +558,52 @@ async fn run_pipeline(
         })
     };
 
-    // Tables whose data has been fully consumed (source returned `None`).
-    let mut finished_tables: HashSet<String> = HashSet::new();
+    let mut steps_processed: usize = 0;
 
-    for (step_idx, (batch_id, tables)) in steps.into_iter().enumerate() {
+    loop {
+        // Check step budget.
+        if let Some(limit) = step_limit {
+            if steps_processed >= limit {
+                info!(steps_processed, "Step limit reached, pausing pipeline");
+                progress_logger.abort();
+                return PipelineState::Paused;
+            }
+        }
+
         if cancel.is_cancelled() {
-            warn!("ETL pipeline cancelled at step {step_idx}/{total_steps}");
-            return StopReason::Cancelled;
+            warn!("ETL pipeline cancelled after {steps_processed} steps");
+            progress_logger.abort();
+            return PipelineState::Stopped(StopReason::Cancelled);
         }
 
-        // Filter out tables that have already been fully consumed.
-        let active_tables: Vec<String> = tables
-            .into_iter()
-            .filter(|t| !finished_tables.contains(t))
-            .collect();
+        // Pop the next step from the shared work state.
+        let next_step = {
+            let mut state = work_state.lock().expect("work_state lock poisoned");
+            if let Some(entry) = state.steps.first_entry() {
+                let batch_id = *entry.key();
+                let tables = entry.remove();
+                // Filter out already-finished tables.
+                let active: Vec<String> = tables
+                    .into_iter()
+                    .filter(|t| !state.finished_tables.contains(t))
+                    .collect();
+                Some((batch_id, active))
+            } else {
+                None
+            }
+        };
 
-        if active_tables.is_empty() {
-            continue;
-        }
+        let (batch_id, active_tables) = match next_step {
+            Some((_bid, tables)) if tables.is_empty() => {
+                // All tables in this step are already finished, skip it.
+                continue;
+            }
+            Some((bid, tables)) => (bid, tables),
+            None => {
+                // No more work — pipeline is done.
+                break;
+            }
+        };
 
         // Process all tables for this batch_id concurrently.
         let mut join_set: JoinSet<Result<(String, bool), String>> = JoinSet::new();
@@ -542,39 +684,38 @@ async fn run_pipeline(
                 Ok(Ok((table_name, is_finished))) => {
                     step_batch_count += 1;
                     if is_finished {
-                        finished_tables.insert(table_name);
-                        tables_finished.fetch_add(1, Ordering::Relaxed);
+                        let mut state = work_state.lock().expect("work_state lock poisoned");
+                        state.finished_tables.insert(table_name);
+                        tables_finished_counter.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 Ok(Err(err_msg)) => {
                     progress_logger.abort();
-                    return StopReason::Error(err_msg);
+                    return PipelineState::Stopped(StopReason::Error(err_msg));
                 }
                 Err(e) => {
                     progress_logger.abort();
-                    return StopReason::Error(format!("Task panicked: {e}"));
+                    return PipelineState::Stopped(StopReason::Error(format!(
+                        "Task panicked: {e}"
+                    )));
                 }
             }
         }
 
+        steps_processed += 1;
         steps_completed.fetch_add(1, Ordering::Relaxed);
         batches_processed.fetch_add(step_batch_count, Ordering::Relaxed);
 
-        debug!(
-            batch_id,
-            progress = format!("{}/{}", step_idx + 1, total_steps),
-            "Step completed"
-        );
+        debug!(batch_id, steps_processed, "Step completed");
     }
 
     progress_logger.abort();
     info!(
         elapsed = ?pipeline_start.elapsed(),
-        steps = total_steps,
-        batches = total_batches,
+        steps_processed,
         "ETL pipeline completed successfully"
     );
-    StopReason::Completed
+    PipelineState::Stopped(StopReason::Completed)
 }
 
 fn sink_op_from_batch_op(op: &BatchOperation) -> InsertOp {
