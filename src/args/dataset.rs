@@ -198,6 +198,7 @@ impl PartialEq<QuerySet> for QuerySetArg {
     }
 }
 
+#[allow(dead_code)]
 pub trait QuerySetLoader {
     fn query_set(&self) -> &QuerySetArg;
     fn scenario_query_file(&self) -> Option<&PathBuf>;
@@ -225,6 +226,7 @@ pub trait QuerySetLoader {
 
 impl DatasetTestArgs {
     /// Load the query set, handling scenario query sets from files
+    #[allow(dead_code)]
     pub fn load_query_set(&self) -> anyhow::Result<QuerySet> {
         QuerySetLoader::load_query_set(self)
     }

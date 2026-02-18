@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    #[expect(clippy::unused_variables)]
+    #[expect(unused_variables)]
     let adbc_conn =
         match AdbcConnection::create(&adbc_driver.driver.to_string(), adbc_driver.db_kwargs) {
             Ok(conn) => {

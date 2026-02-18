@@ -39,6 +39,7 @@ pub(crate) mod load;
 /// This ensures the `SdkMeterProvider` is created with the correct resource,
 /// so metrics recorded after this call will have the proper resource attributes.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn create_telemetry_with_resource(common: &CommonArgs, resource: Resource) -> Telemetry {
     if let Some(endpoint) = &common.otlp_endpoint {
         return Telemetry::with_otlp_resource(
@@ -64,6 +65,7 @@ pub(crate) fn create_telemetry_with_resource(common: &CommonArgs, resource: Reso
 ///
 /// # Returns
 /// Tuple of (`QuerySet`, `NotStarted` builder)
+#[allow(dead_code)]
 pub(crate) async fn build_test_with_validation(
     args: &DatasetTestArgs,
     test_builder: NotStarted,
@@ -96,6 +98,7 @@ pub(crate) async fn build_test_with_validation(
     Ok((query_set, test_builder))
 }
 
+#[allow(dead_code)]
 pub(crate) async fn get_app_and_start_request(
     args: &CommonArgs,
 ) -> anyhow::Result<(App, StartRequest)> {
@@ -155,6 +158,7 @@ pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemA
     Err(anyhow::anyhow!("No system adapter transport configured"))
 }
 
+#[allow(dead_code)]
 pub(crate) async fn create_query_executor(
     args: &DatasetTestArgs,
     spiced_instance: &test_framework::spiced::SpicedInstance,
