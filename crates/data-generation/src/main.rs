@@ -23,7 +23,7 @@ use std::sync::Arc;
 use data_generation::config::{Cli, Command, CommonArgs};
 use data_generation::dataset;
 use data_generation::dataset::tpch::TpchDataset;
-use data_generation::ingestor::Ingestor;
+use data_generation::generator::DataGenerator;
 use data_generation::metrics::{IngestResult, Metrics};
 use data_generation::target::s3::S3Target;
 
@@ -50,7 +50,7 @@ fn print_summary(result: &IngestResult) {
     println!("  Avg write latency: {:?}", result.avg_write_latency);
 }
 
-fn build(args: &CommonArgs) -> anyhow::Result<(Ingestor, Arc<S3Target>)> {
+fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
     let dataset_config = args.dataset_config();
     let target_config = args.target_config();
     let ingestor_config = args.ingestor_config();
@@ -72,13 +72,13 @@ fn build(args: &CommonArgs) -> anyhow::Result<(Ingestor, Arc<S3Target>)> {
     let target = Arc::new(S3Target::new(&target_config)?);
     let metrics = Metrics::new();
 
-    let ingestor = Ingestor::new(
+    let ingestor = DataGenerator::new(
         dataset,
-        Arc::clone(&target) as Arc<dyn Target>,
+        target as Arc<dyn Target>,
         &ingestor_config,
         metrics,
     );
-    Ok((ingestor, target))
+    Ok(ingestor)
 }
 
 #[tokio::main]
@@ -91,16 +91,15 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Initialize(args) => {
-            let (ingestor, target) = build(&args)?;
-            let loc_fn = |table: &str| target.table_s3_path(table);
-            let result = ingestor.initialize(Some(&loc_fn)).await?;
+            let ingestor = build(&args)?;
+            let result = ingestor.initialize().await?;
 
             if result.write_errors > 0 {
                 anyhow::bail!("Initialization failed with {} errors", result.write_errors);
             }
         }
         Command::Run(run_args) => {
-            let (ingestor, _target) = build(&run_args.common)?;
+            let ingestor = build(&run_args.common)?;
             if run_args.skip_initial {
                 ingestor.skip_initial_batches().await?;
             }
