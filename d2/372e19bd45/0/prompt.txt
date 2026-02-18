@@ -1,0 +1,9 @@
+Review `crates/system-adapter-protocol` for exceptional developer experience
+
+---
+
+Implement #4 and #10
+
+---
+
+make a PR for me

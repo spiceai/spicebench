@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "d2372e19bd45",
+  "session_id": "f4f84b16-5185-4944-ad06-3c3c4235b752",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-18T17:20:38.051113Z",
+  "branch": "jeadie/sap-dx-improvements",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/system-adapter-protocol/src/client.rs",
+    "crates/system-adapter-protocol/src/lib.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "3cf6b485e0c1",
+  "transcript_identifier_at_start": "74634a2b-dfa9-44bf-befa-c5f24e46840d",
+  "token_usage": {
+    "input_tokens": 21,
+    "cache_creation_tokens": 31436,
+    "cache_read_tokens": 591381,
+    "output_tokens": 2937,
+    "api_call_count": 15
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-18T17:20:37.902035Z",
+    "agent_lines": 6,
+    "human_added": 5273,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 5279,
+    "agent_percentage": 0.11365788975184693
+  },
+  "transcript_path": ".claude/projects/-Users-jeadie-Github-spicebench/f4f84b16-5185-4944-ad06-3c3c4235b752.jsonl"
+}
