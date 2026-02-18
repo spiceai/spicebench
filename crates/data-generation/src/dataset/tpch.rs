@@ -256,10 +256,7 @@ impl Dataset for TpchDataset {
     }
 
     fn num_batches(&self, table: &str) -> u64 {
-        if !TPCH_TABLES
-            .iter()
-            .any(|(name, _)| *name == table)
-        {
+        if !TPCH_TABLES.iter().any(|(name, _)| *name == table) {
             return 0;
         }
 
@@ -302,10 +299,7 @@ impl Dataset for TpchDataset {
         }
 
         // Validate the table name
-        if !TPCH_TABLES
-            .iter()
-            .any(|(name, _)| *name == table)
-        {
+        if !TPCH_TABLES.iter().any(|(name, _)| *name == table) {
             anyhow::bail!("Unknown TPC-H table: {table}");
         }
 
