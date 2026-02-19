@@ -32,7 +32,7 @@ pub struct ReadResult {
     pub batches: Vec<RecordBatch>,
     pub rows_read: u64,
     pub bytes_read: u64,
-    pub operation: BatchOperation,
+    pub key_columns: Vec<String>,
 }
 
 pub struct WriteResult {
@@ -73,6 +73,13 @@ pub trait DataStorage: Send + Sync + 'static {
         _operation: &BatchOperation,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    /// Reads the key columns from the table-level metadata.
+    ///
+    /// Returns `Ok(Vec::new())` if no key columns are defined (pure inserts).
+    async fn read_key_columns(&self, _table_name: &str) -> anyhow::Result<Vec<String>> {
+        Ok(Vec::new())
     }
 
     fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value>;
