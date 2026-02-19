@@ -226,7 +226,13 @@ async fn main() -> anyhow::Result<()> {
                     checkpoint = checkpoint_idx,
                     "Pipeline paused, running checkpoint queries"
                 );
-                run_checkpoint_queries(&target, &checkpoint_queries, &cli.checkpoint_dir, checkpoint_idx).await?;
+                run_checkpoint_queries(
+                    &target,
+                    &checkpoint_queries,
+                    &cli.checkpoint_dir,
+                    checkpoint_idx,
+                )
+                .await?;
                 checkpoint_idx += 1;
 
                 // Resume the pipeline for the next batch of steps.
@@ -238,7 +244,13 @@ async fn main() -> anyhow::Result<()> {
                     checkpoint = checkpoint_idx,
                     "Pipeline completed, running final checkpoint queries"
                 );
-                run_checkpoint_queries(&target, &checkpoint_queries, &cli.checkpoint_dir, checkpoint_idx).await?;
+                run_checkpoint_queries(
+                    &target,
+                    &checkpoint_queries,
+                    &cli.checkpoint_dir,
+                    checkpoint_idx,
+                )
+                .await?;
 
                 // Upload all checkpoints to S3.
                 let checkpoint_store = CheckpointStore::new(
