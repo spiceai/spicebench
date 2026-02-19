@@ -202,13 +202,13 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Log the tables and schemas that will be processed.
-    let datasets = pipeline.setup_request_datasets();
+    let datasets = pipeline.create_tables_request_datasets();
     for (name, config) in &datasets {
         tracing::info!(table = %name, schema = ?config.schema, "Dataset table registered");
     }
 
     pipeline.initialize().await?;
-    pipeline.run(cli.checkpoint_interval_steps as usize)?;
+    pipeline.run(cli.checkpoint_interval_steps as usize).await?;
 
     let mut checkpoint_idx: usize = 0;
 

@@ -39,6 +39,7 @@ use tracing::info;
 use crate::config::DatasetConfig;
 use crate::dataset::MutationConfig;
 use crate::dataset::key_set::{IndexedKeySet, PrimaryKeyValue};
+use crate::storage::DataStorage;
 
 use super::{Dataset, DatasetTable};
 
@@ -357,10 +358,16 @@ pub struct TpchDataset {
     key_sets: HashMap<String, Mutex<IndexedKeySet<PrimaryKeyValue>>>,
     /// Global monotonically increasing operation counter for replay ordering.
     op_counter: AtomicI64,
+    /// The storage backend for reading/writing table metadata.
+    storage: Arc<dyn DataStorage>,
 }
 
 impl TpchDataset {
-    pub fn new(config: &DatasetConfig, mutations: &MutationConfig) -> anyhow::Result<Self> {
+    pub fn new(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
+    ) -> anyhow::Result<Self> {
         info!(
             scale_factor = config.scale_factor,
             num_steps = config.num_steps,
@@ -384,6 +391,7 @@ impl TpchDataset {
             table_steps,
             key_sets,
             op_counter: AtomicI64::new(0),
+            storage,
         })
     }
 }
@@ -393,11 +401,16 @@ impl Dataset for TpchDataset {
     fn create(
         config: &DatasetConfig,
         mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
     ) -> anyhow::Result<Arc<dyn Dataset>>
     where
         Self: Sized + 'static,
     {
-        Ok(Arc::new(Self::new(config, mutations)?))
+        Ok(Arc::new(Self::new(config, mutations, storage)?))
+    }
+
+    fn storage(self: Arc<Self>) -> Arc<dyn DataStorage> {
+        Arc::clone(&self.storage)
     }
 
     fn primary_key(&self, table: &str) -> Vec<String> {

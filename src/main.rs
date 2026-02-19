@@ -23,6 +23,7 @@ use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
 use data_generation::dataset::Dataset;
 use data_generation::dataset::MutationConfig;
+use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
@@ -38,7 +39,7 @@ mod scenario;
 use crate::commands::connect_system_adapter;
 use crate::scenario::Scenario;
 
-fn setup_request_datasets(
+fn create_tables_request_datasets(
     dataset: &Arc<dyn Dataset>,
 ) -> HashMap<String, system_adapter_protocol::DatasetConfig> {
     dataset
@@ -122,8 +123,12 @@ async fn main() -> anyhow::Result<()> {
     let run_id = uuid::Uuid::new_v4();
     let mutations = MutationConfig::new(0.1, 0.1);
 
-    let setup_dataset = dataset_source.create(&generation_config, &mutations)?;
-    let datasets = setup_request_datasets(&setup_dataset);
+    let setup_dataset = dataset_source.create(
+        &generation_config,
+        &mutations,
+        Arc::clone(&source) as Arc<dyn DataStorage>,
+    )?;
+    let datasets = create_tables_request_datasets(&setup_dataset);
 
     let setup_metadata = std::collections::HashMap::from([
         (
@@ -136,10 +141,7 @@ async fn main() -> anyhow::Result<()> {
         ),
     ]);
 
-    let adbc_driver = match system_adapter_client
-        .setup(run_id, datasets, setup_metadata)
-        .await
-    {
+    let adbc_driver = match system_adapter_client.setup(run_id, setup_metadata).await {
         Ok(response) => response,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
@@ -220,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
         &mutations,
     )?;
 
-    if let Err(e) = system_adapter_client.create_tables(run_id).await {
+    if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
         pipeline.cancel();
         return Err(anyhow::anyhow!(
             "Failed to create tables via system adapter: {e}"

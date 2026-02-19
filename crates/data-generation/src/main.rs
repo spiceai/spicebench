@@ -65,9 +65,11 @@ fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
 
     let mutations_config = MutationConfig::new(0.1, 0.1);
 
-    let dataset: Arc<dyn Dataset> = Arc::create(&dataset_config, &mutations_config)?;
-
     let target = Arc::new(S3Storage::new(&target_config)?);
+    let storage: Arc<dyn DataStorage> = target.clone() as Arc<dyn DataStorage>;
+
+    let dataset: Arc<dyn Dataset> = Arc::create(&dataset_config, &mutations_config, storage)?;
+
     let metrics = Metrics::new();
 
     let ingestor = DataGenerator::new(

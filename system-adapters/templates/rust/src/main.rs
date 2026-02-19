@@ -52,7 +52,7 @@ fn method_setup(_params: &Value) -> Value {
     // query driver details SpiceBench should use.
     // Example:
     // - create run-scoped database/schema
-    // - configure ingestion resources for requested datasets
+    // - configure ingestion resources needed before table creation
     // - wait for service readiness checks
     // - resolve connection details from your control plane
     let host = std::env::var("SUT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -79,6 +79,7 @@ fn method_create_tables(_params: &Value) -> Value {
     // Stub: Create/register destination tables for benchmark datasets.
     // Example:
     // - create tables if they do not exist
+    // - iterate datasets passed in params to map each schema to table DDL
     // - apply expected schema/partitioning
     json!({"ok": true})
 }

@@ -46,7 +46,7 @@ jobs:
 
           for _ in {1..30}; do
             if curl -sS -o /tmp/python-resp.json -H 'Content-Type: application/json' \
-              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
               http://127.0.0.1:18080/jsonrpc; then
               break
             fi
@@ -57,7 +57,7 @@ jobs:
           grep -q '"driver":"flightsql"' /tmp/python-resp.json
           grep -q '"db_kwargs"' /tmp/python-resp.json
           curl -sS -o /tmp/python-create.json -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
             http://127.0.0.1:18080/jsonrpc
           grep -q '"ok":true' /tmp/python-create.json
           curl -sS -o /tmp/python-methods.json -H 'Content-Type: application/json' \
@@ -89,7 +89,7 @@ jobs:
 
           for _ in {1..30}; do
             if curl -sS -o /tmp/node-resp.json -H 'Content-Type: application/json' \
-              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
               http://127.0.0.1:18081/jsonrpc; then
               break
             fi
@@ -100,7 +100,7 @@ jobs:
           grep -q '"driver":"flightsql"' /tmp/node-resp.json
           grep -q '"db_kwargs"' /tmp/node-resp.json
           curl -sS -o /tmp/node-create.json -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
             http://127.0.0.1:18081/jsonrpc
           grep -q '"ok":true' /tmp/node-create.json
           curl -sS -o /tmp/node-methods.json -H 'Content-Type: application/json' \
@@ -134,7 +134,7 @@ jobs:
 
           for _ in {1..30}; do
             if curl -sS -o /tmp/rust-resp.json -H 'Content-Type: application/json' \
-              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
               http://127.0.0.1:18082/jsonrpc; then
               break
             fi
@@ -145,7 +145,7 @@ jobs:
           grep -q '"driver":"flightsql"' /tmp/rust-resp.json
           grep -q '"db_kwargs"' /tmp/rust-resp.json
           curl -sS -o /tmp/rust-create.json -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
             http://127.0.0.1:18082/jsonrpc
           grep -q '"ok":true' /tmp/rust-create.json
           curl -sS -o /tmp/rust-methods.json -H 'Content-Type: application/json' \
@@ -179,7 +179,7 @@ jobs:
 
           for _ in {1..30}; do
             if curl -sS -o /tmp/go-resp.json -H 'Content-Type: application/json' \
-              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
               http://127.0.0.1:18083/jsonrpc; then
               break
             fi
@@ -190,7 +190,7 @@ jobs:
           grep -q '"driver":"flightsql"' /tmp/go-resp.json
           grep -q '"db_kwargs"' /tmp/go-resp.json
           curl -sS -o /tmp/go-create.json -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
             http://127.0.0.1:18083/jsonrpc
           grep -q '"ok":true' /tmp/go-create.json
           curl -sS -o /tmp/go-methods.json -H 'Content-Type: application/json' \
@@ -223,7 +223,7 @@ jobs:
 
           for _ in {1..30}; do
             if curl -sS -o /tmp/java-resp.json -H 'Content-Type: application/json' \
-              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
               http://127.0.0.1:18084/jsonrpc; then
               break
             fi
@@ -234,7 +234,7 @@ jobs:
           grep -q '"driver":"flightsql"' /tmp/java-resp.json
           grep -q '"db_kwargs"' /tmp/java-resp.json
           curl -sS -o /tmp/java-create.json -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000"}}' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"create_tables","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{}}}' \
             http://127.0.0.1:18084/jsonrpc
           grep -q '"ok":true' /tmp/java-create.json
           curl -sS -o /tmp/java-methods.json -H 'Content-Type: application/json' \

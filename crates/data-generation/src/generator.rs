@@ -139,7 +139,7 @@ impl DataGenerator {
 
         let mut batch_ids = HashMap::new();
         for table in self.dataset.tables().keys() {
-            batch_ids.insert(table.clone(), self.dataset.batch_ids(table));
+            batch_ids.insert(table.clone(), self.dataset.clone().batch_ids(table).await);
         }
 
         loop {
