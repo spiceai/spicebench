@@ -77,6 +77,9 @@ pub enum ValidationStatus {
         checkpoint_idx: usize,
         /// Per-query outcomes accumulated so far in this validation window.
         outcomes: Vec<QueryValidationOutcome>,
+        /// Number of complete query-set iterations that have finished
+        /// since validation was enabled for this checkpoint.
+        completed_iterations: usize,
     },
 }
 
@@ -92,9 +95,7 @@ impl ValidationStatus {
     pub fn all_passed(&self) -> bool {
         match self {
             ValidationStatus::Inactive => true,
-            ValidationStatus::Active { outcomes, .. } => {
-                outcomes.iter().all(|o| o.fail_count == 0)
-            }
+            ValidationStatus::Active { outcomes, .. } => outcomes.iter().all(|o| o.fail_count == 0),
         }
     }
 
@@ -106,6 +107,19 @@ impl ValidationStatus {
             ValidationStatus::Active { outcomes, .. } => {
                 outcomes.iter().map(|o| o.fail_count).sum()
             }
+        }
+    }
+
+    /// Returns the number of completed query-set iterations since
+    /// validation was enabled, or `0` if inactive.
+    #[must_use]
+    pub fn completed_iterations(&self) -> usize {
+        match self {
+            ValidationStatus::Inactive => 0,
+            ValidationStatus::Active {
+                completed_iterations,
+                ..
+            } => *completed_iterations,
         }
     }
 }

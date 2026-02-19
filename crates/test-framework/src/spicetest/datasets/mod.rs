@@ -39,8 +39,10 @@ use super::{SpiceTest, TestCompleted, TestNotStarted, TestState};
 
 pub mod checkpoint_validation;
 mod worker;
+pub use checkpoint_validation::{
+    ValidationCommand, ValidationController, ValidationStatus, create_validation_channels,
+};
 pub(crate) use worker::{SpiceTestQueryWorker, SpiceTestQueryWorkerResult};
-pub use checkpoint_validation::{ValidationCommand, ValidationController, ValidationStatus, create_validation_channels};
 
 #[derive(Debug, Clone, Copy)]
 pub enum EndCondition {

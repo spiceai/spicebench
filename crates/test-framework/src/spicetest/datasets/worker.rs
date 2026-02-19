@@ -57,6 +57,8 @@ struct CheckpointValidationState {
     expected_results: HashMap<Arc<str>, Vec<RecordBatch>>,
     /// Per-query validation outcomes accumulated during this window.
     outcomes: HashMap<Arc<str>, QueryValidationOutcome>,
+    /// Number of complete query-set iterations since validation was enabled.
+    completed_iterations: usize,
     /// Sender for publishing validation status updates.
     status_tx: Arc<tokio::sync::watch::Sender<ValidationStatus>>,
     /// Receiver for validation commands from the load runner.
@@ -70,6 +72,7 @@ impl CheckpointValidationState {
             checkpoint_idx: 0,
             expected_results: HashMap::new(),
             outcomes: HashMap::new(),
+            completed_iterations: 0,
             status_tx: handles.status_tx,
             command_rx: handles.command_rx,
         }
@@ -92,6 +95,7 @@ impl CheckpointValidationState {
                 self.checkpoint_idx = checkpoint_idx;
                 self.expected_results = expected_results;
                 self.outcomes.clear();
+                self.completed_iterations = 0;
                 eprintln!(
                     "Checkpoint validation enabled for checkpoint {}",
                     checkpoint_idx
@@ -152,9 +156,7 @@ impl CheckpointValidationState {
                 self.record_outcome(
                     &query.name,
                     false,
-                    Some(
-                        crate::queries::validation::QueryValidationFailReason::NoExpectedAnswer,
-                    ),
+                    Some(crate::queries::validation::QueryValidationFailReason::NoExpectedAnswer),
                 );
             }
         }
@@ -187,10 +189,23 @@ impl CheckpointValidationState {
         }
     }
 
+    /// Notify that a complete query-set iteration has finished.
+    ///
+    /// This should be called once per iteration of the main query loop so
+    /// the load runner can poll `completed_iterations` to decide when
+    /// enough validation passes have been recorded.
+    fn record_iteration_completed(&mut self) {
+        if self.active {
+            self.completed_iterations += 1;
+            self.publish_status();
+        }
+    }
+
     fn publish_status(&self) {
         let status = ValidationStatus::Active {
             checkpoint_idx: self.checkpoint_idx,
             outcomes: self.outcomes.values().cloned().collect(),
+            completed_iterations: self.completed_iterations,
         };
         let _ = self.status_tx.send(status);
     }
@@ -477,6 +492,11 @@ impl SpiceTestQueryWorker {
                             ));
                         }
                         query_set_count += 1;
+
+                        // Notify checkpoint validation that a full iteration completed.
+                        if let Some(ref mut cv) = checkpoint_validation {
+                            cv.record_iteration_completed();
+                        }
                     }
                 }
                 EndCondition::QuerySetCompleted(target_count) => {

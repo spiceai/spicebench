@@ -29,10 +29,8 @@ use test_framework::{
     metrics::{MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, StatisticsCollector},
     opentelemetry::KeyValue,
     opentelemetry_sdk::Resource,
+    spicetest::datasets::{ValidationCommand, ValidationStatus, create_validation_channels},
     spicetest::{SpiceTest, datasets::NotStarted},
-    spicetest::datasets::{
-        ValidationCommand, ValidationStatus, create_validation_channels,
-    },
     telemetry::streaming::StreamingOtlpExporter,
 };
 use tokio::signal;
@@ -221,10 +219,7 @@ fn load_checkpoint_results(
 
     let idx_dir = checkpoint_dir.join(checkpoint_idx.to_string());
     if !idx_dir.is_dir() {
-        anyhow::bail!(
-            "Checkpoint directory does not exist: {}",
-            idx_dir.display()
-        );
+        anyhow::bail!("Checkpoint directory does not exist: {}", idx_dir.display());
     }
 
     let mut results: HashMap<Arc<str>, Vec<RecordBatch>> = HashMap::new();
@@ -350,16 +345,14 @@ pub(crate) async fn run(
 
     // Create checkpoint validation channels when --validate-results is enabled
     // and checkpoint data is available.
-    let validation_controller = if common_args.validate_results
-        && checkpoint_steps.is_some()
-        && checkpoint_dir.is_some()
-    {
-        let (controller, worker_handles) = create_validation_channels();
-        test_builder = test_builder.with_checkpoint_validation(worker_handles);
-        Some(controller)
-    } else {
-        None
-    };
+    let validation_controller =
+        if common_args.validate_results && checkpoint_steps.is_some() && checkpoint_dir.is_some() {
+            let (controller, worker_handles) = create_validation_channels();
+            test_builder = test_builder.with_checkpoint_validation(worker_handles);
+            Some(controller)
+        } else {
+            None
+        };
 
     let (query_set, test_builder) =
         super::build_test_with_validation(scenario, test_builder).await?;
@@ -430,10 +423,30 @@ pub(crate) async fn run(
                                         },
                                     ));
 
-                                    // Let the validation run for a period of time so that
-                                    // every query in the set gets at least one validation pass.
-                                    // Use 30 seconds as a reasonable window.
-                                    tokio::time::sleep(Duration::from_secs(30)).await;
+                                    // Poll the validation status until at least
+                                    // `target_iterations` complete query-set iterations
+                                    // have finished, or a maximum timeout is reached.
+                                    const TARGET_ITERATIONS: usize = 2;
+                                    const POLL_INTERVAL: Duration = Duration::from_secs(5);
+                                    const MAX_WAIT: Duration = Duration::from_secs(600);
+                                    let wait_start = tokio::time::Instant::now();
+                                    loop {
+                                        let status =
+                                            validation_controller.status_rx.borrow().clone();
+                                        if status.completed_iterations() >= TARGET_ITERATIONS {
+                                            break;
+                                        }
+                                        if wait_start.elapsed() >= MAX_WAIT {
+                                            tracing::warn!(
+                                                checkpoint_idx,
+                                                completed = status.completed_iterations(),
+                                                target = TARGET_ITERATIONS,
+                                                "Validation window timed out before reaching target iterations"
+                                            );
+                                            break;
+                                        }
+                                        tokio::time::sleep(POLL_INTERVAL).await;
+                                    }
 
                                     // Read the validation status before disabling.
                                     let status = validation_controller.status_rx.borrow().clone();
@@ -441,13 +454,14 @@ pub(crate) async fn run(
                                         ValidationStatus::Active {
                                             checkpoint_idx: idx,
                                             outcomes,
+                                            completed_iterations: iters,
                                         } => {
                                             let total_pass: usize =
                                                 outcomes.iter().map(|o| o.pass_count).sum();
                                             let total_fail: usize =
                                                 outcomes.iter().map(|o| o.fail_count).sum();
                                             println!(
-                                                "Checkpoint {idx} validation: {} queries, {total_pass} pass, {total_fail} fail",
+                                                "Checkpoint {idx} validation ({iters} iterations): {} queries, {total_pass} pass, {total_fail} fail",
                                                 outcomes.len()
                                             );
                                             if total_fail > 0 {
