@@ -21,6 +21,7 @@ use etl::{ETLPipeline, PipelineState, StopReason};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use system_adapter_protocol::MetricsResponse;
 use test_framework::{
@@ -131,6 +132,7 @@ fn spawn_e2e_latency_check(
     table_names: Vec<String>,
     token: CancellationToken,
     interval: Duration,
+    last_created_at_us: Arc<HashMap<String, AtomicI64>>,
 ) -> tokio::task::JoinHandle<HashMap<String, Vec<f64>>> {
     tokio::spawn(async move {
         let mut samples_by_table: HashMap<String, Vec<f64>> = table_names
@@ -146,11 +148,8 @@ fn spawn_e2e_latency_check(
 
             let conn = Arc::clone(&conn);
             let tables = table_names.clone();
+            let timestamps = Arc::clone(&last_created_at_us);
             let results = tokio::task::spawn_blocking(move || {
-                let now_us = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_micros() as i64;
                 let mut out: Vec<(String, Option<f64>)> = Vec::new();
                 let mut guard = match conn.lock() {
                     Ok(g) => g,
@@ -160,6 +159,13 @@ fn spawn_e2e_latency_check(
                     }
                 };
                 for table in &tables {
+                    let last_written_us = timestamps
+                        .get(table.as_str())
+                        .map_or(0, |a| a.load(Ordering::Relaxed));
+                    if last_written_us == 0 {
+                        out.push((table.clone(), None));
+                        continue;
+                    }
                     let sql = format!("SELECT MAX(__created_at) FROM {table}");
                     match guard.query(&sql) {
                         Ok(batches) => {
@@ -171,7 +177,7 @@ fn spawn_e2e_latency_check(
                                     return None;
                                 }
                                 let max_ts_us = ts_array.value(0);
-                                Some((now_us - max_ts_us) as f64 / 1000.0)
+                                Some((last_written_us - max_ts_us) as f64 / 1000.0)
                             });
                             out.push((table.clone(), sample));
                         }
@@ -325,6 +331,7 @@ pub(crate) async fn run(
         table_names,
         e2e_latency_token.clone(),
         Duration::from_secs(5),
+        etl_pipeline.last_created_at_us(),
     );
 
     // Record client concurrency as a gauge

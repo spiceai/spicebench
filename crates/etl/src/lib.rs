@@ -29,7 +29,7 @@ use data_generation::storage::DataStorage;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 use system_adapter_protocol::DatasetConfig as ProtocolDatasetConfig;
 use tokio::sync::watch;
@@ -59,12 +59,16 @@ fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
 }
 
 /// Appends a `__created_at` column (current wall-clock time, microsecond UTC)
-/// to the given batch.
-fn append_created_at(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
+/// to the given batch and stores the value in `last_created_at`.
+fn append_created_at(
+    batch: &RecordBatch,
+    last_created_at: &AtomicI64,
+) -> anyhow::Result<RecordBatch> {
     let now_us = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time before UNIX epoch")
         .as_micros() as i64;
+    last_created_at.store(now_us, Ordering::Relaxed);
 
     let timestamps =
         TimestampMicrosecondArray::from(vec![Some(now_us); batch.num_rows()]).with_timezone("UTC");
@@ -330,6 +334,9 @@ pub struct ETLPipeline {
     batch_budget: Option<usize>,
     /// Shared work state handed between the pipeline and its background task.
     work_state: Arc<StdMutex<PipelineWorkState>>,
+    /// Per-table most recent `__created_at` timestamp (microseconds UTC)
+    /// written by the pipeline.  Updated atomically by [`append_created_at`].
+    last_created_at_us: Arc<HashMap<String, AtomicI64>>,
     /// Whether to append a `__created_at` timestamp column to every batch.
     /// Defaults to `false`.
     with_created_at: bool,
@@ -354,6 +361,13 @@ impl ETLPipeline {
         mutations: &MutationConfig,
     ) -> anyhow::Result<Self> {
         let dataset = dataset_source.create(config, mutations, Arc::clone(&data_storage))?;
+        let last_created_at_us = Arc::new(
+            dataset
+                .tables()
+                .keys()
+                .map(|name| (name.clone(), AtomicI64::new(0)))
+                .collect(),
+        );
         let (state_tx, state_rx) = watch::channel(PipelineState::NotStarted);
         Ok(Self {
             dataset_source,
@@ -369,6 +383,7 @@ impl ETLPipeline {
                 steps: BTreeMap::new(),
                 finished_tables: HashSet::new(),
             })),
+            last_created_at_us,
             with_created_at: false,
             checkpoint_idx: 0,
         })
@@ -409,6 +424,12 @@ impl ETLPipeline {
     /// is called. Only meaningful when the pipeline uses a step budget.
     pub fn checkpoint_idx(&self) -> usize {
         self.checkpoint_idx
+    }  
+      
+    /// Returns a shared handle to the per-table most recent `__created_at`
+    /// timestamps (microseconds UTC) written by the pipeline.
+    pub fn last_created_at_us(&self) -> Arc<HashMap<String, AtomicI64>> {
+        Arc::clone(&self.last_created_at_us)
     }
 
     /// Returns the [`CancellationToken`] for this pipeline.
@@ -473,6 +494,7 @@ impl ETLPipeline {
         for table_name in tables.keys() {
             let source = Arc::clone(&self.data_storage);
             let target = Arc::clone(&self.data_sink);
+            let last_created_at = Arc::clone(&self.last_created_at_us);
             let table_name = table_name.clone();
             let with_created_at = self.with_created_at;
 
@@ -493,13 +515,15 @@ impl ETLPipeline {
                     })?;
 
                     for segment in segments {
+                        let tracker = last_created_at
+                            .get(&table_name)
+                            .expect("table missing from last_created_at map");
                         let output_batch = if with_created_at {
-                            append_created_at(&segment.batch).map_err(|e| {
+                            append_created_at(&segment.batch, tracker).map_err(|e| {
                                 format!(
                                     "append __created_at to {table_name} batch {first_batch_id}: {e}"
                                 )
-                            })?
-                        } else {
+                        })?} else {
                             segment.batch
                         };
 
@@ -669,6 +693,7 @@ impl ETLPipeline {
         let cancel = self.cancel_token.clone();
         let state_tx = Arc::clone(&self.state_tx);
         let work_state = Arc::clone(&self.work_state);
+        let last_created_at = Arc::clone(&self.last_created_at_us);
         let with_created_at = self.with_created_at;
 
         let handle = tokio::spawn(async move {
@@ -678,6 +703,7 @@ impl ETLPipeline {
                 work_state,
                 cancel,
                 step_limit,
+                last_created_at,
                 with_created_at,
             )
             .await;
@@ -712,6 +738,7 @@ async fn run_pipeline(
     work_state: Arc<StdMutex<PipelineWorkState>>,
     cancel: CancellationToken,
     step_limit: Option<usize>,
+    last_created_at_us: Arc<HashMap<String, AtomicI64>>,
     with_created_at: bool,
 ) -> PipelineState {
     // Take a snapshot of total counts for logging.
@@ -824,6 +851,7 @@ async fn run_pipeline(
         for table_name in active_tables {
             let data_storage = Arc::clone(&data_storage);
             let data_sink = Arc::clone(&data_sink);
+            let last_created_at = Arc::clone(&last_created_at_us);
             let with_created_at = with_created_at;
 
             join_set.spawn(async move {
@@ -869,8 +897,11 @@ async fn run_pipeline(
                     };
 
                     for segment in segments {
+                        let tracker = last_created_at
+                            .get(&table_name)
+                            .expect("table missing from last_created_at map");
                         let output_batch = if with_created_at {
-                            match append_created_at(&segment.batch) {
+                            match append_created_at(&segment.batch, tracker) {
                                 Ok(b) => b,
                                 Err(e) => {
                                     error!(
