@@ -976,3 +976,256 @@ async fn run_pipeline(
     );
     PipelineState::Stopped(StopReason::Completed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::RecordBatch;
+    use async_trait::async_trait;
+    use data_generation::config::DatasetConfig as GenerationDatasetConfig;
+    use data_generation::dataset::MutationConfig;
+    use data_generation::storage::{DataStorage, ReadResult, WriteResult};
+    use data_generation::version::VersionMetadata;
+    use std::collections::{HashMap, VecDeque};
+
+    /// A no-op [`DataStorage`] implementation for testing.
+    ///
+    /// The TPCH dataset only needs storage during batch generation/reading,
+    /// which is not exercised by `create_tables_request_datasets`.
+    struct MockStorage;
+
+    #[async_trait]
+    impl DataStorage for MockStorage {
+        async fn list_batches(&self, _table_name: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn read_batch(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+        ) -> anyhow::Result<Option<ReadResult>> {
+            Ok(None)
+        }
+
+        async fn write(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+            _batch: RecordBatch,
+        ) -> anyhow::Result<WriteResult> {
+            Ok(WriteResult {
+                rows_written: 0,
+                bytes_written: 0,
+            })
+        }
+
+        async fn write_version_metadata(
+            &self,
+            _metadata: &VersionMetadata,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
+            Ok(None)
+        }
+
+        async fn read_batch_ids(&self, _table_name: &str) -> anyhow::Result<VecDeque<u64>> {
+            Ok(VecDeque::new())
+        }
+
+        fn table_params(&self, _table_name: &str) -> HashMap<String, serde_json::Value> {
+            HashMap::new()
+        }
+
+        fn expected_files(&self, _table_name: &str, _batch_ids: &[u64]) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    /// A no-op [`Sink`] implementation for testing.
+    struct MockSink;
+
+    #[async_trait]
+    impl Sink for MockSink {
+        async fn write(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+            _batch: RecordBatch,
+            _op: InsertOp,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Helper to build a pipeline with the TPCH dataset for testing.
+    fn make_tpch_pipeline(with_created_at: bool) -> ETLPipeline {
+        let config = GenerationDatasetConfig {
+            dataset_type: "tpch".to_string(),
+            scale_factor: 0.01,
+            num_steps: 1,
+        };
+        let mutations = MutationConfig::new(0.0, 0.0);
+        let storage: Arc<dyn DataStorage> = Arc::new(MockStorage);
+        let sink: Arc<dyn Sink> = Arc::new(MockSink);
+
+        let pipeline =
+            ETLPipeline::new(DatasetSource::Tpch, &config, storage, sink, &mutations)
+                .expect("failed to create pipeline");
+
+        if with_created_at {
+            pipeline.with_created_at(true)
+        } else {
+            pipeline
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_strips_internal_columns() {
+        let pipeline = make_tpch_pipeline(false);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        // The TPCH dataset should expose all 8 tables.
+        assert!(!datasets.is_empty(), "Expected non-empty dataset map");
+
+        for (table_name, dataset_config) in &datasets {
+            let field_names: Vec<&str> = dataset_config
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+
+            assert!(
+                !field_names.contains(&"_op"),
+                "Table '{table_name}' schema should not contain '_op' column, but found fields: {field_names:?}"
+            );
+            assert!(
+                !field_names.contains(&"_op_index"),
+                "Table '{table_name}' schema should not contain '_op_index' column, but found fields: {field_names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_does_not_include_created_at_by_default() {
+        let pipeline = make_tpch_pipeline(false);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        for (table_name, dataset_config) in &datasets {
+            let field_names: Vec<&str> = dataset_config
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+
+            assert!(
+                !field_names.contains(&CREATED_AT_COLUMN),
+                "Table '{table_name}' should not have '{CREATED_AT_COLUMN}' when with_created_at is false, but found fields: {field_names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_includes_created_at_when_enabled() {
+        let pipeline = make_tpch_pipeline(true);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        for (table_name, dataset_config) in &datasets {
+            let field_names: Vec<&str> = dataset_config
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+
+            assert!(
+                field_names.contains(&CREATED_AT_COLUMN),
+                "Table '{table_name}' should have '{CREATED_AT_COLUMN}' when with_created_at is true, but found fields: {field_names:?}"
+            );
+
+            // Internal columns should still be stripped.
+            assert!(
+                !field_names.contains(&"_op"),
+                "Table '{table_name}' schema should not contain '_op' even with created_at enabled, but found fields: {field_names:?}"
+            );
+            assert!(
+                !field_names.contains(&"_op_index"),
+                "Table '{table_name}' schema should not contain '_op_index' even with created_at enabled, but found fields: {field_names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_preserves_data_columns() {
+        let pipeline = make_tpch_pipeline(false);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        // Verify the raw dataset's tables DO have internal columns (sanity
+        // check that the test is meaningful).
+        let raw_tables = pipeline.dataset().tables();
+        for (table_name, raw_table) in &raw_tables {
+            let raw_field_names: Vec<&str> = raw_table
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+            assert!(
+                raw_field_names.contains(&"_op"),
+                "Sanity check: raw TPCH table '{table_name}' should contain '_op'"
+            );
+            assert!(
+                raw_field_names.contains(&"_op_index"),
+                "Sanity check: raw TPCH table '{table_name}' should contain '_op_index'"
+            );
+        }
+
+        // Now verify the returned datasets have all the non-internal columns.
+        for (table_name, raw_table) in &raw_tables {
+            let dataset_config = datasets
+                .get(table_name)
+                .unwrap_or_else(|| panic!("Table '{table_name}' missing from datasets"));
+
+            let expected_fields: Vec<&str> = raw_table
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .filter(|name| !INTERNAL_COLUMNS.contains(name))
+                .collect();
+            let actual_fields: Vec<&str> = dataset_config
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+
+            assert_eq!(
+                expected_fields, actual_fields,
+                "Table '{table_name}' should retain all non-internal fields"
+            );
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_returns_all_tpch_tables() {
+        let pipeline = make_tpch_pipeline(false);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        let expected_tables = [
+            "region", "nation", "supplier", "customer", "part", "partsupp", "orders", "lineitem",
+        ];
+
+        for table in expected_tables {
+            assert!(
+                datasets.contains_key(table),
+                "Expected table '{table}' in create_tables_request_datasets output"
+            );
+        }
+        assert_eq!(datasets.len(), expected_tables.len());
+    }
+}
