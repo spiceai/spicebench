@@ -7,6 +7,7 @@ Runtime target: Node.js latest LTS.
 Implemented methods:
 
 - `setup`
+- `create_tables`
 - `query_method`
 - `teardown`
 - `metrics`

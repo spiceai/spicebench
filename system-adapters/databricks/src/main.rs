@@ -24,8 +24,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, Handler, QueryMethodResponse, Server, SetupResponse,
-    TeardownResponse,
+    AdbcDriver, CreateTablesResponse, DatasetConfig, Handler, QueryMethodResponse, Server,
+    SetupResponse, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -183,6 +183,8 @@ impl TableFormat {
 
 #[derive(Debug, Clone)]
 struct RunState {
+    datasets: HashMap<String, DatasetConfig>,
+    table_format: TableFormat,
     created_tables: Vec<String>,
     cluster_id: Option<String>,
     cluster_created_by_adapter: bool,
@@ -798,6 +800,126 @@ impl DatabricksAdapter {
         Ok(())
     }
 
+    fn uc_column_type_for_arrow(data_type: &DataType) -> Result<UcColumnType> {
+        match data_type {
+            DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN".to_string())),
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::UInt8
+            | DataType::UInt16 => Ok(UcColumnType::new("INT", "INT".to_string())),
+            DataType::Int64 | DataType::UInt32 | DataType::UInt64 => {
+                Ok(UcColumnType::new("LONG", "BIGINT".to_string()))
+            }
+            DataType::Float32 => Ok(UcColumnType::new("FLOAT", "FLOAT".to_string())),
+            DataType::Float64 => Ok(UcColumnType::new("DOUBLE", "DOUBLE".to_string())),
+            DataType::Utf8 | DataType::LargeUtf8 => {
+                Ok(UcColumnType::new("STRING", "STRING".to_string()))
+            }
+            DataType::Date32 => Ok(UcColumnType::new("DATE", "DATE".to_string())),
+            DataType::Timestamp(_, _) => {
+                Ok(UcColumnType::new("TIMESTAMP", "TIMESTAMP".to_string()))
+            }
+            DataType::Decimal128(precision, scale) => Ok(UcColumnType::new(
+                "DECIMAL",
+                format!("DECIMAL({precision}, {scale})"),
+            )),
+            other => Err(anyhow!(
+                "Unsupported Arrow data type for Unity Catalog table creation: {other:?}"
+            )),
+        }
+    }
+
+    async fn uc_table_exists(&self, table_name: &str) -> Result<bool> {
+        let full_name = self.uc_table_full_name(table_name);
+        let get_url = format!(
+            "https://{}/api/2.1/unity-catalog/tables/{full_name}",
+            self.config.endpoint
+        );
+
+        let response = self
+            .client
+            .get(get_url)
+            .bearer_auth(&self.config.token)
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::OK {
+            return Ok(true);
+        }
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        Err(anyhow!(
+            "Databricks Unity Catalog tables/get failed ({status}) for '{full_name}': {body}"
+        ))
+    }
+
+    async fn create_uc_table_if_not_exists(
+        &self,
+        table_name: &str,
+        dataset_cfg: &DatasetConfig,
+    ) -> Result<bool> {
+        if self.uc_table_exists(table_name).await? {
+            return Ok(false);
+        }
+
+        let columns = dataset_cfg
+            .schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(position, field)| {
+                let col_type = Self::uc_column_type_for_arrow(field.data_type())?;
+                Ok::<_, anyhow::Error>(UcTableColumnCreateRequest {
+                    name: field.name().clone(),
+                    type_name: col_type.type_name,
+                    type_text: col_type.type_text,
+                    position,
+                    nullable: field.is_nullable(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let create_url = format!(
+            "https://{}/api/2.1/unity-catalog/tables",
+            self.config.endpoint
+        );
+        let response = self
+            .client
+            .post(create_url)
+            .bearer_auth(&self.config.token)
+            .json(&UcTableCreateRequest {
+                name: table_name.to_string(),
+                catalog_name: self.config.catalog.clone(),
+                schema_name: self.config.schema.clone(),
+                table_type: "MANAGED".to_string(),
+                data_source_format: "DELTA".to_string(),
+                columns,
+            })
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            return Ok(true);
+        }
+
+        if response.status() == StatusCode::CONFLICT {
+            return Ok(false);
+        }
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        Err(anyhow!(
+            "Databricks Unity Catalog tables/create failed ({status}) for '{}': {body}",
+            self.uc_table_full_name(table_name)
+        ))
+    }
+
 }
 
 #[derive(Debug, Deserialize)]
@@ -842,6 +964,40 @@ enum StatementState {
 struct UcSchemaCreateRequest {
     catalog_name: String,
     name: String,
+}
+
+#[derive(Debug)]
+struct UcColumnType {
+    type_name: String,
+    type_text: String,
+}
+
+impl UcColumnType {
+    fn new(type_name: impl Into<String>, type_text: impl Into<String>) -> Self {
+        Self {
+            type_name: type_name.into(),
+            type_text: type_text.into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct UcTableColumnCreateRequest {
+    name: String,
+    type_name: String,
+    type_text: String,
+    position: usize,
+    nullable: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UcTableCreateRequest {
+    name: String,
+    catalog_name: String,
+    schema_name: String,
+    table_type: String,
+    data_source_format: String,
+    columns: Vec<UcTableColumnCreateRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -906,56 +1062,85 @@ impl Handler for DatabricksAdapter {
             }
         }
 
-        let mut created_tables = Vec::with_capacity(datasets.len());
         let table_format = self
             .table_format_from_setup_metadata(&metadata)
             .map_err(|e| format!("Invalid setup metadata: {e}"))?;
+        self.runs.insert(
+            run_id,
+            RunState {
+                datasets,
+                table_format,
+                created_tables: Vec::new(),
+                cluster_id,
+                cluster_created_by_adapter,
+            },
+        );
+        Ok(SetupResponse { ok: true })
+    }
 
-        for (dataset_name, dataset_cfg) in datasets {
-            let table_name = dataset_name;
+    async fn create_tables(
+        &mut self,
+        run_id: Uuid,
+    ) -> std::result::Result<CreateTablesResponse, String> {
+        let (datasets, table_format) = {
+            let state = self
+                .runs
+                .get(&run_id)
+                .ok_or_else(|| format!("Unknown run_id: {run_id}"))?;
+            (state.datasets.clone(), state.table_format)
+        };
 
-            match self.config.variant {
-                DatabricksVariant::Databricks => {
-                    eprintln!(
-                        "[databricks-adapter] setup: table '{table_name}' will be loaded via ADBC DDL sink"
-                    );
+        let mut created_tables = Vec::with_capacity(datasets.len());
+
+        match self.config.variant {
+            DatabricksVariant::Databricks => {
+                self.ensure_uc_schema_exists()
+                    .await
+                    .map_err(|e| format!("Failed to ensure Unity Catalog schema exists: {e}"))?;
+
+                for (table_name, dataset_cfg) in datasets {
+                    let created = self
+                        .create_uc_table_if_not_exists(&table_name, &dataset_cfg)
+                        .await
+                        .map_err(|e| {
+                            format!("Failed to create Unity Catalog table '{table_name}': {e}")
+                        })?;
+                    if created {
+                        created_tables.push(table_name);
+                    }
                 }
-                DatabricksVariant::Lakebase => {
+            }
+            DatabricksVariant::Lakebase => {
+                for (table_name, dataset_cfg) in datasets {
                     let drop_sql = format!(
                         "DROP TABLE IF EXISTS {}",
                         self.lakebase_table_full_name(&table_name)
                     );
                     self.execute_sql_statement(&drop_sql).await.map_err(|e| {
                         format!(
-                            "Failed to drop existing Lakebase table '{table_name}' during setup: {e}"
+                            "Failed to drop existing Lakebase table '{table_name}' during create_tables: {e}"
                         )
                     })?;
 
                     let create_sql = self
                         .lakebase_table_ddl(&table_name, &dataset_cfg, table_format)
                         .map_err(|e| {
-                            format!(
-                                "Failed to build Lakebase table DDL for '{table_name}': {e}"
-                            )
+                            format!("Failed to build Lakebase table DDL for '{table_name}': {e}")
                         })?;
                     self.execute_sql_statement(&create_sql).await.map_err(|e| {
                         format!("Failed to create Lakebase table '{table_name}': {e}")
                     })?;
+
+                    created_tables.push(table_name);
                 }
             }
-
-            created_tables.push(table_name);
         }
 
-        self.runs.insert(
-            run_id,
-            RunState {
-                created_tables,
-                cluster_id,
-                cluster_created_by_adapter,
-            },
-        );
-        Ok(SetupResponse { ok: true })
+        if let Some(state) = self.runs.get_mut(&run_id) {
+            state.created_tables = created_tables;
+        }
+
+        Ok(CreateTablesResponse { ok: true })
     }
 
     async fn query_method(

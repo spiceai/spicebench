@@ -1,6 +1,6 @@
 ---
 name: system-adapter-builder
-description: Build or update a SpiceBench system adapter with JSON-RPC over stdio and HTTP, including setup/query_method/teardown/metrics support and template validation.
+description: Build or update a SpiceBench system adapter with JSON-RPC over stdio and HTTP, including setup/create_tables/query_method/teardown/metrics support and template validation.
 ---
 
 # SpiceBench System Adapter Builder
@@ -17,6 +17,7 @@ A JSON-RPC 2.0 adapter that supports both transports:
 Required methods:
 
 - `setup(run_id, datasets)`
+- `create_tables(run_id)`
 - `query_method(run_id)`
 - `teardown(run_id)`
 - `metrics(run_id)`
@@ -34,15 +35,17 @@ Required methods:
 
 1. Copy the nearest template from `system-adapters/templates/<language>`.
 2. Keep request/response envelopes JSON-RPC 2.0 compliant (`jsonrpc`, `id`, `method`, `params`).
-3. Implement `setup` and `teardown` with run-scoped resources keyed by `run_id`.
-4. Implement `query_method` to return:
+3. Implement `setup` with run-scoped resources keyed by `run_id`.
+4. Implement `create_tables` so the adapter creates/registers benchmark destination tables.
+5. Implement `query_method` to return:
    - `driver`: typically `flightsql` or `databricks`
    - `db_kwargs`: real endpoint + auth kwargs for the SUT
-5. Implement `metrics` to return both objects:
+6. Implement `teardown` with run-scoped cleanup keyed by `run_id`.
+7. Implement `metrics` to return both objects:
    - `resource`: CPU, memory, disk bytes, disk IOPS
    - `ingestion`: rows, bytes, rows/s, active connections
-6. Keep stdio and HTTP using the same dispatcher so behavior is identical.
-7. Return JSON-RPC errors with standard codes:
+8. Keep stdio and HTTP using the same dispatcher so behavior is identical.
+9. Return JSON-RPC errors with standard codes:
    - `-32700` parse error
    - `-32600` invalid request
    - `-32601` method not found
@@ -70,6 +73,7 @@ If any metric is unavailable, return `0`/`0.0` and document why.
 
 - Adapter responds to all required methods over stdio and HTTP.
 - `rpc.methods` includes every exposed method.
+- `create_tables` creates/registers benchmark tables for each dataset.
 - `query_method` returns a valid `driver` and complete `db_kwargs`.
 - `metrics` returns both `resource` and `ingestion` objects.
 - Language build/syntax checks pass:

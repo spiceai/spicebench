@@ -132,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mutations = MutationConfig::new(0.1, 0.1);
 
-    let target = Arc::new(AdbcSink::new(adbc_conn, None));
+    let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
     let mut pipeline = ETLPipeline::new(
         dataset_source,
         &generation_config,
@@ -141,12 +141,6 @@ async fn main() -> anyhow::Result<()> {
         &mutations,
     )?;
 
-    // --- Initialize: ETL the first batch so the target has data ---
-    tracing::info!("Initializing ETL pipeline (first batch)...");
-    pipeline.initialize().await?;
-    tracing::info!("ETL pipeline initialized");
-
-    // --- Setup the system adapter after initial data load ---
     let datasets = pipeline.setup_request_datasets();
     let setup_metadata = std::collections::HashMap::from([
         (
@@ -166,6 +160,18 @@ async fn main() -> anyhow::Result<()> {
         pipeline.cancel();
         return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
     }
+
+    if let Err(e) = system_adapter_client.create_tables(run_id).await {
+        pipeline.cancel();
+        return Err(anyhow::anyhow!(
+            "Failed to create tables via system adapter: {e}"
+        ));
+    }
+
+    // --- Initialize: ETL the first batch so the target has data ---
+    tracing::info!("Initializing ETL pipeline (first batch)...");
+    pipeline.initialize().await?;
+    tracing::info!("ETL pipeline initialized");
 
     let load_conn = match AdbcConnection::create(&driver_name, load_kwargs) {
         Ok(conn) => conn,

@@ -17,7 +17,7 @@ flowchart TB
         direction TB
 
         subgraph setup_phase["1 · Setup (JSON-RPC)"]
-            adapter_iface["System Adapter Protocol\n(setup / query_method /\nteardown / metrics)"]
+            adapter_iface["System Adapter Protocol\n(setup / create_tables /\nquery_method / teardown / metrics)"]
             spice["Spice Cloud Adapter"]
             databricks["Databricks Adapter"]
             other["... Other Adapters"]
@@ -104,7 +104,8 @@ flowchart TB
 
     orchestrator -->|"start run"| run
 
-    adapter_iface -->|"setup(run_id)"| sut
+    adapter_iface -->|"setup(run_id, datasets)"| sut
+    adapter_iface -->|"create_tables(run_id)"| sut
     adapter_iface -->|"query_method(run_id)\n→ ADBC driver + kwargs"| executors
     setup_phase -->|"system ready"| bench_phase
     bench_phase -->|"benchmark complete"| teardown_phase
@@ -120,11 +121,11 @@ flowchart TB
 
 A **Run** is a single end-to-end execution of the benchmark for one system. Each Run proceeds through three phases:
 
-| Phase                    | What happens                                                                                                                                                       | Timed? |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| **1. Setup**             | Connect to system adapter via JSON-RPC (stdio or HTTP). Call `setup(run_id, datasets)` to provision the SUT then `query_method(run_id)` to get ADBC driver config. | No     |
-| **2. Benchmark (timed)** | Three sequential stages — warm-up (1× query set), baseline (10% of duration, 60s–600s), and load test (full duration with concurrent clients).                     | Yes    |
-| **3. Teardown**          | Call `teardown(run_id)` via the adapter to deprovision resources and clean up.                                                                                     | No     |
+| Phase                    | What happens                                                                                                                                                                                      | Timed? |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| **1. Setup**             | Connect to system adapter via JSON-RPC (stdio or HTTP). Call `setup(run_id, datasets)` to provision the SUT, then `create_tables(run_id)`, then `query_method(run_id)` to get ADBC driver config. | No     |
+| **2. Benchmark (timed)** | Three sequential stages — warm-up (1× query set), baseline (10% of duration, 60s–600s), and load test (full duration with concurrent clients).                                                    | Yes    |
+| **3. Teardown**          | Call `teardown(run_id)` via the adapter to deprovision resources and clean up.                                                                                                                    | No     |
 
 The **E2E benchmark duration** (phase 2, load test stage) is the primary ranking metric. After the load test, each query's p99 latency is compared against the baseline: >20% increase = FAIL, 10–20% = WARN, ≥3 WARNs = FAIL.
 
@@ -147,7 +148,7 @@ Common CLI/workflow usage:
 | Component                   | Responsibility                                                                                                                                                |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **GitHub Actions**          | Orchestrates Runs on schedule, PR, or manual dispatch. Manages the full Run lifecycle across phases.                                                          |
-| **System Adapter Protocol** | JSON-RPC 2.0 interface (stdio or HTTP) for each platform. Methods: `setup`, `query_method`, `teardown`, `metrics`.                                            |
+| **System Adapter Protocol** | JSON-RPC 2.0 interface (stdio or HTTP) for each platform. Methods: `setup`, `create_tables`, `query_method`, `teardown`, `metrics`.                           |
 | **Query Executors**         | Pluggable query execution: ADBC direct (FlightSQL/Databricks drivers), HTTP (`/v1/sql`), or distributed (`/v1/queries` with polling).                         |
 | **Data Generator**          | Standalone binary (`data-generation`) that produces TPC-H partitioned Parquet batches and writes them to S3.                                                  |
 | **Test Framework**          | Core engine managing the warm-up → baseline → load test pipeline, query sets (TPC-H, TPC-DS, ClickBench, parameterized, scenario), and statistics collection. |
@@ -216,9 +217,10 @@ Results from every Run are published to [SpiceBench.com](https://spicebench.com)
 To benchmark a new platform, implement the JSON-RPC 2.0 adapter with these methods:
 
 1. **`setup(run_id, datasets)`** — Provision infrastructure and configure the target system.
-2. **`query_method(run_id)`** — Return the ADBC driver type (`flightsql` or `databricks`) and connection kwargs so SpiceBench can establish a direct query connection.
-3. **`teardown(run_id)`** — Clean up provisioned resources.
-4. **`metrics(run_id)`** *(optional)* — Return current resource usage (CPU, memory, disk, IOPS) and ingestion progress (rows, bytes, rows/s, active connections).
+2. **`create_tables(run_id)`** — Create/register destination tables for the benchmark datasets.
+3. **`query_method(run_id)`** — Return the ADBC driver type (`flightsql` or `databricks`) and connection kwargs so SpiceBench can establish a direct query connection.
+4. **`teardown(run_id)`** — Clean up provisioned resources.
+5. **`metrics(run_id)`** *(optional)* — Return current resource usage (CPU, memory, disk, IOPS) and ingestion progress (rows, bytes, rows/s, active connections).
 
 The adapter can run as a **stdio** child process or as an **HTTP** server.
 
@@ -237,7 +239,30 @@ The `spicebench` CLI connects to a system adapter using JSON-RPC 2.0 over either
 - **stdio transport**: use `--system-adapter-stdio-cmd` (SpiceBench starts the child process).
 - **HTTP transport**: use `--system-adapter-http-url` (SpiceBench connects to a remote adapter endpoint).
 - **execution mode**: `adapter-command` (default) dispatches `spicebench run ...` to adapter JSON-RPC `run.load`.
-- **execution mode**: `direct-query` runs the load/query path directly via ADBC, using the adapter only for setup/teardown/metrics.
+- **execution mode**: `direct-query` runs the load/query path directly via ADBC, using the adapter for setup/table creation/teardown/metrics.
+
+#### Adapter lifecycle (direct-query mode)
+
+For each run, SpiceBench calls adapter JSON-RPC methods in this order:
+
+1. `setup(run_id, datasets, metadata)`
+2. `create_tables(run_id)`
+3. `query_method(run_id)`
+4. benchmark execution and optional periodic `metrics(run_id)` scraping
+5. `teardown(run_id)`
+
+Tiny `create_tables` request example:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "create_tables",
+    "params": {
+        "run_id": "00000000-0000-0000-0000-000000000000"
+    }
+}
+```
 
 #### Stdio example (child process started by SpiceBench)
 
@@ -269,7 +294,7 @@ Notes:
 - `--system-adapter-stdio-args` passes CLI args to the stdio adapter command.
 - `--system-adapter-env` is only valid for stdio transport.
 
-#### Direct-query example (ADBC query path, adapter for setup/teardown only)
+#### Direct-query example (ADBC query path, adapter for setup/table creation/teardown)
 
 ```bash
 spicebench \
