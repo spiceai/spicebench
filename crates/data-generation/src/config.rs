@@ -125,9 +125,5 @@ impl CommonArgs {
 /// so that `1` becomes `"1.0"` for readability.
 pub fn format_scale_factor(sf: f64) -> String {
     let s = format!("{sf}");
-    if s.contains('.') {
-        s
-    } else {
-        format!("{s}.0")
-    }
+    if s.contains('.') { s } else { format!("{s}.0") }
 }
