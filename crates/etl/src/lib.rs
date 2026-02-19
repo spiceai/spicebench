@@ -484,6 +484,39 @@ impl ETLPipeline {
 
         let tables = self.dataset.tables();
         let first_batch_id = 0u64;
+        let total_tables = tables.len();
+
+        // Shared progress counters for periodic logging (mirrors run_pipeline style).
+        let tables_completed = StdArc::new(AtomicU64::new(0));
+        let init_start = Instant::now();
+
+        // Spawn periodic progress logger (every 5 seconds).
+        let progress_logger = {
+            let tables_completed = StdArc::clone(&tables_completed);
+            let cancel = self.cancel_token.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let elapsed = init_start.elapsed();
+                            let secs = elapsed.as_secs_f64();
+                            if secs < 0.001 {
+                                continue;
+                            }
+                            let done = tables_completed.load(Ordering::Relaxed);
+                            info!(
+                                elapsed_secs = format!("{secs:.1}"),
+                                tables = format!("{done}/{total_tables}"),
+                                tables_per_sec = format!("{:.1}", done as f64 / secs),
+                                "ETL initialization progress"
+                            );
+                        }
+                        () = cancel.cancelled() => break,
+                    }
+                }
+            })
+        };
 
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
         for table_name in tables.keys() {
@@ -542,14 +575,18 @@ impl ETLPipeline {
 
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok(Ok(_table_name)) => {}
+                Ok(Ok(_table_name)) => {
+                    tables_completed.fetch_add(1, Ordering::Relaxed);
+                }
                 Ok(Err(err_msg)) => {
+                    progress_logger.abort();
                     let _ = self
                         .state_tx
                         .send(PipelineState::Stopped(StopReason::Error(err_msg.clone())));
                     anyhow::bail!("ETL initialization failed: {err_msg}");
                 }
                 Err(e) => {
+                    progress_logger.abort();
                     let msg = format!("Task panicked during initialization: {e}");
                     let _ = self
                         .state_tx
@@ -559,7 +596,13 @@ impl ETLPipeline {
             }
         }
 
-        info!("ETL pipeline initialized with first batch for all tables");
+        progress_logger.abort();
+        let elapsed = init_start.elapsed();
+        info!(
+            elapsed = ?elapsed,
+            tables = total_tables,
+            "ETL pipeline initialized with first batch for all tables"
+        );
         let _ = self.state_tx.send(PipelineState::Initialized);
         Ok(())
     }
