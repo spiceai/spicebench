@@ -147,7 +147,7 @@ jobs:
                 exit 1
               fi
 
-              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
+              docker image inspect ghcr.io/spiceai/spidapter:a4ff52141245205a9abc67d331e0e69c98c69911 >/dev/null 2>&1 || {
                 echo "spidapter docker image not found locally; pull step may have failed"
                 exit 1
               }
@@ -254,7 +254,7 @@ jobs:
             fi
           else
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY ghcr.io/spiceai/spidapter:a4ff52141245205a9abc67d331e0e69c98c69911 stdio --verbose"
             ADAPTER_ENVS=""
           fi
 
