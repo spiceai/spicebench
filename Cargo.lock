@@ -4959,6 +4959,7 @@ dependencies = [
  "clap",
  "data-generation",
  "etl",
+ "parquet",
  "reqwest",
  "serde",
  "serde_json",

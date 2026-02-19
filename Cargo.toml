@@ -142,6 +142,7 @@ checkpointer = { path = "crates/checkpointer" }
 clap.workspace = true
 data-generation = { path = "crates/data-generation" }
 etl = { path = "crates/etl" }
+parquet.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

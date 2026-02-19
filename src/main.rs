@@ -190,6 +190,7 @@ async fn run_benchmark(
         load_conn,
         &mut pipeline,
         checkpoint_steps,
+        Some(checkpoint_dir.path()),
     )
     .await?;
 
