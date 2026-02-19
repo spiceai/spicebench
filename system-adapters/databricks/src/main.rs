@@ -396,7 +396,7 @@ impl DatabricksAdapter {
             DataType::Int64 | DataType::UInt32 | DataType::UInt64 => Ok("BIGINT".to_string()),
             DataType::Float16 | DataType::Float32 => Ok("FLOAT".to_string()),
             DataType::Float64 => Ok("DOUBLE".to_string()),
-            DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING".to_string()),
+            DataType::Utf8View | DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING".to_string()),
             DataType::Date32 => Ok("DATE".to_string()),
             DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
             DataType::Decimal128(precision, scale) => {
