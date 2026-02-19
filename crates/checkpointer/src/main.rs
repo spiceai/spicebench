@@ -77,6 +77,10 @@ struct Cli {
     /// Directory to write checkpoint parquet files into
     #[arg(long, default_value = "./checkpoints")]
     checkpoint_dir: PathBuf,
+
+    /// Append a `__created_at` timestamp column to every batch written to the sink.
+    #[arg(long, default_value_t = false)]
+    with_created_at: bool,
 }
 
 impl Cli {
@@ -123,7 +127,6 @@ async fn run_checkpoint_queries(
         tracing::info!(
             checkpoint = checkpoint_idx,
             query = query_idx,
-            sql = %sql,
             "Running checkpoint query"
         );
 
@@ -131,24 +134,12 @@ async fn run_checkpoint_queries(
         let out_path = resolved_checkpoint_dir.join(format!("{query_idx}.parquet"));
 
         // Derive the result schema. If the query returned rows, use the first
-        // batch's schema. Otherwise, run a LIMIT 0 wrapper to obtain it.
+        // batch's schema. Otherwise, ask DuckDB for the schema directly — this
+        // works even when zero rows are returned.
         let result_schema = if let Some(first) = batches.first() {
             first.schema()
         } else {
-            let trimmed = sql.trim_end().trim_end_matches(';');
-            let schema_sql = format!("SELECT * FROM ({trimmed}) AS __q LIMIT 0");
-            let schema_batches = sink.query(&schema_sql).await?;
-            match schema_batches.first() {
-                Some(b) => b.schema(),
-                None => {
-                    tracing::warn!(
-                        checkpoint = checkpoint_idx,
-                        query = query_idx,
-                        "Query returned no rows and schema could not be determined, skipping"
-                    );
-                    continue;
-                }
-            }
+            sink.query_schema(sql).await?
         };
 
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -217,7 +208,8 @@ async fn main() -> anyhow::Result<()> {
         source,
         target_sink,
         &mutations,
-    )?;
+    )?
+    .with_created_at(cli.with_created_at);
 
     tracing::info!(
         scenario = %scenario_name,

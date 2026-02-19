@@ -59,6 +59,11 @@ on:
         required: false
         default: 'github-hosted-ubuntu-latest'
         type: string
+      with_created_at:
+        description: 'Append a __created_at timestamp column to every batch written to the sink'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   run-spicebench:
@@ -227,6 +232,8 @@ jobs:
           ETL_NUM_STEPS: ${{ github.event.inputs.etl_num_steps || '25' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SPIDAPTER_ICEBERG_REGION: us-west-1
+          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: 'info'
         run: |
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-num-steps ${ETL_NUM_STEPS}"
@@ -254,8 +261,13 @@ jobs:
             fi
           else
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
+            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
+          fi
+
+          WITH_CREATED_AT_FLAG=""
+          if [ "${{ github.event.inputs.with_created_at }}" = "true" ]; then
+            WITH_CREATED_AT_FLAG="--with-created-at"
           fi
 
           ~/.spice/bin/spicebench \
@@ -265,4 +277,5 @@ jobs:
             ${ETL_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
-            ${ADAPTER_ENVS}
+            ${ADAPTER_ENVS} \
+            ${WITH_CREATED_AT_FLAG}
