@@ -122,7 +122,7 @@ impl CommonArgs {
 ///
 /// Uses Rust's default `Display` formatting which preserves all significant
 /// digits (e.g. `0.01` stays `"0.01"`), then appends `.0` for whole numbers
-/// so that `1` becomes `"1.0"` for readability.
+/// so that `1` becomes `"1.0"` to match github workflow values.
 pub fn format_scale_factor(sf: f64) -> String {
     let s = format!("{sf}");
     if s.contains('.') { s } else { format!("{s}.0") }
