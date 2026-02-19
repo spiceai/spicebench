@@ -132,6 +132,10 @@ pub struct CommonArgs {
     /// Scale factor for the ETL dataset
     #[arg(long, default_value_t = 1.0)]
     pub(crate) scale_factor: f64,
+
+    /// Append a `__created_at` timestamp column to every batch written to the sink.
+    #[arg(long, default_value_t = false)]
+    pub(crate) with_created_at: bool,
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {

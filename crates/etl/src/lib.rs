@@ -317,6 +317,9 @@ pub struct ETLPipeline {
     batch_budget: Option<usize>,
     /// Shared work state handed between the pipeline and its background task.
     work_state: Arc<StdMutex<PipelineWorkState>>,
+    /// Whether to append a `__created_at` timestamp column to every batch.
+    /// Defaults to `false`.
+    with_created_at: bool,
 }
 
 impl ETLPipeline {
@@ -348,7 +351,16 @@ impl ETLPipeline {
                 steps: BTreeMap::new(),
                 finished_tables: HashSet::new(),
             })),
+            with_created_at: false,
         })
+    }
+
+    /// Sets whether the pipeline appends a `__created_at` timestamp column
+    /// to every batch written to the sink. Defaults to `false`.
+    #[must_use]
+    pub fn with_created_at(mut self, enabled: bool) -> Self {
+        self.with_created_at = enabled;
+        self
     }
 
     /// Returns the current state of the pipeline.
@@ -393,13 +405,17 @@ impl ETLPipeline {
     /// [`CreateTablesRequest`](system_adapter_protocol::CreateTablesRequest) for
     /// the system adapter.
     pub fn create_tables_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
+        let with_created_at = self.with_created_at;
         self.dataset
             .tables()
             .into_iter()
             .map(|(name, table)| {
-                let config = ProtocolDatasetConfig {
-                    schema: schema_with_created_at(&table.schema),
+                let schema = if with_created_at {
+                    schema_with_created_at(&table.schema)
+                } else {
+                    table.schema.clone()
                 };
+                let config = ProtocolDatasetConfig { schema };
                 (name, config)
             })
             .collect()
@@ -430,6 +446,7 @@ impl ETLPipeline {
             let source = Arc::clone(&self.data_storage);
             let target = Arc::clone(&self.data_sink);
             let table_name = table_name.clone();
+            let with_created_at = self.with_created_at;
 
             join_set.spawn(async move {
                 let read_result = source
@@ -448,14 +465,18 @@ impl ETLPipeline {
                     })?;
 
                     for segment in segments {
-                        let rehydrated = append_created_at(&segment.batch).map_err(|e| {
-                            format!(
-                                "append __created_at to {table_name} batch {first_batch_id}: {e}"
-                            )
-                        })?;
+                        let output_batch = if with_created_at {
+                            append_created_at(&segment.batch).map_err(|e| {
+                                format!(
+                                    "append __created_at to {table_name} batch {first_batch_id}: {e}"
+                                )
+                            })?
+                        } else {
+                            segment.batch
+                        };
 
                         target
-                            .write(&table_name, first_batch_id, rehydrated, segment.op)
+                            .write(&table_name, first_batch_id, output_batch, segment.op)
                             .await
                             .map_err(|e| {
                                 format!("write {table_name} batch {first_batch_id}: {e}")
@@ -617,9 +638,12 @@ impl ETLPipeline {
         let cancel = self.cancel_token.clone();
         let state_tx = Arc::clone(&self.state_tx);
         let work_state = Arc::clone(&self.work_state);
+        let with_created_at = self.with_created_at;
 
         let handle = tokio::spawn(async move {
-            let outcome = run_pipeline(source, target, work_state, cancel, step_limit).await;
+            let outcome =
+                run_pipeline(source, target, work_state, cancel, step_limit, with_created_at)
+                    .await;
             let _ = state_tx.send(outcome);
         });
 
@@ -651,6 +675,7 @@ async fn run_pipeline(
     work_state: Arc<StdMutex<PipelineWorkState>>,
     cancel: CancellationToken,
     step_limit: Option<usize>,
+    with_created_at: bool,
 ) -> PipelineState {
     // Take a snapshot of total counts for logging.
     let (total_steps, total_batches) = {
@@ -762,6 +787,7 @@ async fn run_pipeline(
         for table_name in active_tables {
             let data_storage = Arc::clone(&data_storage);
             let data_sink = Arc::clone(&data_sink);
+            let with_created_at = with_created_at;
 
             join_set.spawn(async move {
                 // 1. Read from source
@@ -806,24 +832,28 @@ async fn run_pipeline(
                     };
 
                     for segment in segments {
-                        let rehydrated = match append_created_at(&segment.batch) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                error!(
-                                    table = %table_name,
-                                    batch_id,
-                                    error = %e,
-                                    "Failed to append __created_at column"
-                                );
-                                return Err(format!(
-                                    "append __created_at to {table_name} batch {batch_id}: {e}"
-                                ));
+                        let output_batch = if with_created_at {
+                            match append_created_at(&segment.batch) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    error!(
+                                        table = %table_name,
+                                        batch_id,
+                                        error = %e,
+                                        "Failed to append __created_at column"
+                                    );
+                                    return Err(format!(
+                                        "append __created_at to {table_name} batch {batch_id}: {e}"
+                                    ));
+                                }
                             }
+                        } else {
+                            segment.batch
                         };
 
                         // 3. Write to sink
                         if let Err(e) = data_sink
-                            .write(&table_name, batch_id, rehydrated, segment.op)
+                            .write(&table_name, batch_id, output_batch, segment.op)
                             .await
                         {
                             error!(
