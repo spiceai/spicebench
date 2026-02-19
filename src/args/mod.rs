@@ -125,17 +125,9 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
 
-    /// Number of ETL data generation steps (partitions)
-    #[arg(long, default_value_t = 25)]
-    pub(crate) etl_num_steps: u16,
-
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]
     pub(crate) table_format: TableFormat,
-
-    /// Scale factor for the ETL dataset
-    #[arg(long, default_value_t = 1.0)]
-    pub(crate) scale_factor: f64,
 
     /// Append a `__created_at` timestamp column to every batch written to the sink.
     #[arg(long, default_value_t = false)]

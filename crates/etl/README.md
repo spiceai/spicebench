@@ -2,10 +2,14 @@
 
 `etl` reads raw batches from S3, rehydrates records (for example adding a time column), and writes directly to the destination system through a single ADBC sink.
 
+Dataset configuration (dataset type, scale factor, number of steps, mutations) is read automatically from the `version.json` metadata written by the data generation tool.
+
 ## Required arguments
 
 - `--bucket`: S3 bucket containing source batches.
-- `--source-prefix`: S3 prefix for the source dataset.
+- `--prefix`: S3 prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`).
+- `--scenario`: Scenario name (default: `tpch`).
+- `--version`: Version identifier for the data generation to read from.
 - `--adbc-driver`: ADBC driver name (for example `databricks` or `flightsql`).
 - `--adbc-uri`: Connection URI passed as ADBC database option `uri`.
 
@@ -13,11 +17,10 @@
 
 ```bash
 cargo run -p etl -- \
-	--dataset tpch \
-	--scale-factor 1.0 \
-	--num-steps 10 \
+	--scenario tpch \
+	--version 1 \
 	--bucket peasee-indexes \
-	--source-prefix raw \
+	--prefix raw \
 	--region us-west-2 \
 	--adbc-driver databricks \
 	--adbc-uri "databricks://token:${DATABRICKS_TOKEN}@${DATABRICKS_ENDPOINT}:443/${DATABRICKS_HTTP_PATH}" \
@@ -28,11 +31,10 @@ cargo run -p etl -- \
 
 ```bash
 cargo run -p etl -- \
-	--dataset tpch \
-	--scale-factor 1.0 \
-	--num-steps 10 \
+	--scenario tpch \
+	--version 1 \
 	--bucket peasee-indexes \
-	--source-prefix raw \
+	--prefix raw \
 	--adbc-driver flightsql \
 	--adbc-uri "grpcs://${SPICE_CLOUD_FLIGHTSQL_HOST}:443"
 ```

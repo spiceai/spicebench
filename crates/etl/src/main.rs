@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use adbc_client::AdbcConnection;
 use clap::Parser;
-use data_generation::config::{DatasetConfig, TargetConfig, build_version_prefix};
-use data_generation::dataset::MutationConfig;
+use data_generation::config::{TargetConfig, build_version_prefix};
+use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
@@ -38,18 +38,6 @@ struct Cli {
     /// Version identifier for the data generation to read from.
     #[arg(long)]
     version: u64,
-
-    /// Dataset type: "tpch" or "simple_sequence"
-    #[arg(long, default_value = "tpch")]
-    dataset: String,
-
-    /// Scale factor for data generation
-    #[arg(long, default_value_t = 1.0)]
-    scale_factor: f64,
-
-    /// Number of data generation steps (partitions)
-    #[arg(long, default_value_t = 25)]
-    num_steps: u16,
 
     /// S3 bucket name (used for both source and target)
     #[arg(long)]
@@ -85,24 +73,6 @@ struct Cli {
 }
 
 impl Cli {
-    fn dataset_source(&self) -> anyhow::Result<DatasetSource> {
-        match self.dataset.as_str() {
-            "tpch" => Ok(DatasetSource::Tpch),
-            "simple_sequence" => Ok(DatasetSource::SimpleSequence),
-            other => {
-                anyhow::bail!("Unknown dataset type: {other}. Use 'tpch' or 'simple_sequence'.")
-            }
-        }
-    }
-
-    fn dataset_config(&self) -> DatasetConfig {
-        DatasetConfig {
-            dataset_type: self.dataset.clone(),
-            scale_factor: self.scale_factor,
-            num_steps: self.num_steps,
-        }
-    }
-
     /// Builds the source config with the versioned prefix:
     /// `{prefix}/{scenario}/{version}`
     fn source_config(&self) -> TargetConfig {
@@ -124,18 +94,27 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let dataset_source = cli.dataset_source()?;
-    let dataset_config = cli.dataset_config();
+    let source_config = cli.source_config();
+    let version_prefix = source_config.prefix.clone();
+    let source = Arc::new(S3Storage::new(&source_config)?);
 
-    let source = Arc::new(S3Storage::new(&cli.source_config())?);
+    // Read version metadata to derive dataset config and mutations.
+    let version_metadata = source
+        .read_version_metadata()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!(
+            "No version.json found at {version_prefix}. Was data generation run for this version?"
+        ))?;
+
+    let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
+    let dataset_config = version_metadata.dataset_config();
+    let mutations = version_metadata.mutation_config();
 
     let adbc_conn = AdbcConnection::create(
         &cli.adbc_driver,
         std::collections::HashMap::from([("uri".to_string(), Value::String(cli.adbc_uri.clone()))]),
     )?;
     let target = Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()));
-
-    let mutations = MutationConfig::new(0.0, 0.0);
 
     let mut pipeline =
         ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?
@@ -144,13 +123,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         scenario = %cli.scenario,
         version = cli.version,
-        dataset = %cli.dataset,
+        dataset = %version_metadata.dataset_type,
         bucket = %cli.bucket,
         prefix = %cli.prefix,
         adbc_driver = %cli.adbc_driver,
         adbc_schema = ?cli.adbc_schema,
-        scale_factor = cli.scale_factor,
-        num_steps = cli.num_steps,
+        scale_factor = version_metadata.scale_factor,
+        num_steps = version_metadata.num_steps,
         "Starting ETL pipeline"
     );
 

@@ -25,6 +25,9 @@ use std::collections::HashMap;
 use arrow::datatypes::SchemaRef;
 use serde::{Deserialize, Serialize};
 
+use crate::config::DatasetConfig;
+use crate::dataset::MutationConfig;
+
 /// Converts an Arrow [`SchemaRef`] to a JSON-compatible representation
 /// using Arrow's built-in IPC JSON serialization (the "Schema" portion
 /// of the Arrow JSON integration format).
@@ -69,6 +72,22 @@ pub struct VersionMetadata {
     pub mutations: MutationsMetadata,
     /// Per-table metadata, keyed by table name.
     pub tables: HashMap<String, TableMetadata>,
+}
+
+impl VersionMetadata {
+    /// Creates a [`DatasetConfig`] from the stored version metadata.
+    pub fn dataset_config(&self) -> DatasetConfig {
+        DatasetConfig {
+            dataset_type: self.dataset_type.clone(),
+            scale_factor: self.scale_factor,
+            num_steps: self.num_steps,
+        }
+    }
+
+    /// Creates a [`MutationConfig`] from the stored version metadata.
+    pub fn mutation_config(&self) -> MutationConfig {
+        MutationConfig::new(self.mutations.update_ratio, self.mutations.delete_ratio)
+    }
 }
 
 /// Mutation configuration stored in version metadata.
