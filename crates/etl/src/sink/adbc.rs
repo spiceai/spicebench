@@ -320,19 +320,19 @@ fn quote_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<&'static str> {
+fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {
     match data_type {
-        DataType::Boolean => Ok("BOOLEAN"),
+        DataType::Boolean => Ok("BOOLEAN".to_string()),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::UInt8 | DataType::UInt16 => {
-            Ok("INT")
+            Ok("INT".to_string())
         }
-        DataType::Int64 | DataType::UInt32 | DataType::UInt64 => Ok("BIGINT"),
-        DataType::Float32 => Ok("FLOAT"),
-        DataType::Float64 => Ok("DOUBLE"),
-        DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING"),
-        DataType::Date32 => Ok("DATE"),
-        DataType::Timestamp(_, _) => Ok("TIMESTAMP"),
-        DataType::Decimal128(_, _) => Ok("DECIMAL(38, 18)"),
+        DataType::Int64 | DataType::UInt32 | DataType::UInt64 => Ok("BIGINT".to_string()),
+        DataType::Float32 => Ok("FLOAT".to_string()),
+        DataType::Float64 => Ok("DOUBLE".to_string()),
+        DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING".to_string()),
+        DataType::Date32 => Ok("DATE".to_string()),
+        DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
+        DataType::Decimal128(p, s) => Ok(format!("DECIMAL({p}, {s})")),
         other => anyhow::bail!("Unsupported Arrow data type for ADBC sink: {other:?}"),
     }
 }

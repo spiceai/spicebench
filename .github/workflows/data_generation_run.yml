@@ -173,11 +173,13 @@ jobs:
           PREFIX="${PREFIX_BASE}"
           PREFIX="${PREFIX%/}/${SCENARIO}"
 
+          SOURCE_PREFIX="${PREFIX}/${SCALE_FACTOR}"
+
           ARGS="--scenario ${SCENARIO}"
           ARGS="${ARGS} --dataset ${SCENARIO}"
           ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
           ARGS="${ARGS} --bucket ${BUCKET}"
-          ARGS="${ARGS} --source-prefix ${PREFIX}"
+          ARGS="${ARGS} --source-prefix ${SOURCE_PREFIX}"
           ARGS="${ARGS} --duckdb-path ./checkpointer.duckdb"
           ARGS="${ARGS} --checkpoint-dir ./checkpoints"
 

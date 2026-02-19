@@ -19,12 +19,13 @@ limitations under the License.
 //! ## Layout
 //!
 //! ```text
-//! s3://{bucket}/{prefix}/{scenario}/checkpoints/{checkpoint_idx}/{query_idx}.parquet
+//! s3://{bucket}/{prefix}/checkpoints/{checkpoint_idx}/{query_idx}.parquet
 //! s3://{bucket}/{prefix}/checkpoints.json          ← manifest
 //! ```
 //!
 //! The manifest (`checkpoints.json`) contains metadata for every scenario
-//! that has been checkpointed under the given prefix.
+//! that has been checkpointed under the given prefix. The prefix is expected
+//! to already scope to the scenario and scale factor (e.g. `data-gen/tpch/1.0`).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -114,11 +115,8 @@ impl CheckpointStore {
     fn checkpoint_parquet_path(
         &self,
         checkpoint_idx: usize,
-        query_idx: usize,
-    ) -> ObjectPath {
-        self.object_path(&format!(
-            "checkpoints/{checkpoint_idx}/{query_idx}.parquet"
-        ))
+        query_idx: usize) -> ObjectPath {
+        self.object_path(&format!("checkpoints/{checkpoint_idx}/{query_idx}.parquet"))
     }
 
     /// Upload all checkpoint parquet files from `local_checkpoint_dir` to S3,
