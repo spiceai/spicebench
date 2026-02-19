@@ -24,8 +24,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use system_adapter_protocol::{
-    AdbcDriver, CreateTablesResponse, DatasetConfig, Handler, QueryMethodResponse, Server,
-    SetupResponse, TeardownResponse,
+    AdbcDriver, CreateTablesResponse, DatasetConfig, Handler, Server, SetupResponse,
+    TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -1075,7 +1075,20 @@ impl Handler for DatabricksAdapter {
                 cluster_created_by_adapter,
             },
         );
-        Ok(SetupResponse { ok: true })
+        Ok(SetupResponse {
+            driver: AdbcDriver::Databricks,
+            db_kwargs: HashMap::from([
+                ("uri".to_string(), Value::String(self.databricks_uri())),
+                (
+                    "catalog".to_string(),
+                    Value::String(self.config.catalog.clone()),
+                ),
+                (
+                    "schema".to_string(),
+                    Value::String(self.config.schema.clone()),
+                ),
+            ]),
+        })
     }
 
     async fn create_tables(
@@ -1141,30 +1154,6 @@ impl Handler for DatabricksAdapter {
         }
 
         Ok(CreateTablesResponse { ok: true })
-    }
-
-    async fn query_method(
-        &mut self,
-        run_id: Uuid,
-    ) -> std::result::Result<QueryMethodResponse, String> {
-        if !self.runs.contains_key(&run_id) {
-            return Err(format!("Unknown run_id: {run_id}"));
-        }
-
-        Ok(QueryMethodResponse {
-            driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([
-                ("uri".to_string(), Value::String(self.databricks_uri())),
-                (
-                    "catalog".to_string(),
-                    Value::String(self.config.catalog.clone()),
-                ),
-                (
-                    "schema".to_string(),
-                    Value::String(self.config.schema.clone()),
-                ),
-            ]),
-        })
     }
 
     async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String> {
