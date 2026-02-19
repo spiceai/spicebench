@@ -1,0 +1,8 @@
+Compare the official docs of databricks create table with our rust client code
+
+docs: https://docs.databricks.com/api/workspace/tables/create
+our code `UcTableCreateRequest` in system-adapters/databricks/src/main.rs
+
+---
+
+Lets start with `type_json`
