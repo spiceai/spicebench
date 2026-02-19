@@ -352,8 +352,12 @@ impl DatabricksAdapter {
 
     fn databricks_uri(&self) -> String {
         format!(
-            "databricks://token:{}@{}:443/{}",
-            self.config.token, self.config.endpoint, self.config.http_path
+            "databricks://token:{}@{}:443/{}?catalog={}&schema={}",
+            self.config.token,
+            self.config.endpoint,
+            self.config.http_path,
+            urlencoding::encode(&self.config.catalog),
+            urlencoding::encode(&self.config.schema),
         )
     }
 
@@ -441,9 +445,7 @@ impl DatabricksAdapter {
             && let Some(s) = value.as_str()
         {
             return TableFormat::from_metadata_value(s).ok_or_else(|| {
-                anyhow!(
-                    "Unsupported table_format '{s}'. Allowed values: parquet, delta, iceberg"
-                )
+                anyhow!("Unsupported table_format '{s}'. Allowed values: parquet, delta, iceberg")
             });
         }
 
@@ -555,9 +557,10 @@ impl DatabricksAdapter {
         let body: StatementResponse = response.json().await?;
         match body.status.state {
             StatementState::Succeeded => Ok(()),
-            StatementState::Failed => {
-                Err(anyhow!("Databricks SQL statement failed: {}", body.status.error_message()))
-            }
+            StatementState::Failed => Err(anyhow!(
+                "Databricks SQL statement failed: {}",
+                body.status.error_message()
+            )),
             StatementState::Canceled => Err(anyhow!("Databricks SQL statement canceled")),
             StatementState::Pending | StatementState::Running => {
                 self.wait_for_statement_completion(&body.statement_id).await
@@ -812,7 +815,7 @@ impl DatabricksAdapter {
             }
             DataType::Float32 => Ok(UcColumnType::new("FLOAT", "FLOAT".to_string())),
             DataType::Float64 => Ok(UcColumnType::new("DOUBLE", "DOUBLE".to_string())),
-            DataType::Utf8 | DataType::LargeUtf8 => {
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
                 Ok(UcColumnType::new("STRING", "STRING".to_string()))
             }
             DataType::Date32 => Ok(UcColumnType::new("DATE", "DATE".to_string())),
@@ -918,7 +921,6 @@ impl DatabricksAdapter {
             self.uc_table_full_name(table_name)
         ))
     }
-
 }
 
 #[derive(Debug, Deserialize)]
@@ -1069,19 +1071,15 @@ impl Handler for DatabricksAdapter {
                 cluster_created_by_adapter,
             },
         );
+        // The Databricks ADBC driver does not allow specifying both a URI and
+        // individual connection options (e.g. catalog, schema). All connection
+        // parameters must be encoded as query parameters in the URI.
         Ok(SetupResponse {
             driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([
-                ("uri".to_string(), Value::String(self.databricks_uri())),
-                (
-                    "catalog".to_string(),
-                    Value::String(self.config.catalog.clone()),
-                ),
-                (
-                    "schema".to_string(),
-                    Value::String(self.config.schema.clone()),
-                ),
-            ]),
+            db_kwargs: HashMap::from([(
+                "uri".to_string(),
+                Value::String(self.databricks_uri()),
+            )]),
         })
     }
 

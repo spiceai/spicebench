@@ -129,11 +129,35 @@ async fn run_checkpoint_queries(
 
         let batches = sink.query(sql).await?;
         let out_path = resolved_checkpoint_dir.join(format!("{query_idx}.parquet"));
-        write_batches_to_parquet(&batches, &out_path)?;
+
+        // Derive the result schema. If the query returned rows, use the first
+        // batch's schema. Otherwise, run a LIMIT 0 wrapper to obtain it.
+        let result_schema = if let Some(first) = batches.first() {
+            first.schema()
+        } else {
+            let trimmed = sql.trim_end().trim_end_matches(';');
+            let schema_sql = format!("SELECT * FROM ({trimmed}) AS __q LIMIT 0");
+            let schema_batches = sink.query(&schema_sql).await?;
+            match schema_batches.first() {
+                Some(b) => b.schema(),
+                None => {
+                    tracing::warn!(
+                        checkpoint = checkpoint_idx,
+                        query = query_idx,
+                        "Query returned no rows and schema could not be determined, skipping"
+                    );
+                    continue;
+                }
+            }
+        };
+
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        write_batches_to_parquet(&batches, &out_path, &result_schema)?;
 
         tracing::info!(
             checkpoint = checkpoint_idx,
             query = query_idx,
+            rows = total_rows,
             path = %out_path.display(),
             "Checkpoint query result written"
         );
@@ -143,13 +167,16 @@ async fn run_checkpoint_queries(
 }
 
 /// Write a slice of `RecordBatch`es to a single parquet file.
-fn write_batches_to_parquet(batches: &[RecordBatch], path: &Path) -> anyhow::Result<()> {
-    if batches.is_empty() {
-        anyhow::bail!("No record batches to write to parquet");
-    }
-    let schema = batches[0].schema();
+///
+/// If `batches` is empty (the query returned zero rows) an empty parquet file
+/// containing only the schema from `result_schema` is written.
+fn write_batches_to_parquet(
+    batches: &[RecordBatch],
+    path: &Path,
+    result_schema: &arrow::datatypes::SchemaRef,
+) -> anyhow::Result<()> {
     let file = fs::File::create(path)?;
-    let mut writer = ArrowWriter::try_new(file, schema, None)?;
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(result_schema), None)?;
     for batch in batches {
         writer.write(batch)?;
     }
@@ -182,7 +209,7 @@ async fn main() -> anyhow::Result<()> {
     let target = Arc::new(DuckDBSink::new(&cli.duckdb_path)?);
     let target_sink: Arc<dyn etl::sink::Sink> = Arc::clone(&target) as Arc<dyn etl::sink::Sink>;
 
-    let mutations = MutationConfig::new(0.1, 0.1);
+    let mutations = MutationConfig::new(0.0, 0.0);
 
     let mut pipeline = ETLPipeline::new(
         dataset_source,

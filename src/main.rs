@@ -252,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let run_id = uuid::Uuid::new_v4();
-    let mutations = MutationConfig::new(0.1, 0.1);
+    let mutations = MutationConfig::new(0.0, 0.0);
 
     let setup_dataset = dataset_source.create(
         &generation_config,
