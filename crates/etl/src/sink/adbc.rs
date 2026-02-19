@@ -34,13 +34,15 @@ const DEFAULT_INSERT_ROWS_PER_STATEMENT: usize = 2048;
 
 /// ETL sink that writes transformed batches directly into the SUT via ADBC SQL.
 ///
-/// This sink creates destination tables on first write (`CREATE TABLE IF NOT EXISTS`)
-/// and appends rows with batched `INSERT INTO ... VALUES` statements.
+/// This sink appends rows with batched `INSERT INTO ... VALUES` statements.
+/// Table auto-creation is optional and can be disabled when tables are managed
+/// externally (for example by a system adapter RPC method).
 pub struct AdbcSink {
     conn: Arc<Mutex<AdbcConnection>>,
     created_tables: TokioMutex<HashSet<String>>,
     schema_name: Option<String>,
     insert_rows_per_statement: usize,
+    auto_create_tables: bool,
 }
 
 impl AdbcSink {
@@ -51,6 +53,18 @@ impl AdbcSink {
             created_tables: TokioMutex::new(HashSet::new()),
             schema_name,
             insert_rows_per_statement: DEFAULT_INSERT_ROWS_PER_STATEMENT,
+            auto_create_tables: true,
+        }
+    }
+
+    #[must_use]
+    pub fn new_without_table_creation(conn: AdbcConnection, schema_name: Option<String>) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+            created_tables: TokioMutex::new(HashSet::new()),
+            schema_name,
+            insert_rows_per_statement: DEFAULT_INSERT_ROWS_PER_STATEMENT,
+            auto_create_tables: false,
         }
     }
 
@@ -132,7 +146,7 @@ impl Sink for AdbcSink {
         let should_ensure_table = matches!(op, InsertOp::Insert | InsertOp::Update { .. });
         let mut newly_created = false;
 
-        if should_ensure_table {
+        if should_ensure_table && self.auto_create_tables {
             let created = self.created_tables.lock().await;
             if !created.contains(table_name) {
                 preamble_statements.push(self.create_table_sql(table_name, &batch.schema())?);
