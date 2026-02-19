@@ -19,6 +19,7 @@ pub mod s3;
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchOperation {
@@ -82,4 +83,13 @@ pub trait DataStorage: Send + Sync + 'static {
     /// This is a planning method — no I/O is performed. Each implementation
     /// maps `(table_name, batch_id)` to its own path scheme (e.g. an S3 URI).
     fn expected_files(&self, table_name: &str, batch_ids: &[u64]) -> Vec<String>;
+
+    /// Reads the batch IDs recorded in the table-level metadata file.
+    ///
+    /// Returns the batch IDs in ascending order. If no metadata file exists
+    /// (or the implementation does not support metadata), the default
+    /// returns an empty `VecDeque`.
+    async fn read_batch_ids(&self, _table_name: &str) -> anyhow::Result<VecDeque<u64>> {
+        Ok(VecDeque::new())
+    }
 }

@@ -22,6 +22,7 @@ use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
 use data_generation::dataset::Dataset;
 use data_generation::dataset::MutationConfig;
+use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
@@ -121,7 +122,11 @@ async fn main() -> anyhow::Result<()> {
     let run_id = uuid::Uuid::new_v4();
     let mutations = MutationConfig::new(0.1, 0.1);
 
-    let setup_dataset = dataset_source.create(&generation_config, &mutations)?;
+    let setup_dataset = dataset_source.create(
+        &generation_config,
+        &mutations,
+        Arc::clone(&source) as Arc<dyn DataStorage>,
+    )?;
     let datasets = create_tables_request_datasets(&setup_dataset);
 
     let setup_metadata = std::collections::HashMap::from([
