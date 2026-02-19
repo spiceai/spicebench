@@ -251,7 +251,11 @@ fn quote_identifier(value: &str) -> String {
 /// DDL-created table schema (which uses `VARCHAR` / `Utf8`).
 fn normalize_utf8view_to_utf8(batch: RecordBatch) -> anyhow::Result<RecordBatch> {
     let schema = batch.schema();
-    if !schema.fields().iter().any(|f| f.data_type() == &DataType::Utf8View) {
+    if !schema
+        .fields()
+        .iter()
+        .any(|f| f.data_type() == &DataType::Utf8View)
+    {
         return Ok(batch);
     }
 
@@ -260,9 +264,17 @@ fn normalize_utf8view_to_utf8(batch: RecordBatch) -> anyhow::Result<RecordBatch>
 
     for (i, field) in schema.fields().iter().enumerate() {
         if field.data_type() == &DataType::Utf8View {
-            new_fields.push(Arc::new(Field::new(field.name(), DataType::Utf8, field.is_nullable())));
-            let casted = cast(batch.column(i), &DataType::Utf8)
-                .map_err(|e| anyhow::anyhow!("Failed to cast Utf8View to Utf8 for column '{}': {e}", field.name()))?;
+            new_fields.push(Arc::new(Field::new(
+                field.name(),
+                DataType::Utf8,
+                field.is_nullable(),
+            )));
+            let casted = cast(batch.column(i), &DataType::Utf8).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to cast Utf8View to Utf8 for column '{}': {e}",
+                    field.name()
+                )
+            })?;
             new_columns.push(casted);
         } else {
             new_fields.push(Arc::clone(field));
@@ -271,8 +283,9 @@ fn normalize_utf8view_to_utf8(batch: RecordBatch) -> anyhow::Result<RecordBatch>
     }
 
     let new_schema = Arc::new(Schema::new(new_fields));
-    RecordBatch::try_new(new_schema, new_columns)
-        .map_err(|e| anyhow::anyhow!("Failed to rebuild RecordBatch after Utf8View normalization: {e}"))
+    RecordBatch::try_new(new_schema, new_columns).map_err(|e| {
+        anyhow::anyhow!("Failed to rebuild RecordBatch after Utf8View normalization: {e}")
+    })
 }
 
 fn quote_string_literal(value: &str) -> String {
