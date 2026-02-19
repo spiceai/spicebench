@@ -25,6 +25,14 @@ on:
         options:
           - databricks
           - lakebase
+      sink_type:
+        description: 'Sink type for the ETL process'
+        required: true
+        default: adbc
+        type: choice
+        options:
+          - adbc
+          - s3
       etl_bucket:
         description: 'S3 bucket for ETL source and target data'
         required: true
@@ -32,6 +40,11 @@ on:
         type: string
       etl_source_prefix:
         description: 'S3 key prefix for ETL source data'
+        required: false
+        default: 'data-gen/tpch_sf1'
+        type: string
+      etl_target_prefix:
+        description: 'S3 key prefix for ETL target data'
         required: false
         default: 'data-gen/tpch_sf1'
         type: string
@@ -222,9 +235,11 @@ jobs:
           EXECUTOR_INSTANCE_TYPE: ${{ github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_SOURCE_PREFIX: ${{ github.event.inputs.etl_source_prefix }}
+          ETL_TARGET_PREFIX: ${{ github.event.inputs.etl_target_prefix }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
           ETL_NUM_STEPS: ${{ github.event.inputs.etl_num_steps || '25' }}
+          SINK_TYPE: ${{ github.event.inputs.sink_type || 'adbc' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: 'info'
@@ -238,6 +253,9 @@ jobs:
           fi
           if [ -n "${ETL_ENDPOINT}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
+          fi
+          if [ -n "${SINK_TYPE}" ]; then
+            ETL_ARGS="${ETL_ARGS} --sink-type ${SINK_TYPE}"
           fi
 
           if [ "${SYSTEM_ADAPTER}" = "databricks" ]; then

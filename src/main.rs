@@ -185,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("Using S3Storage as sink");
             Arc::new(S3Storage::new(&TargetConfig {
                 bucket: cli.common.etl_bucket.clone(),
-                prefix: cli.common.etl_target_base_prefix.clone(),
+                prefix: cli.common.etl_target_prefix.clone(),
                 region: cli.common.etl_region.clone(),
                 endpoint: cli.common.etl_endpoint.clone(),
              })?) as Arc<dyn etl::sink::Sink>

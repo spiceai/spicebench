@@ -108,10 +108,9 @@ pub struct CommonArgs {
     #[arg(long, default_value = "")]
     pub(crate) etl_source_prefix: String,
 
-    /// Base S3 key prefix for the ETL target (rehydrated) data.
-    /// A random suffix is appended automatically to create a unique destination per run.
+    /// S3 key prefix for the target ETL data
     #[arg(long, default_value = "")]
-    pub(crate) etl_target_base_prefix: String,
+    pub(crate) etl_target_prefix: String,
 
     /// AWS region for the ETL S3 bucket
     #[arg(long)]
