@@ -168,11 +168,14 @@ async fn main() -> anyhow::Result<()> {
         );
         if let Err(e) = checkpoint_store
             .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
-            .await {
-                tracing::warn!("Failed to download checkpoints - results validation will not be enabled: {e}");
-            } else {
-                tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
-            }
+            .await
+        {
+            tracing::warn!(
+                "Failed to download checkpoints - results validation will not be enabled: {e}"
+            );
+        } else {
+            tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
+        }
     } else {
         tracing::warn!(
             scenario = %scenario_name,
