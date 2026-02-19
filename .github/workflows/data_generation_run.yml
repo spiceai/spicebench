@@ -1,5 +1,5 @@
 name: data-generation run
-run-name: data-generation run - ${{ github.event.inputs.scenario }} - sf${{ github.event.inputs.scale_factor }}
+run-name: data-generation run - ${{ github.event.inputs.scenario }} - v${{ github.event.inputs.version }} - sf${{ github.event.inputs.scale_factor }}
 
 on:
   workflow_call:
@@ -7,6 +7,9 @@ on:
       scenario:
         required: false
         default: 'tpch'
+        type: string
+      version:
+        required: true
         type: string
       scale_factor:
         required: false
@@ -51,6 +54,10 @@ on:
         description: 'GitHub runner label to execute on'
         required: false
         default: 'spiceai-macos'
+        type: string
+      version:
+        description: 'Version identifier for this generation (e.g. 1, 2, 3)'
+        required: true
         type: string
       scale_factor:
         description: 'TPC-H scale factor'
@@ -116,9 +123,10 @@ jobs:
       - name: Run data generation
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
+          VERSION: ${{ inputs.version || github.event.inputs.version }}
           SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '1.0' }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
-          PREFIX_BASE: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
+          PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           MAX_CONCURRENCY: ${{ inputs.max_concurrency || github.event.inputs.max_concurrency || '8' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           SKIP_INITIAL: ${{ inputs.skip_initial || github.event.inputs.skip_initial || false }}
@@ -126,10 +134,9 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          PREFIX="${PREFIX_BASE}"
-          PREFIX="${PREFIX%/}/${SCENARIO}"
-
           ARGS="--dataset ${SCENARIO}"
+          ARGS="${ARGS} --scenario ${SCENARIO}"
+          ARGS="${ARGS} --version ${VERSION}"
           ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
           ARGS="${ARGS} --bucket ${BUCKET}"
           ARGS="${ARGS} --prefix ${PREFIX}"
@@ -162,24 +169,18 @@ jobs:
       - name: Run checkpointer
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
-          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '1.0' }}
+          VERSION: ${{ inputs.version || github.event.inputs.version }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
-          PREFIX_BASE: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
+          PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          PREFIX="${PREFIX_BASE}"
-          PREFIX="${PREFIX%/}/${SCENARIO}"
-
-          SOURCE_PREFIX="${PREFIX}/${SCALE_FACTOR}"
-
           ARGS="--scenario ${SCENARIO}"
-          ARGS="${ARGS} --dataset ${SCENARIO}"
-          ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
+          ARGS="${ARGS} --version ${VERSION}"
           ARGS="${ARGS} --bucket ${BUCKET}"
-          ARGS="${ARGS} --source-prefix ${SOURCE_PREFIX}"
+          ARGS="${ARGS} --prefix ${PREFIX}"
           ARGS="${ARGS} --duckdb-path ./checkpointer.duckdb"
           ARGS="${ARGS} --checkpoint-dir ./checkpoints"
 

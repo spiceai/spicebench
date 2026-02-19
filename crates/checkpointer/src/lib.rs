@@ -18,14 +18,16 @@ limitations under the License.
 //!
 //! ## Layout
 //!
+//! Checkpoints are stored under the version directory:
+//!
 //! ```text
-//! s3://{bucket}/{prefix}/checkpoints/{checkpoint_idx}/{query_idx}.parquet
-//! s3://{bucket}/{prefix}/checkpoints.json          ← manifest
+//! s3://{bucket}/{prefix}/{scenario}/{version}/checkpoints/{checkpoint_idx}/{query_idx}.parquet
+//! s3://{bucket}/{prefix}/{scenario}/{version}/checkpoints.json          ← manifest
 //! ```
 //!
-//! The manifest (`checkpoints.json`) contains metadata for every scenario
-//! that has been checkpointed under the given prefix. The prefix is expected
-//! to already scope to the scenario and scale factor (e.g. `data-gen/tpch/1.0`).
+//! The `prefix` passed to [`CheckpointStore`] is the fully-qualified version
+//! prefix (`{prefix}/{scenario}/{version}`), so checkpoint paths are relative
+//! to that.
 
 use std::collections::HashMap;
 use std::path::Path;

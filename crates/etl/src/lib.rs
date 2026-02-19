@@ -221,6 +221,19 @@ pub enum DatasetSource {
 }
 
 impl DatasetSource {
+    /// Creates a [`DatasetSource`] from a dataset type string (e.g. from version metadata).
+    ///
+    /// Supported values: `"tpch"`, `"simple_sequence"`.
+    pub fn from_dataset_type(dataset_type: &str) -> anyhow::Result<Self> {
+        match dataset_type {
+            "tpch" => Ok(DatasetSource::Tpch),
+            "simple_sequence" => Ok(DatasetSource::SimpleSequence),
+            other => {
+                anyhow::bail!("Unknown dataset type: {other}. Use 'tpch' or 'simple_sequence'.")
+            }
+        }
+    }
+
     /// Create an [`Arc<dyn Dataset>`] for this source variant using the given
     /// configuration.
     ///

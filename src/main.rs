@@ -20,11 +20,11 @@ use adbc_client::AdbcConnection;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use checkpointer::CheckpointStore;
 use clap::Parser;
-use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
+use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::dataset::Dataset;
-use data_generation::dataset::MutationConfig;
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
+use data_generation::version::VersionMetadata;
 use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
@@ -38,7 +38,6 @@ mod scenario;
 
 use crate::args::CommonArgs;
 use crate::commands::connect_system_adapter;
-use crate::scenario::Scenario;
 
 fn create_tables_request_datasets(
     dataset: &Arc<dyn Dataset>,
@@ -83,9 +82,7 @@ async fn run_benchmark(
     system_adapter_client: &mut system_adapter_protocol::Client,
     run_id: uuid::Uuid,
     adbc_driver: system_adapter_protocol::SetupResponse,
-    dataset_source: DatasetSource,
-    generation_config: &GenerationDatasetConfig,
-    mutations: &MutationConfig,
+    version_metadata: &VersionMetadata,
     source: Arc<S3Storage>,
     datasets: HashMap<String, system_adapter_protocol::DatasetConfig>,
 ) -> anyhow::Result<()> {
@@ -93,9 +90,11 @@ async fn run_benchmark(
     let scenario_name = common.scenario.to_string();
     let checkpoint_dir = tempfile::tempdir()?;
 
+    let version_prefix =
+        build_version_prefix(&common.etl_prefix, &scenario_name, common.etl_version);
     let checkpoint_store = CheckpointStore::new(
         &common.etl_bucket,
-        &common.etl_source_prefix,
+        &version_prefix,
         common.etl_region.as_deref(),
         common.etl_endpoint.as_deref(),
     )?;
@@ -149,9 +148,18 @@ async fn run_benchmark(
     println!("ADBC connection established (driver: {})", driver_name);
 
     let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
-    let mut pipeline =
-        ETLPipeline::new(dataset_source, generation_config, source, target, mutations)?
-            .with_created_at(common.with_created_at);
+
+    let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
+    let generation_config = version_metadata.dataset_config();
+    let mutations = version_metadata.mutation_config();
+    let mut pipeline = ETLPipeline::new(
+        dataset_source,
+        &generation_config,
+        source,
+        target,
+        &mutations,
+    )?
+    .with_created_at(common.with_created_at);
 
     if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
         pipeline.cancel();
@@ -222,28 +230,31 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // --- Construct the ETL pipeline ---
-    let dataset_source = match &cli.common.scenario {
-        Scenario::TPCH => DatasetSource::Tpch,
-    };
-
-    let generation_config = GenerationDatasetConfig {
-        dataset_type: match &dataset_source {
-            DatasetSource::Tpch => "tpch".to_string(),
-            DatasetSource::SimpleSequence => "simple_sequence".to_string(),
-        },
-        scale_factor: cli.common.scale_factor,
-        num_steps: cli.common.etl_num_steps,
-    };
-
+    // --- Connect to S3 and read version metadata ---
     let source_config = TargetConfig {
         bucket: cli.common.etl_bucket.clone(),
-        prefix: cli.common.etl_source_prefix.clone(),
+        prefix: build_version_prefix(
+            &cli.common.etl_prefix,
+            &cli.common.scenario.to_string(),
+            cli.common.etl_version,
+        ),
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
     };
 
     let source = Arc::new(S3Storage::new(&source_config)?);
+
+    // Read version metadata to derive dataset config and mutations.
+    let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No version.json found at {}. Was data generation run for this version?",
+            source_config.prefix,
+        )
+    })?;
+
+    let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
+    let generation_config = version_metadata.dataset_config();
+    let mutations = version_metadata.mutation_config();
 
     // --- Connect to the system adapter ---
     let mut system_adapter_client = match connect_system_adapter(&cli.common).await {
@@ -254,7 +265,6 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let run_id = uuid::Uuid::new_v4();
-    let mutations = MutationConfig::new(0.0, 0.0);
 
     let setup_dataset = dataset_source.create(
         &generation_config,
@@ -286,9 +296,7 @@ async fn main() -> anyhow::Result<()> {
         &mut system_adapter_client,
         run_id,
         adbc_driver,
-        dataset_source,
-        &generation_config,
-        &mutations,
+        &version_metadata,
         source,
         datasets,
     )

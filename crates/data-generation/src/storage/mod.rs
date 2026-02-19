@@ -21,6 +21,8 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
+use crate::version::VersionMetadata;
+
 pub struct ReadResult {
     pub batches: Vec<RecordBatch>,
     pub rows_read: u64,
@@ -36,6 +38,8 @@ pub struct WriteResult {
 #[async_trait]
 pub trait DataStorage: Send + Sync + 'static {
     /// List available batch object paths for a given table.
+    ///
+    /// Batches are stored under `tables/{table_name}/batch-NNNNNN.parquet`.
     async fn list_batches(&self, table_name: &str) -> anyhow::Result<Vec<String>>;
 
     /// Read a single batch from the source by its batch ID and table name.
@@ -44,14 +48,16 @@ pub trait DataStorage: Send + Sync + 'static {
     /// storage (e.g. the table has fewer batches than others). The caller
     /// should treat this as the table having no more data.
     ///
-    /// The concrete implementation is responsible for mapping `(table_name,
-    /// batch_id)` to the underlying storage path.
+    /// Batches are stored at `tables/{table_name}/batch-{batch_id:06}.parquet`.
     async fn read_batch(
         &self,
         table_name: &str,
         batch_id: u64,
     ) -> anyhow::Result<Option<ReadResult>>;
 
+    /// Write a single batch to storage for the given table and batch ID.
+    ///
+    /// Batches are written to `tables/{table_name}/batch-{batch_id:06}.parquet`.
     async fn write(
         &self,
         table_name: &str,
@@ -59,25 +65,46 @@ pub trait DataStorage: Send + Sync + 'static {
         batch: RecordBatch,
     ) -> anyhow::Result<WriteResult>;
 
-    /// Writes table-level metadata, including the key columns used for
-    /// update/delete operations and the batch IDs that were written.
-    ///
-    /// The default implementation is a no-op.  Backends that persist
-    /// metadata (e.g. S3) override this to write `metadata.json`.
-    async fn write_table_metadata(
-        &self,
-        _table_name: &str,
-        _key_columns: &[String],
-        _batch_ids: &[u64],
-    ) -> anyhow::Result<()> {
+    /// Writes the consolidated version metadata (`version.json`) for this
+    /// generation version. Contains scale factor, mutations config, and
+    /// per-table metadata (schemas, key columns, batch IDs).
+    async fn write_version_metadata(&self, _metadata: &VersionMetadata) -> anyhow::Result<()> {
         Ok(())
     }
 
-    /// Reads the key columns from the table-level metadata.
+    /// Reads the version metadata (`version.json`) from storage.
     ///
-    /// Returns `Ok(Vec::new())` if no key columns are defined (pure inserts).
-    async fn read_key_columns(&self, _table_name: &str) -> anyhow::Result<Vec<String>> {
+    /// Returns `Ok(None)` if no version metadata exists.
+    async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
+        Ok(None)
+    }
+
+    /// Returns key columns for a table by reading from the version metadata.
+    ///
+    /// Returns `Ok(Vec::new())` if no key columns are defined (pure inserts)
+    /// or if version metadata is not available.
+    async fn read_key_columns(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
+        if let Some(metadata) = self.read_version_metadata().await? {
+            if let Some(table_meta) = metadata.tables.get(table_name) {
+                return Ok(table_meta.key_columns.clone());
+            }
+        }
         Ok(Vec::new())
+    }
+
+    /// Reads the batch IDs for a table from the version metadata.
+    ///
+    /// Returns the batch IDs in ascending order. If no version metadata exists
+    /// or the table is not found, returns an empty `VecDeque`.
+    async fn read_batch_ids(&self, table_name: &str) -> anyhow::Result<VecDeque<u64>> {
+        if let Some(metadata) = self.read_version_metadata().await? {
+            if let Some(table_meta) = metadata.tables.get(table_name) {
+                let mut ids = table_meta.batch_ids.clone();
+                ids.sort_unstable();
+                return Ok(VecDeque::from(ids));
+            }
+        }
+        Ok(VecDeque::new())
     }
 
     fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value>;
@@ -88,13 +115,4 @@ pub trait DataStorage: Send + Sync + 'static {
     /// This is a planning method — no I/O is performed. Each implementation
     /// maps `(table_name, batch_id)` to its own path scheme (e.g. an S3 URI).
     fn expected_files(&self, table_name: &str, batch_ids: &[u64]) -> Vec<String>;
-
-    /// Reads the batch IDs recorded in the table-level metadata file.
-    ///
-    /// Returns the batch IDs in ascending order. If no metadata file exists
-    /// (or the implementation does not support metadata), the default
-    /// returns an empty `VecDeque`.
-    async fn read_batch_ids(&self, _table_name: &str) -> anyhow::Result<VecDeque<u64>> {
-        Ok(VecDeque::new())
-    }
 }
