@@ -227,6 +227,7 @@ jobs:
           ETL_NUM_STEPS: ${{ github.event.inputs.etl_num_steps || '25' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SPIDAPTER_ICEBERG_REGION: us-west-1
           RUST_LOG: 'info'
         run: |
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-num-steps ${ETL_NUM_STEPS}"
@@ -254,7 +255,7 @@ jobs:
             fi
           else
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly --data-region us-west-1"
+            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
           fi
 
