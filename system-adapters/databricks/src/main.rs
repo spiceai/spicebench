@@ -24,8 +24,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, Handler, QueryMethodResponse, Server, SetupResponse,
-    TeardownResponse,
+    AdbcDriver, DatasetConfig, Handler, Server, SetupResponse, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -955,18 +954,7 @@ impl Handler for DatabricksAdapter {
                 cluster_created_by_adapter,
             },
         );
-        Ok(SetupResponse { ok: true })
-    }
-
-    async fn query_method(
-        &mut self,
-        run_id: Uuid,
-    ) -> std::result::Result<QueryMethodResponse, String> {
-        if !self.runs.contains_key(&run_id) {
-            return Err(format!("Unknown run_id: {run_id}"));
-        }
-
-        Ok(QueryMethodResponse {
+        Ok(SetupResponse {
             driver: AdbcDriver::Databricks,
             db_kwargs: HashMap::from([
                 ("uri".to_string(), Value::String(self.databricks_uri())),

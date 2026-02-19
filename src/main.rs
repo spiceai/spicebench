@@ -14,15 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use adbc_client::AdbcConnection;
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
-use data_generation::dataset::MutationConfig;
+use data_generation::dataset::{Dataset, MutationConfig};
 use data_generation::storage::s3::S3Storage;
 use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
+use system_adapter_protocol::DatasetConfig as ProtocolDatasetConfig;
 use test_framework::{anyhow, rustls};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
@@ -46,6 +48,23 @@ struct Cli {
 pub enum SystemAdapterExecutionMode {
     AdapterCommand,
     DirectQuery,
+}
+
+fn setup_request_datasets(dataset: &Arc<dyn Dataset>) -> HashMap<String, ProtocolDatasetConfig> {
+    dataset
+        .tables()
+        .into_iter()
+        .map(|(name, table)| {
+            let mut fields: Vec<_> = table.schema.fields().iter().cloned().collect();
+            fields.push(Arc::new(Field::new(
+                "__created_at",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            )));
+            let schema = Arc::new(Schema::new(fields)) as SchemaRef;
+            (name, ProtocolDatasetConfig { schema })
+        })
+        .collect()
 }
 
 #[tokio::main]
@@ -94,11 +113,25 @@ async fn main() -> anyhow::Result<()> {
 
     let run_id = uuid::Uuid::new_v4();
 
-    // --- Query method from system adapter ---
-    let adbc_driver = match system_adapter_client.query_method(run_id).await {
-        Ok(method) => method,
+    let mutations = MutationConfig::new(0.1, 0.1);
+    let setup_dataset = dataset_source.create(&generation_config, &mutations)?;
+    let datasets = setup_request_datasets(&setup_dataset);
+
+    let setup_metadata = std::collections::HashMap::from([
+        (
+            "executor_instance_type".to_string(),
+            serde_json::Value::String(cli.common.executor_instance_type.clone()),
+        ),
+        (
+            "table_format".to_string(),
+            serde_json::Value::String(cli.common.table_format.to_string()),
+        ),
+    ]);
+
+    let adbc_driver = match system_adapter_client.setup(run_id, datasets, setup_metadata).await {
+        Ok(response) => response,
         Err(e) => {
-            return Err(anyhow::anyhow!("Failed to query system adapter: {e}"));
+            return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
         }
     };
 
@@ -130,8 +163,6 @@ async fn main() -> anyhow::Result<()> {
         ));
     };
 
-    let mutations = MutationConfig::new(0.1, 0.1);
-
     let target = Arc::new(AdbcSink::new(adbc_conn, None));
     let mut pipeline = ETLPipeline::new(
         dataset_source,
@@ -145,27 +176,6 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Initializing ETL pipeline (first batch)...");
     pipeline.initialize().await?;
     tracing::info!("ETL pipeline initialized");
-
-    // --- Setup the system adapter after initial data load ---
-    let datasets = pipeline.setup_request_datasets();
-    let setup_metadata = std::collections::HashMap::from([
-        (
-            "executor_instance_type".to_string(),
-            serde_json::Value::String(cli.common.executor_instance_type.clone()),
-        ),
-        (
-            "table_format".to_string(),
-            serde_json::Value::String(cli.common.table_format.to_string()),
-        ),
-    ]);
-
-    if let Err(e) = system_adapter_client
-        .setup(run_id, datasets, setup_metadata)
-        .await
-    {
-        pipeline.cancel();
-        return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
-    }
 
     let load_conn = match AdbcConnection::create(&driver_name, load_kwargs) {
         Ok(conn) => conn,

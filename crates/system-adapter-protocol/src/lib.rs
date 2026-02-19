@@ -22,7 +22,7 @@ limitations under the License.
 //!
 //! # Features
 //!
-//! - **Protocol types**: Request/response types for setup, query_method, and teardown
+//! - **Protocol types**: Request/response types for setup, teardown, and metrics
 //! - **Client**: Ready-to-use client with Stdio and HTTP transports (requires `client` feature)
 //! - **Server**: Easy server implementation via Handler trait (requires `server` feature)
 //! - **JSON-RPC**: Standard JSON-RPC 2.0 envelope types
@@ -43,9 +43,7 @@ limitations under the License.
 //! let run_id = Uuid::new_v4();
 //! let setup_response = client.setup(run_id, HashMap::new(), HashMap::new()).await?;
 //!
-//! // Get query method information
-//! let query_response = client.query_method(run_id).await?;
-//! println!("Driver: {:?}", query_response.driver);
+//! println!("Driver: {:?}", setup_response.driver);
 //!
 //! // Teardown the run
 //! let teardown_response = client.teardown(run_id).await?;
@@ -59,8 +57,7 @@ limitations under the License.
 //! # #[cfg(feature = "server")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use system_adapter_protocol::{
-//!     Handler, Server, SetupResponse, QueryMethodResponse, TeardownResponse,
-//!     AdbcDriver, DatasetConfig
+//!     Handler, Server, SetupResponse, TeardownResponse, AdbcDriver, DatasetConfig,
 //! };
 //! use async_trait::async_trait;
 //! use std::collections::HashMap;
@@ -78,11 +75,7 @@ limitations under the License.
 //!     ) -> Result<SetupResponse, String> {
 //!         // Your setup logic here
 //!         let _ = metadata;
-//!         Ok(SetupResponse { ok: true })
-//!     }
-//!
-//!     async fn query_method(&mut self, run_id: Uuid) -> Result<QueryMethodResponse, String> {
-//!         Ok(QueryMethodResponse {
+//!         Ok(SetupResponse {
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
 //!         })
@@ -157,25 +150,9 @@ pub struct SetupRequest {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-/// Response from setup request
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SetupResponse {
-    /// Indicates if setup was successful
-    pub ok: bool,
-}
-
-/// Request to get query method/driver information
-///
-/// JSON-RPC method: `query_method`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryMethodRequest {
-    /// Unique identifier for the benchmark run
-    pub run_id: Uuid,
-}
-
-/// Response containing database connection information
+/// Response from setup request containing ADBC connection information
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct QueryMethodResponse {
+pub struct SetupResponse {
     /// ADBC driver to use for database connections
     pub driver: AdbcDriver,
     /// Driver-specific connection parameters
@@ -355,7 +332,6 @@ pub mod error_codes {
 /// Method names for the system adapter protocol
 pub mod methods {
     pub const SETUP: &str = "setup";
-    pub const QUERY_METHOD: &str = "query_method";
     pub const TEARDOWN: &str = "teardown";
     pub const METRICS: &str = "metrics";
     pub const RPC_METHODS: &str = "rpc.methods";
