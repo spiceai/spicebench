@@ -641,9 +641,15 @@ impl ETLPipeline {
         let with_created_at = self.with_created_at;
 
         let handle = tokio::spawn(async move {
-            let outcome =
-                run_pipeline(source, target, work_state, cancel, step_limit, with_created_at)
-                    .await;
+            let outcome = run_pipeline(
+                source,
+                target,
+                work_state,
+                cancel,
+                step_limit,
+                with_created_at,
+            )
+            .await;
             let _ = state_tx.send(outcome);
         });
 

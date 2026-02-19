@@ -60,10 +60,7 @@ fn create_tables_request_datasets(
                 table.schema.clone()
             };
 
-            (
-                name,
-                system_adapter_protocol::DatasetConfig { schema },
-            )
+            (name, system_adapter_protocol::DatasetConfig { schema })
         })
         .collect()
 }
