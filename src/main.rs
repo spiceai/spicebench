@@ -119,7 +119,7 @@ async fn run_benchmark(
     })?;
     println!("ADBC connection established (driver: {})", driver_name);
 
-    let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
+    let target = Arc::new(AdbcSink::new(adbc_conn, None));
 
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let generation_config = version_metadata.dataset_config();
