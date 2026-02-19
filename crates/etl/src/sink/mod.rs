@@ -1,5 +1,5 @@
 /*
-Copyright 2024-2025 The Spice.ai OSS Authors
+Copyright 2026 The Spice.ai OSS Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,33 +14,28 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub mod s3;
-
-use std::collections::HashMap;
-
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
 
-pub struct WriteResult {
-    pub rows_written: u64,
-    pub bytes_written: u64,
+pub mod adbc;
+
+#[cfg(feature = "duckdb")]
+pub mod duckdb;
+
+#[derive(Debug, Clone)]
+pub enum InsertOp {
+    Insert,
+    Update { key_columns: Vec<String> },
+    Delete { key_columns: Vec<String> },
 }
 
 #[async_trait]
-pub trait Target: Send + Sync + 'static {
+pub trait Sink: Send + Sync + 'static {
     async fn write(
         &self,
         table_name: &str,
         batch_id: u64,
         batch: RecordBatch,
-    ) -> anyhow::Result<WriteResult>;
-
-    fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value>;
-
-    /// Returns the list of file paths/URIs that would exist after a successful
-    /// generation for the given table and batch IDs.
-    ///
-    /// This is a planning method — no I/O is performed. Each implementation
-    /// maps `(table_name, batch_id)` to its own path scheme (e.g. an S3 URI).
-    fn expected_files(&self, table_name: &str, batch_ids: &[u64]) -> Vec<String>;
+        op: InsertOp,
+    ) -> anyhow::Result<()>;
 }

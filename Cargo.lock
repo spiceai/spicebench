@@ -928,6 +928,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "checkpointer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "data-generation",
+ "etl",
+ "object_store",
+ "parquet",
+ "serde",
+ "serde_json",
+ "system-adapter-protocol",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1247,12 +1269,14 @@ dependencies = [
  "arrow",
  "async-trait",
  "clap",
- "duckdb",
  "futures",
  "object_store",
  "parquet",
+ "rand 0.9.2",
  "serde_json",
  "tokio",
+ "tpchgen",
+ "tpchgen-arrow",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2121,15 +2145,20 @@ dependencies = [
 name = "etl"
 version = "0.1.0"
 dependencies = [
+ "adbc_client",
  "anyhow",
+ "arrow",
+ "async-trait",
+ "chrono",
  "clap",
  "data-generation",
+ "duckdb",
+ "serde_json",
  "system-adapter-protocol",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -4922,13 +4951,17 @@ version = "0.1.0"
 dependencies = [
  "adbc_client",
  "arrow",
+ "arrow-schema",
  "async-trait",
+ "checkpointer",
  "clap",
  "data-generation",
  "etl",
  "reqwest",
  "serde",
+ "serde_json",
  "system-adapter-protocol",
+ "tempfile",
  "test-framework",
  "tokio",
  "tokio-util",
@@ -5554,6 +5587,22 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "tpchgen"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d651db770ccf53b89dd769ed47899c0c089452e3b725c3c48fbc6a2be579638"
+
+[[package]]
+name = "tpchgen-arrow"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "180f3759dffbf26d47021d2a84245a00f20945384bcf22e63c32652b04916e5a"
+dependencies = [
+ "arrow",
+ "tpchgen",
+]
 
 [[package]]
 name = "tracing"

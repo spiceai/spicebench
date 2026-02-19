@@ -3,7 +3,7 @@ exclude = ["system-adapters/databricks"]
 members = [
     ".",
     "crates/adbc_client",
-    "crates/app",
+    "crates/app", "crates/checkpointer",
     "crates/data-generation",
     "crates/duration-parse", "crates/etl",
     "crates/flight_client",
@@ -52,6 +52,8 @@ clap = { version = "4.5.54", features = ["derive", "env"] }
 datafusion = "51.0.0"
 duckdb = "1.4.4"
 duration-parse = { path = "crates/duration-parse" }
+tpchgen = "2.0.2"
+tpchgen-arrow = "2.0.2"
 futures = "0.3.30"
 hf-hub = { version = "0.4", features = ["tokio"] }
 http = "1.3.1"
@@ -134,13 +136,17 @@ version.workspace = true
 [dependencies]
 adbc_client = { path = "crates/adbc_client" }
 arrow.workspace = true
+arrow-schema.workspace = true
 async-trait.workspace = true
+checkpointer = { path = "crates/checkpointer" }
 clap.workspace = true
 data-generation = { path = "crates/data-generation" }
 etl = { path = "crates/etl" }
 reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }
+tempfile.workspace = true
 test-framework = { path = "crates/test-framework" }
 tokio.workspace = true
 tokio-util.workspace = true

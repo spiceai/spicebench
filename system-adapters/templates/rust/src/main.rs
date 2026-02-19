@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
 use anyhow::{Context, Result};
@@ -49,19 +48,13 @@ fn jsonrpc_error(id: Value, code: i32, message: &str, data: Option<Value>) -> Va
 }
 
 fn method_setup(_params: &Value) -> Value {
-    // Stub: Provision or initialize your SUT for this run.
+    // Stub: Provision or initialize your SUT for this run and return
+    // query driver details SpiceBench should use.
     // Example:
     // - create run-scoped database/schema
-    // - configure ingestion resources for requested datasets
+    // - configure ingestion resources needed before table creation
     // - wait for service readiness checks
-    json!({"ok": true})
-}
-
-fn method_query_method(_params: &Value) -> Value {
-    // Stub: Resolve real endpoint and credentials from your control plane.
-    // Example:
-    // - call orchestrator APIs for runtime endpoint
-    // - pull run-scoped credentials from secret storage
+    // - resolve connection details from your control plane
     let host = std::env::var("SUT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = std::env::var("SUT_PORT")
         .ok()
@@ -71,25 +64,24 @@ fn method_query_method(_params: &Value) -> Value {
         .map(|value| value.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    let mut db_kwargs = BTreeMap::new();
-    db_kwargs.insert(
-        "uri".to_string(),
-        json!(format!("grpc{}://{}:{}", if tls { "s" } else { "" }, host, port)),
-    );
-    db_kwargs.insert(
-        "username".to_string(),
-        json!(std::env::var("SUT_USERNAME").unwrap_or_default()),
-    );
-    db_kwargs.insert(
-        "password".to_string(),
-        json!(std::env::var("SUT_PASSWORD").unwrap_or_default()),
-    );
-    db_kwargs.insert("tls".to_string(), json!(tls));
-
     json!({
         "driver": "flightsql",
-        "db_kwargs": db_kwargs,
+        "db_kwargs": {
+            "uri": format!("grpc{}://{}:{}", if tls { "s" } else { "" }, host, port),
+            "username": std::env::var("SUT_USERNAME").unwrap_or_default(),
+            "password": std::env::var("SUT_PASSWORD").unwrap_or_default(),
+            "tls": tls,
+        },
     })
+}
+
+fn method_create_tables(_params: &Value) -> Value {
+    // Stub: Create/register destination tables for benchmark datasets.
+    // Example:
+    // - create tables if they do not exist
+    // - iterate datasets passed in params to map each schema to table DDL
+    // - apply expected schema/partitioning
+    json!({"ok": true})
 }
 
 fn method_teardown(_params: &Value) -> Value {
@@ -126,7 +118,7 @@ fn method_metrics(_params: &Value) -> Value {
 
 fn method_rpc_methods() -> Value {
     json!({
-        "methods": ["setup", "query_method", "teardown", "metrics", "rpc.methods"]
+        "methods": ["setup", "create_tables", "teardown", "metrics", "rpc.methods"]
     })
 }
 
@@ -161,7 +153,7 @@ fn dispatch(request: &Value) -> Value {
 
     let result = match method {
         "setup" => Ok(method_setup(&params)),
-        "query_method" => Ok(method_query_method(&params)),
+        "create_tables" => Ok(method_create_tables(&params)),
         "teardown" => Ok(method_teardown(&params)),
         "metrics" => Ok(method_metrics(&params)),
         "rpc.methods" => Ok(method_rpc_methods()),

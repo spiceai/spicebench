@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+pub mod key_set;
 pub mod simple_sequence;
 pub mod tpch;
 
@@ -26,6 +27,9 @@ use arrow::datatypes::{DataType, Field, SchemaRef, TimeUnit};
 use async_trait::async_trait;
 
 use crate::config::DatasetConfig;
+use crate::dataset::simple_sequence::SimpleSequenceDataset;
+use crate::dataset::tpch::TpchDataset;
+use crate::storage::DataStorage;
 
 /// Metadata about a table in a dataset.
 #[derive(Debug, Clone)]
@@ -34,40 +38,26 @@ pub struct DatasetTable {
     pub name: String,
     /// The Arrow schema for the table (without the time column).
     pub schema: SchemaRef,
-    /// The time column for the table, if any.
+    /// The time column for the table.
     ///
-    /// When set, this column is *not* included in [`schema`] — it is appended
+    /// This column is *not* included in [`schema`] — it is appended
     /// during rehydration via [`DatasetTable::rehydrate`].
-    pub time_column: Option<String>,
+    pub time_column: String,
 }
 
 impl DatasetTable {
-    /// Returns the full schema including the time column, if one is configured.
-    ///
-    /// If `time_column` is `None`, this returns the same schema as [`schema`].
+    /// Returns the full schema including the time column.
     pub fn rehydrated_schema(&self) -> SchemaRef {
-        let Some(ref time_col) = self.time_column else {
-            return Arc::clone(&self.schema);
-        };
-
         let ts_type = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
         let mut fields: Vec<_> = self.schema.fields().iter().cloned().collect();
-        fields.push(Arc::new(Field::new(time_col, ts_type, true)));
+        fields.push(Arc::new(Field::new(&self.time_column, ts_type, true)));
         Arc::new(arrow::datatypes::Schema::new(fields))
     }
 
     /// Rehydrate a batch by appending the time column with the current timestamp.
     ///
-    /// If this table has no `time_column`, the batch is returned unchanged.
     /// The batch schema must match [`schema`] (i.e. without the time column).
     pub fn rehydrate(&self, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
-        if self.time_column.is_none() {
-            anyhow::bail!(
-                "Cannot rehydrate table '{}' without a time column",
-                self.name
-            );
-        }
-
         if batch.schema() != self.schema {
             let mut diffs = Vec::new();
             let expected_fields = self.schema.fields();
@@ -148,6 +138,26 @@ impl DatasetTable {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MutationConfig {
+    pub(crate) update_ratio: f64,
+    pub(crate) delete_ratio: f64,
+}
+
+impl MutationConfig {
+    pub fn new(update_ratio: f64, delete_ratio: f64) -> Self {
+        let total = update_ratio + delete_ratio;
+        if total > 1.0 {
+            panic!("Mutation ratios must sum to 1.0 or less");
+        }
+
+        Self {
+            update_ratio,
+            delete_ratio,
+        }
+    }
+}
+
 #[async_trait]
 pub trait Dataset: Send + Sync {
     /// Creates a new instance of this dataset from the given configuration.
@@ -157,21 +167,32 @@ pub trait Dataset: Send + Sync {
     ///
     /// The default implementation returns an error; concrete dataset types
     /// should override this.
-    fn create(config: &DatasetConfig) -> anyhow::Result<Arc<dyn Dataset>>
+    fn create(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
+    ) -> anyhow::Result<Arc<dyn Dataset>>
     where
-        Self: Sized + 'static,
-    {
-        let _ = config;
-        anyhow::bail!("create() is not implemented for this dataset type")
-    }
+        Self: Sized + 'static;
 
-    /// Returns the batch IDs that would be produced for a given table after a
-    /// successful generation run.
+    /// Returns the [`DataStorage`] configured for this dataset.
     ///
-    /// The default implementation returns `0..num_batches(table)`, but
-    /// implementations may override this to customise the ID scheme.
-    fn batch_ids(&self, table: &str) -> VecDeque<u64> {
-        (0..self.num_batches(table)).collect()
+    /// This is used by the default [`batch_ids`] implementation to read
+    /// batch IDs from the table-level metadata file stored in the backend.
+    fn storage(self: Arc<Self>) -> Arc<dyn DataStorage>;
+
+    /// Returns the batch IDs for a given table by reading the table-level
+    /// metadata from the configured [`DataStorage`].
+    ///
+    /// Falls back to `0..num_batches(table)` if the metadata file does not
+    /// exist or contains no batch entries.
+    async fn batch_ids(self: Arc<Self>, table: &str) -> VecDeque<u64> {
+        let num_batches = self.num_batches(table);
+        let storage = self.storage();
+        match storage.read_batch_ids(table).await {
+            Ok(ids) if !ids.is_empty() => ids,
+            _ => (0..num_batches).collect(),
+        }
     }
 
     /// Returns the total number of batches this dataset will produce for the
@@ -278,14 +299,19 @@ pub trait Dataset: Send + Sync {
         }
     }
 
+    /// Returns the primary key column names for the given table.
+    ///
+    /// The returned `Vec` may contain multiple column names for composite keys.
+    /// Returns an empty `Vec` if the table has no defined primary key.
+    fn primary_key(&self, table: &str) -> Vec<String>;
+
     /// Returns the tables this dataset produces, including metadata, keyed by table name.
     fn tables(&self) -> HashMap<String, DatasetTable>;
 
     /// Rehydrate a batch for the given table by appending the time column.
     ///
     /// Uses the table metadata from [`tables()`] to look up the time column name
-    /// and delegates to [`DatasetTable::rehydrate`]. If the table has no time column,
-    /// a rehydration error is returned.
+    /// and delegates to [`DatasetTable::rehydrate`].
     fn rehydrate(&self, table: &str, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
         let tables = self.tables();
         let dataset_table = tables
@@ -297,8 +323,29 @@ pub trait Dataset: Send + Sync {
 
 #[async_trait]
 impl Dataset for Arc<dyn Dataset> {
-    fn batch_ids(&self, table: &str) -> VecDeque<u64> {
-        (**self).batch_ids(table)
+    fn create(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
+    ) -> anyhow::Result<Arc<dyn Dataset>>
+    where
+        Self: Sized + 'static,
+    {
+        match config.dataset_type.as_str() {
+            "tpch" => TpchDataset::create(config, mutations, storage),
+            "simple_sequence" => SimpleSequenceDataset::create(config, mutations, storage),
+            other => {
+                anyhow::bail!("Unknown dataset type: {other}. Supported: tpch, simple_sequence")
+            }
+        }
+    }
+
+    fn storage(self: Arc<Self>) -> Arc<dyn DataStorage> {
+        (*self).clone().storage()
+    }
+
+    async fn batch_ids(self: Arc<Self>, table: &str) -> VecDeque<u64> {
+        (*self).clone().batch_ids(table).await
     }
 
     fn num_batches(&self, table: &str) -> u64 {
@@ -317,11 +364,11 @@ impl Dataset for Arc<dyn Dataset> {
         (**self).next_batches().await
     }
 
-    fn tables(&self) -> HashMap<String, DatasetTable> {
-        (**self).tables()
+    fn primary_key(&self, table: &str) -> Vec<String> {
+        (**self).primary_key(table)
     }
 
-    fn rehydrate(&self, table: &str, batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
-        (**self).rehydrate(table, batch)
+    fn tables(&self) -> HashMap<String, DatasetTable> {
+        (**self).tables()
     }
 }

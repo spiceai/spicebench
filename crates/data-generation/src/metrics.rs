@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::target::WriteResult;
+use arrow::array::{Array, RecordBatch, StringArray};
+
+use crate::storage::WriteResult;
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -33,6 +35,9 @@ struct MetricsInner {
     bytes_written: AtomicU64,
     write_errors: AtomicU64,
     total_write_latency_us: AtomicU64,
+    rows_created: AtomicU64,
+    rows_updated: AtomicU64,
+    rows_deleted: AtomicU64,
 }
 
 pub struct IngestResult {
@@ -46,6 +51,9 @@ pub struct IngestResult {
     pub batches_per_sec: f64,
     pub bytes_per_sec: f64,
     pub avg_write_latency: Duration,
+    pub rows_created: u64,
+    pub rows_updated: u64,
+    pub rows_deleted: u64,
 }
 
 impl Default for Metrics {
@@ -65,12 +73,41 @@ impl Metrics {
                 bytes_written: AtomicU64::new(0),
                 write_errors: AtomicU64::new(0),
                 total_write_latency_us: AtomicU64::new(0),
+                rows_created: AtomicU64::new(0),
+                rows_updated: AtomicU64::new(0),
+                rows_deleted: AtomicU64::new(0),
             }),
         }
     }
 
-    pub fn record_generation(&self) {
+    pub fn record_generation(&self, batch: &RecordBatch) {
         self.inner.batches_generated.fetch_add(1, Ordering::Relaxed);
+
+        // Count inserts, updates, and deletes from the `_op` column.
+        if let Ok(idx) = batch.schema().index_of("_op")
+            && let Some(op_array) = batch.column(idx).as_any().downcast_ref::<StringArray>()
+        {
+            let mut creates = 0u64;
+            let mut updates = 0u64;
+            let mut deletes = 0u64;
+            for i in 0..op_array.len() {
+                match op_array.value(i) {
+                    "c" => creates += 1,
+                    "u" => updates += 1,
+                    "d" => deletes += 1,
+                    _ => {}
+                }
+            }
+            self.inner
+                .rows_created
+                .fetch_add(creates, Ordering::Relaxed);
+            self.inner
+                .rows_updated
+                .fetch_add(updates, Ordering::Relaxed);
+            self.inner
+                .rows_deleted
+                .fetch_add(deletes, Ordering::Relaxed);
+        }
     }
 
     pub fn record_write(&self, result: &WriteResult, latency: Duration) {
@@ -101,11 +138,17 @@ impl Metrics {
         let rows_written = self.inner.rows_written.load(Ordering::Relaxed);
         let bytes_written = self.inner.bytes_written.load(Ordering::Relaxed);
         let errors = self.inner.write_errors.load(Ordering::Relaxed);
+        let creates = self.inner.rows_created.load(Ordering::Relaxed);
+        let updates = self.inner.rows_updated.load(Ordering::Relaxed);
+        let deletes = self.inner.rows_deleted.load(Ordering::Relaxed);
 
         tracing::info!(
             elapsed_secs = format!("{secs:.1}"),
             batches = batches_written,
             rows = rows_written,
+            creates = creates,
+            updates = updates,
+            deletes = deletes,
             bytes = bytes_written,
             errors = errors,
             rows_per_sec = format!("{:.0}", rows_written as f64 / secs),
@@ -131,6 +174,10 @@ impl Metrics {
             Duration::ZERO
         };
 
+        let rows_created = self.inner.rows_created.load(Ordering::Relaxed);
+        let rows_updated = self.inner.rows_updated.load(Ordering::Relaxed);
+        let rows_deleted = self.inner.rows_deleted.load(Ordering::Relaxed);
+
         IngestResult {
             elapsed,
             batches_generated,
@@ -138,6 +185,9 @@ impl Metrics {
             rows_written,
             bytes_written,
             write_errors,
+            rows_created,
+            rows_updated,
+            rows_deleted,
             rows_per_sec: rows_written as f64 / secs,
             batches_per_sec: batches_written as f64 / secs,
             bytes_per_sec: bytes_written as f64 / secs,

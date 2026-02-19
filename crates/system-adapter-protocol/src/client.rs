@@ -175,13 +175,13 @@ impl Client {
         Ok(methods)
     }
 
-    /// Setup a benchmark run with ETL configuration
+    /// Setup a benchmark run
     pub async fn setup(
         &mut self,
         run_id: uuid::Uuid,
-        datasets: std::collections::HashMap<String, crate::DatasetConfig>,
+        metadata: std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<crate::SetupResponse> {
-        let request = crate::SetupRequest { run_id, datasets };
+        let request = crate::SetupRequest { run_id, metadata };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::SETUP, request);
         let response = self.call_typed(rpc_request).await?;
         response
@@ -189,10 +189,14 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
-    /// Get query method/driver information for a benchmark run
-    pub async fn query_method(&mut self, run_id: uuid::Uuid) -> Result<crate::QueryMethodResponse> {
-        let request = crate::QueryMethodRequest { run_id };
-        let rpc_request = JsonRpcRequest::new(1, crate::methods::QUERY_METHOD, request);
+    /// Create benchmark tables for a benchmark run
+    pub async fn create_tables(
+        &mut self,
+        run_id: uuid::Uuid,
+        datasets: std::collections::HashMap<String, crate::DatasetConfig>,
+    ) -> Result<crate::CreateTablesResponse> {
+        let request = crate::CreateTablesRequest { run_id, datasets };
+        let rpc_request = JsonRpcRequest::new(1, crate::methods::CREATE_TABLES, request);
         let response = self.call_typed(rpc_request).await?;
         response
             .result

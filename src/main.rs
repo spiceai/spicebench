@@ -14,18 +14,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use adbc_client::AdbcConnection;
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use checkpointer::CheckpointStore;
 use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
-use data_generation::source::s3::S3Source;
-use data_generation::target::s3::S3Target;
+use data_generation::dataset::Dataset;
+use data_generation::dataset::MutationConfig;
+use data_generation::storage::DataStorage;
+use data_generation::storage::s3::S3Storage;
+use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 mod args;
 mod commands;
@@ -34,6 +38,30 @@ mod scenario;
 
 use crate::commands::connect_system_adapter;
 use crate::scenario::Scenario;
+
+fn create_tables_request_datasets(
+    dataset: &Arc<dyn Dataset>,
+) -> HashMap<String, system_adapter_protocol::DatasetConfig> {
+    dataset
+        .tables()
+        .into_iter()
+        .map(|(name, table)| {
+            let mut fields: Vec<_> = table.schema.fields().iter().cloned().collect();
+            fields.push(Arc::new(Field::new(
+                "__created_at",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            )));
+
+            (
+                name,
+                system_adapter_protocol::DatasetConfig {
+                    schema: Arc::new(Schema::new(fields)),
+                },
+            )
+        })
+        .collect()
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -82,30 +110,7 @@ async fn main() -> anyhow::Result<()> {
         endpoint: cli.common.etl_endpoint.clone(),
     };
 
-    let run_suffix = Uuid::new_v4().to_string();
-    let target_prefix = if cli.common.etl_target_base_prefix.is_empty() {
-        run_suffix.clone()
-    } else {
-        format!("{}/{run_suffix}", cli.common.etl_target_base_prefix)
-    };
-    tracing::info!(target_prefix = %target_prefix, "Generated unique ETL target prefix");
-
-    let target_config = TargetConfig {
-        bucket: cli.common.etl_bucket.clone(),
-        prefix: target_prefix,
-        region: cli.common.etl_region.clone(),
-        endpoint: cli.common.etl_endpoint.clone(),
-    };
-
-    let source = Arc::new(S3Source::new(&source_config)?);
-    let target = Arc::new(S3Target::new(&target_config)?);
-
-    let mut pipeline = ETLPipeline::new(dataset_source, &generation_config, source, target)?;
-
-    // --- Initialize: ETL the first batch so the target has data ---
-    tracing::info!("Initializing ETL pipeline (first batch)...");
-    pipeline.initialize().await?;
-    tracing::info!("ETL pipeline initialized");
+    let source = Arc::new(S3Storage::new(&source_config)?);
 
     // --- Connect to the system adapter ---
     let mut system_adapter_client = match connect_system_adapter(&cli.common).await {
@@ -115,40 +120,102 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // --- Setup the system adapter (target already has initial data) ---
-    let run_id = Uuid::new_v4();
-    let datasets = pipeline.setup_request_datasets();
+    let run_id = uuid::Uuid::new_v4();
+    let mutations = MutationConfig::new(0.1, 0.1);
 
-    if let Err(e) = system_adapter_client.setup(run_id, datasets).await {
-        return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
-    }
+    let setup_dataset = dataset_source.create(
+        &generation_config,
+        &mutations,
+        Arc::clone(&source) as Arc<dyn DataStorage>,
+    )?;
+    let datasets = create_tables_request_datasets(&setup_dataset);
 
-    // --- Query method from system adapter ---
-    let adbc_driver = match system_adapter_client.query_method(run_id).await {
-        Ok(method) => method,
+    let setup_metadata = std::collections::HashMap::from([
+        (
+            "executor_instance_type".to_string(),
+            serde_json::Value::String(cli.common.executor_instance_type.clone()),
+        ),
+        (
+            "table_format".to_string(),
+            serde_json::Value::String(cli.common.table_format.to_string()),
+        ),
+    ]);
+
+    let adbc_driver = match system_adapter_client.setup(run_id, setup_metadata).await {
+        Ok(response) => response,
         Err(e) => {
-            pipeline.cancel();
-            return Err(anyhow::anyhow!("Failed to query system adapter: {e}"));
+            return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
         }
     };
 
-    let adbc_conn: Option<AdbcConnection> =
-        match AdbcConnection::create(&adbc_driver.driver.to_string(), adbc_driver.db_kwargs) {
-            Ok(conn) => {
-                println!(
-                    "ADBC connection established (driver: {})",
-                    adbc_driver.driver
-                );
-                Some(conn)
-            }
-            Err(e) => {
-                eprintln!(
-                    "Failed to create ADBC connection for driver {}: {e}",
-                    adbc_driver.driver
-                );
-                None
-            }
-        };
+    // --- Download checkpoints from S3 ---
+    let scenario_name = cli.common.scenario.to_string();
+    let checkpoint_dir = tempfile::tempdir()?;
+
+    let checkpoint_store = CheckpointStore::new(
+        &cli.common.etl_bucket,
+        &cli.common.etl_source_prefix,
+        cli.common.etl_region.as_deref(),
+        cli.common.etl_endpoint.as_deref(),
+    )?;
+
+    let manifest = checkpoint_store.download_manifest().await.map_err(|e| {
+        tracing::warn!("Failed to download checkpoint manifest - results validation will not be enabled: {e}");
+        e
+    }).ok();
+    let mut checkpoint_steps: Option<usize> = None;
+    if let Some(manifest) = manifest
+        && let Some(scenario_info) = manifest.scenarios.get(&scenario_name)
+    {
+        tracing::info!(
+            scenario = %scenario_name,
+            num_checkpoints = scenario_info.num_checkpoints,
+            num_queries = scenario_info.num_queries,
+            checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
+            path = %checkpoint_dir.path().display(),
+            "Downloading checkpoints"
+        );
+        if scenario_info.checkpoint_interval_steps > 0 {
+            checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
+        }
+        if let Err(e) = checkpoint_store
+            .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
+            .await
+        {
+            tracing::warn!(
+                "Failed to download checkpoints - results validation will not be enabled: {e}"
+            );
+        } else {
+            tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
+        }
+    } else {
+        tracing::warn!(
+            scenario = %scenario_name,
+            "No checkpoints found for scenario in manifest"
+        );
+    }
+
+    let driver_name = adbc_driver.driver.to_string();
+    let sink_kwargs = adbc_driver.db_kwargs.clone();
+    let load_kwargs = adbc_driver.db_kwargs;
+
+    let adbc_conn: Option<AdbcConnection> = match AdbcConnection::create(&driver_name, sink_kwargs)
+    {
+        Ok(conn) => {
+            println!(
+                "ADBC connection established (driver: {})",
+                adbc_driver.driver
+            );
+            Some(conn)
+        }
+        Err(e) => {
+            eprintln!(
+                "Failed to create ADBC connection for driver {}: {e}",
+                adbc_driver.driver
+            );
+            None
+        }
+    };
 
     let Some(adbc_conn) = adbc_conn else {
         return Err(anyhow::anyhow!(
@@ -156,9 +223,52 @@ async fn main() -> anyhow::Result<()> {
         ));
     };
 
-    commands::load::run(&cli.common.scenario, &cli.common, adbc_conn, &mut pipeline).await?;
+    let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
+    let mut pipeline = ETLPipeline::new(
+        dataset_source,
+        &generation_config,
+        source,
+        target,
+        &mutations,
+    )?;
+
+    if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
+        pipeline.cancel();
+        return Err(anyhow::anyhow!(
+            "Failed to create tables via system adapter: {e}"
+        ));
+    }
+
+    // --- Initialize: ETL the first batch so the target has data ---
+    tracing::info!("Initializing ETL pipeline (first batch)...");
+    pipeline.initialize().await?;
+    tracing::info!("ETL pipeline initialized");
+
+    let load_conn = match AdbcConnection::create(&driver_name, load_kwargs) {
+        Ok(conn) => conn,
+        Err(e) => {
+            pipeline.cancel();
+            return Err(anyhow::anyhow!(
+                "Failed to create benchmark ADBC connection for driver {}: {e}",
+                adbc_driver.driver
+            ));
+        }
+    };
+
+    commands::load::run(
+        &cli.common.scenario,
+        &cli.common,
+        load_conn,
+        &mut pipeline,
+        checkpoint_steps,
+    )
+    .await?;
 
     // --- Wait for ETL to finish ---
+    // If checkpoint_steps was set, the load runner already handled
+    // the pause/resume loop internally, so the pipeline should be
+    // in a stopped state by now. If it was started without checkpoints
+    // (.start()), the pipeline may still be running.
     let final_state = pipeline.wait().await;
     match &final_state {
         PipelineState::Stopped(StopReason::Completed) => {

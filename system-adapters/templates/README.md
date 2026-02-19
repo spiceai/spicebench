@@ -10,7 +10,7 @@ This folder provides starter templates for building custom SpiceBench system ada
 
 All templates:
 
-- implement JSON-RPC 2.0 methods `setup`, `query_method`, `teardown`, `metrics`, and `rpc.methods`
+- implement JSON-RPC 2.0 methods `setup`, `create_tables`, `teardown`, `metrics`, and `rpc.methods`
 - support JSON-RPC over stdio (line-delimited requests)
 - support JSON-RPC over HTTP (POST endpoint, default `/jsonrpc`)
 - include `metrics` stubs with commented examples of where to poll/monitor your SUT

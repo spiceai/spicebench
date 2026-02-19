@@ -64,19 +64,13 @@ func failure(id interface{}, code int, message string, data interface{}) jsonRpc
 }
 
 func methodSetup(_ map[string]interface{}) interface{} {
-	// Stub: Provision or initialize your SUT for this run.
+	// Stub: Provision or initialize your SUT for this run and return
+	// query driver details SpiceBench should use.
 	// Example:
 	// - create run-scoped database/schema
-	// - configure ingestion resources for dataset list
-	// - wait for service health to become ready
-	return map[string]interface{}{"ok": true}
-}
+	// - configure ingestion resources needed before table creation
+	// - resolve query endpoint and auth material from control plane
 
-func methodQueryMethod(_ map[string]interface{}) interface{} {
-	// Stub: Resolve real endpoint and auth material from your control plane.
-	// Example:
-	// - query orchestration API for current host/port
-	// - fetch credentials from secret manager
 	host := getenvOr("SUT_HOST", "127.0.0.1")
 	port := getenvIntOr("SUT_PORT", 50051)
 	tls := strings.EqualFold(getenvOr("SUT_TLS", "false"), "true")
@@ -95,6 +89,15 @@ func methodQueryMethod(_ map[string]interface{}) interface{} {
 			"tls":      tls,
 		},
 	}
+}
+
+func methodCreateTables(_ map[string]interface{}) interface{} {
+	// Stub: Create/register destination tables for benchmark datasets.
+	// Example:
+	// - create tables if they do not exist
+	// - iterate datasets passed in params to build table definitions
+	// - apply expected schema/partitioning
+	return map[string]interface{}{"ok": true}
 }
 
 func methodTeardown(_ map[string]interface{}) interface{} {
@@ -131,7 +134,7 @@ func methodMetrics(_ map[string]interface{}) interface{} {
 
 func methodRpcMethods() interface{} {
 	return map[string]interface{}{
-		"methods": []string{"setup", "query_method", "teardown", "metrics", "rpc.methods"},
+		"methods": []string{"setup", "create_tables", "teardown", "metrics", "rpc.methods"},
 	}
 }
 
@@ -161,8 +164,8 @@ func dispatch(request []byte) jsonRpcResponse {
 	switch req.Method {
 	case "setup":
 		return success(id, methodSetup(params))
-	case "query_method":
-		return success(id, methodQueryMethod(params))
+	case "create_tables":
+		return success(id, methodCreateTables(params))
 	case "teardown":
 		return success(id, methodTeardown(params))
 	case "metrics":

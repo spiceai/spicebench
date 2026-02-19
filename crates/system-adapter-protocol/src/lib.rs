@@ -22,7 +22,7 @@ limitations under the License.
 //!
 //! # Features
 //!
-//! - **Protocol types**: Request/response types for setup, query_method, and teardown
+//! - **Protocol types**: Request/response types for setup, create_tables, teardown, and metrics
 //! - **Client**: Ready-to-use client with Stdio and HTTP transports (requires `client` feature)
 //! - **Server**: Easy server implementation via Handler trait (requires `server` feature)
 //! - **JSON-RPC**: Standard JSON-RPC 2.0 envelope types
@@ -42,10 +42,9 @@ limitations under the License.
 //! // Setup a benchmark run
 //! let run_id = Uuid::new_v4();
 //! let setup_response = client.setup(run_id, HashMap::new()).await?;
+//! let create_tables_response = client.create_tables(run_id, HashMap::new()).await?;
 //!
-//! // Get query method information
-//! let query_response = client.query_method(run_id).await?;
-//! println!("Driver: {:?}", query_response.driver);
+//! println!("Driver: {:?}", setup_response.driver);
 //!
 //! // Teardown the run
 //! let teardown_response = client.teardown(run_id).await?;
@@ -59,8 +58,8 @@ limitations under the License.
 //! # #[cfg(feature = "server")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use system_adapter_protocol::{
-//!     Handler, Server, SetupResponse, QueryMethodResponse, TeardownResponse,
-//!     AdbcDriver, DatasetConfig
+//!     AdbcDriver, CreateTablesResponse, DatasetConfig, Handler, Server, SetupResponse,
+//!     TeardownResponse,
 //! };
 //! use async_trait::async_trait;
 //! use std::collections::HashMap;
@@ -73,17 +72,23 @@ limitations under the License.
 //!     async fn setup(
 //!         &mut self,
 //!         run_id: Uuid,
-//!         datasets: HashMap<String, DatasetConfig>,
+//!         metadata: HashMap<String, serde_json::Value>,
 //!     ) -> Result<SetupResponse, String> {
 //!         // Your setup logic here
-//!         Ok(SetupResponse { ok: true })
-//!     }
-//!
-//!     async fn query_method(&mut self, run_id: Uuid) -> Result<QueryMethodResponse, String> {
-//!         Ok(QueryMethodResponse {
+//!         let _ = metadata;
+//!         Ok(SetupResponse {
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
 //!         })
+//!     }
+//!
+//!     async fn create_tables(
+//!         &mut self,
+//!         run_id: Uuid,
+//!         datasets: HashMap<String, DatasetConfig>,
+//!     ) -> Result<CreateTablesResponse, String> {
+//!         let _ = datasets;
+//!         Ok(CreateTablesResponse { ok: true })
 //!     }
 //!
 //!     async fn teardown(&mut self, run_id: Uuid) -> Result<TeardownResponse, String> {
@@ -115,13 +120,6 @@ pub mod server;
 #[cfg(feature = "server")]
 pub use server::{Handler, Server, ServerError};
 
-/// ETL type for data ingestion configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EtlType {
-    S3,
-}
-
 /// ADBC driver types supported by the system adapter
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -141,51 +139,52 @@ impl std::fmt::Display for AdbcDriver {
     }
 }
 
-/// Configuration for a single dataset's ETL source
+/// Configuration for a single dataset to be prepared for benchmarking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetConfig {
-    /// Type of ETL to configure
-    pub etl_type: EtlType,
     /// Arrow schema for the dataset
     pub schema: SchemaRef,
-    /// ETL-specific configuration parameters
-    pub params: HashMap<String, serde_json::Value>,
 }
 
-/// Request to setup a benchmark run with ETL configuration
+/// Request to setup a benchmark run.
 ///
 /// JSON-RPC method: `setup`
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SetupRequest {
     /// Unique identifier for this benchmark run
     pub run_id: Uuid,
-    /// Map of dataset name to its ETL configuration
-    pub datasets: HashMap<String, DatasetConfig>,
+    /// Arbitrary run metadata propagated from spicebench to adapters
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
 }
 
-/// Response from setup request
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SetupResponse {
-    /// Indicates if setup was successful
-    pub ok: bool,
-}
-
-/// Request to get query method/driver information
-///
-/// JSON-RPC method: `query_method`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryMethodRequest {
-    /// Unique identifier for the benchmark run
-    pub run_id: Uuid,
-}
-
-/// Response containing database connection information
+/// Response from setup request containing ADBC connection information
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct QueryMethodResponse {
+pub struct SetupResponse {
     /// ADBC driver to use for database connections
     pub driver: AdbcDriver,
     /// Driver-specific connection parameters
     pub db_kwargs: HashMap<String, serde_json::Value>,
+}
+
+/// Request to create benchmark tables in the system under test.
+///
+/// JSON-RPC method: `create_tables`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateTablesRequest {
+    /// Unique identifier for this benchmark run
+    pub run_id: Uuid,
+    /// Map of dataset name to dataset definition
+    pub datasets: HashMap<String, DatasetConfig>,
+}
+
+/// Response from create_tables request
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateTablesResponse {
+    /// Indicates if table creation was successful
+    pub ok: bool,
 }
 
 /// Request to teardown a benchmark run
@@ -361,7 +360,7 @@ pub mod error_codes {
 /// Method names for the system adapter protocol
 pub mod methods {
     pub const SETUP: &str = "setup";
-    pub const QUERY_METHOD: &str = "query_method";
+    pub const CREATE_TABLES: &str = "create_tables";
     pub const TEARDOWN: &str = "teardown";
     pub const METRICS: &str = "metrics";
     pub const RPC_METHODS: &str = "rpc.methods";

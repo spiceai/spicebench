@@ -24,19 +24,19 @@ use tokio::task::JoinSet;
 use super::config::IngestorConfig;
 use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
-use super::target::Target;
+use super::storage::DataStorage;
 
-pub struct Ingestor {
+pub struct DataGenerator {
     dataset: Arc<dyn Dataset>,
-    target: Arc<dyn Target>,
+    target: Arc<dyn DataStorage>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
 }
 
-impl Ingestor {
+impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
-        target: Arc<dyn Target>,
+        target: Arc<dyn DataStorage>,
         config: &IngestorConfig,
         metrics: Metrics,
     ) -> Self {
@@ -52,38 +52,7 @@ impl Ingestor {
     ///
     /// Pulls one batch per table from the dataset using `next_batches()`, then writes
     /// them sequentially so the data is guaranteed to be present when this returns.
-    ///
-    /// If `table_location_fn` is provided, prints a JSON object mapping each table to
-    /// its connector and location, e.g.:
-    /// `{"customer": {"connector": "s3", "location": "s3://bucket/prefix/customer/"}, ...}`
-    pub async fn initialize(
-        &self,
-        table_location_fn: Option<&dyn Fn(&str) -> String>,
-    ) -> anyhow::Result<IngestResult> {
-        // Print table locations as JSON
-        if let Some(loc_fn) = table_location_fn {
-            let mut map = serde_json::Map::new();
-            for (name, table) in self.dataset.tables() {
-                let mut entry = serde_json::Map::new();
-                entry.insert(
-                    "connector".to_string(),
-                    serde_json::Value::String("s3".to_string()),
-                );
-                entry.insert(
-                    "location".to_string(),
-                    serde_json::Value::String(loc_fn(&name)),
-                );
-                if let Some(ref time_col) = table.time_column {
-                    entry.insert(
-                        "time_column".to_string(),
-                        serde_json::Value::String(time_col.clone()),
-                    );
-                }
-                map.insert(name, serde_json::Value::Object(entry));
-            }
-            println!("{}", serde_json::Value::Object(map));
-        }
-
+    pub async fn initialize(&self) -> anyhow::Result<IngestResult> {
         let table_count = self.dataset.tables().len();
 
         tracing::info!(
@@ -96,7 +65,7 @@ impl Ingestor {
                 // Write all tables concurrently within this step.
                 let mut join_set = JoinSet::new();
                 for (table_name, batch) in batches {
-                    self.metrics.record_generation();
+                    self.metrics.record_generation(&batch);
 
                     let target = self.target.clone();
                     let metrics = self.metrics.clone();
@@ -170,7 +139,7 @@ impl Ingestor {
 
         let mut batch_ids = HashMap::new();
         for table in self.dataset.tables().keys() {
-            batch_ids.insert(table.clone(), self.dataset.batch_ids(table));
+            batch_ids.insert(table.clone(), self.dataset.clone().batch_ids(table).await);
         }
 
         loop {
@@ -184,7 +153,7 @@ impl Ingestor {
             };
 
             for (table_name, batch) in source_batches {
-                self.metrics.record_generation();
+                self.metrics.record_generation(&batch);
 
                 // Acquire semaphore permit — creates backpressure if all write slots are busy
                 let permit = Arc::clone(&self.semaphore).acquire_owned().await?;
@@ -230,6 +199,9 @@ impl Ingestor {
             batches_generated = summary.batches_generated,
             batches_written = summary.batches_written,
             rows = summary.rows_written,
+            creates = summary.rows_created,
+            updates = summary.rows_updated,
+            deletes = summary.rows_deleted,
             bytes = summary.bytes_written,
             errors = summary.write_errors,
             rows_per_sec = format!("{:.0}", summary.rows_per_sec),

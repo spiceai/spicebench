@@ -7,7 +7,7 @@ Runtime target: Python `3.x` (latest stable).
 Implemented methods:
 
 - `setup`
-- `query_method`
+- `create_tables`
 - `teardown`
 - `metrics`
 - `rpc.methods`
@@ -56,7 +56,8 @@ spicebench \
 
 ## Notes
 
-- `query_method` returns a placeholder FlightSQL connection in `db_kwargs`.
-- Update `query_method` to match your real target system and credentials.
+- `setup` returns a placeholder FlightSQL connection in `db_kwargs`.
+- Update `setup` to match your real target system and credentials.
+- `create_tables` is a stub that should create/register benchmark tables.
 - `metrics` returns zero values by default and includes commented examples for where to poll real SUT telemetry.
 - If you use `--system-adapter-execution-mode adapter-command`, implement custom RPC methods such as `run.load` for your adapter runtime.

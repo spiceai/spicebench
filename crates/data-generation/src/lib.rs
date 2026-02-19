@@ -16,7 +16,6 @@ limitations under the License.
 
 pub mod config;
 pub mod dataset;
-pub mod ingestor;
+pub mod generator;
 pub mod metrics;
-pub mod source;
-pub mod target;
+pub mod storage;

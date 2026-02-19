@@ -39,6 +39,10 @@ impl AdbcDirectQueryExecutor {
             conn: Arc::new(Mutex::new(conn)),
         }
     }
+
+    pub(crate) fn from_shared(conn: Arc<Mutex<AdbcConnection>>) -> Self {
+        Self { conn }
+    }
 }
 
 impl Clone for AdbcDirectQueryExecutor {
