@@ -49,6 +49,13 @@ pub struct ScenarioCheckpoint {
     pub num_checkpoints: usize,
     /// Number of query results stored in each checkpoint snapshot.
     pub num_queries: usize,
+    /// Number of ETL steps between each checkpoint.
+    ///
+    /// This is the step count that was passed to [`ETLPipeline::run`] during
+    /// checkpoint generation. Consumers can use this value to replay the
+    /// pipeline with the same cadence.
+    #[serde(default)]
+    pub checkpoint_interval_steps: usize,
 }
 
 /// S3‑backed store for uploading and downloading checkpoint artefacts.
@@ -134,6 +141,7 @@ impl CheckpointStore {
         &self,
         scenario: &str,
         local_checkpoint_dir: &Path,
+        checkpoint_interval_steps: usize,
     ) -> anyhow::Result<()> {
         if !local_checkpoint_dir.is_dir() {
             anyhow::bail!(
@@ -200,6 +208,7 @@ impl CheckpointStore {
             ScenarioCheckpoint {
                 num_checkpoints,
                 num_queries,
+                checkpoint_interval_steps,
             },
         );
         self.put_manifest(&manifest).await?;

@@ -201,6 +201,7 @@ pub(crate) async fn run(
     common_args: &CommonArgs,
     adbc_conn: adbc_client::AdbcConnection,
     etl_pipeline: &mut ETLPipeline,
+    checkpoint_steps: Option<usize>,
 ) -> anyhow::Result<()> {
     let metric_attributes = run_metric_attributes(common_args);
 
@@ -292,21 +293,45 @@ pub(crate) async fn run(
     let shutdown_token = throughput_test.cancellation_token();
 
     // --- Start the ETL pipeline (remaining batches) ---
+    // If checkpoint_steps is set, use `.run(steps)` so the pipeline pauses
+    // at checkpoint boundaries. Otherwise fall back to `.start()` which runs
+    // all remaining batches without pausing.
     tracing::info!("Starting ETL pipeline (remaining batches)...");
     let mut etl_state_rx = etl_pipeline.state_watch();
-    etl_pipeline.start().await?;
+    if let Some(steps) = checkpoint_steps {
+        tracing::info!(checkpoint_steps = steps, "Using checkpoint-aware ETL mode");
+        etl_pipeline.run(steps).await?;
+    } else {
+        etl_pipeline.start().await?;
+    }
 
     let test_future = throughput_test.wait();
     tokio::pin!(test_future);
 
-    // Wait for ETL pipeline completion, then cancel the test.
+    // Wait for ETL pipeline state changes, handling both pauses (checkpoint
+    // boundaries) and stops (completion / error / cancellation).
+    //
+    // When the pipeline pauses at a checkpoint boundary we immediately
+    // continue it. TODO: In the future this is where checkpoint-based query result
+    // validation would be triggered before resuming.
+    //
     // If interrupted (ctrl-c), cancel both the test and the ETL pipeline.
     let etl_error: Option<String> = loop {
         tokio::select! {
-            // ETL state changed — check if stopped
+            // ETL state changed — check if stopped or paused
             _ = etl_state_rx.changed() => {
                 let state = etl_state_rx.borrow_and_update().clone();
                 match state {
+                    PipelineState::Paused => {
+                        tracing::info!("ETL pipeline paused at checkpoint boundary");
+                        // TODO: run checkpoint-based query result validation here
+                        if let Err(e) = etl_pipeline.continue_pipeline() {
+                            eprintln!("Failed to continue ETL pipeline after pause: {e}");
+                            shutdown_token.cancel();
+                            break Some(format!("Failed to continue ETL pipeline: {e}"));
+                        }
+                        tracing::info!("ETL pipeline resumed");
+                    }
                     PipelineState::Stopped(StopReason::Completed) => {
                         println!("ETL pipeline completed, stopping benchmark...");
                         shutdown_token.cancel();

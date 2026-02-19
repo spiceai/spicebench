@@ -260,7 +260,11 @@ async fn main() -> anyhow::Result<()> {
                     cli.endpoint.as_deref(),
                 )?;
                 checkpoint_store
-                    .upload_checkpoints(&scenario_name, &cli.checkpoint_dir)
+                    .upload_checkpoints(
+                        &scenario_name,
+                        &cli.checkpoint_dir,
+                        cli.checkpoint_interval_steps as usize,
+                    )
                     .await?;
 
                 tracing::info!("Checkpointer completed successfully");
