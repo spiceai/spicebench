@@ -105,7 +105,8 @@ impl CommonArgs {
     pub fn target_config(&self) -> TargetConfig {
         TargetConfig {
             bucket: self.bucket.clone(),
-            prefix: self.prefix.clone(),
+            // format scale factor like 1.0 to only single decimal place
+            prefix: format!("{}/{:.1}", self.prefix, self.scale_factor),
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }

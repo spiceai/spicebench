@@ -33,7 +33,7 @@ on:
       etl_source_prefix:
         description: 'S3 key prefix for ETL source data'
         required: false
-        default: 'data-gen/tpch_sf1'
+        default: 'data-gen/tpch/1.0'
         type: string
       etl_region:
         description: 'AWS region for the ETL S3 bucket'

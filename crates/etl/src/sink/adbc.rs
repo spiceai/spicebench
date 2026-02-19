@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use adbc_client::AdbcConnection;
 use arrow::array::{
     Array, ArrayRef, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
-    Int8Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    Int8Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray, StringViewArray,
     TimestampMicrosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, Schema};
@@ -392,6 +392,10 @@ fn sql_literal_for_value(
         }
         DataType::Utf8 => {
             let value = as_array::<StringArray>(column, data_type)?.value(row_idx);
+            Ok(quote_string_literal(value))
+        }
+        DataType::Utf8View => {
+            let value = as_array::<StringViewArray>(column, data_type)?.value(row_idx);
             Ok(quote_string_literal(value))
         }
         DataType::LargeUtf8 => {

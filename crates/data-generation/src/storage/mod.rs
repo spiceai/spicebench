@@ -21,13 +21,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BatchOperation {
-    Insert,
-    Update { key_columns: Vec<String> },
-    Delete { key_columns: Vec<String> },
-}
-
 pub struct ReadResult {
     pub batches: Vec<RecordBatch>,
     pub rows_read: u64,
@@ -66,11 +59,16 @@ pub trait DataStorage: Send + Sync + 'static {
         batch: RecordBatch,
     ) -> anyhow::Result<WriteResult>;
 
-    async fn write_batch_operation(
+    /// Writes table-level metadata, including the key columns used for
+    /// update/delete operations and the batch IDs that were written.
+    ///
+    /// The default implementation is a no-op.  Backends that persist
+    /// metadata (e.g. S3) override this to write `metadata.json`.
+    async fn write_table_metadata(
         &self,
         _table_name: &str,
-        _batch_id: u64,
-        _operation: &BatchOperation,
+        _key_columns: &[String],
+        _batch_ids: &[u64],
     ) -> anyhow::Result<()> {
         Ok(())
     }

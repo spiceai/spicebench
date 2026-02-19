@@ -27,25 +27,18 @@ use data_generation::storage::s3::S3Storage;
 use etl::sink::duckdb::DuckDBSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use parquet::arrow::ArrowWriter;
+use test_framework::Scenario;
 use tracing_subscriber::EnvFilter;
-
-/// Static scenario name used until we derive it from the scenario configuration.
-const SCENARIO_NAME: &str = "default";
-
-/// Static list of checkpoint queries to run against the DuckDB database at
-/// each checkpoint boundary.
-const CHECKPOINT_QUERIES: &[&str] = &[
-    "SELECT COUNT(*) AS cnt FROM lineitem",
-    "SELECT COUNT(*) AS cnt FROM orders",
-    "SELECT COUNT(*) AS cnt FROM customer",
-    "SELECT * FROM lineitem ORDER BY l_orderkey LIMIT 1000",
-];
 
 #[derive(Parser)]
 #[command(
     about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC"
 )]
 struct Cli {
+    /// The scenario to run, which determines the dataset type and checkpoint queries.
+    #[arg(long, value_enum, default_value = "tpch")]
+    scenario: Scenario,
+
     /// Dataset type: "tpch" or "simple_sequence"
     #[arg(long, default_value = "tpch")]
     dataset: String,
@@ -119,13 +112,14 @@ impl Cli {
 /// set to a parquet file at `<checkpoint_dir>/<checkpoint_idx>/<query_idx>.parquet`.
 async fn run_checkpoint_queries(
     sink: &DuckDBSink,
+    checkpoint_queries: &[String],
     checkpoint_dir: &Path,
     checkpoint_idx: usize,
 ) -> anyhow::Result<()> {
     let resolved_checkpoint_dir = checkpoint_dir.join(checkpoint_idx.to_string());
     fs::create_dir_all(&resolved_checkpoint_dir)?;
 
-    for (query_idx, sql) in CHECKPOINT_QUERIES.iter().enumerate() {
+    for (query_idx, sql) in checkpoint_queries.iter().enumerate() {
         tracing::info!(
             checkpoint = checkpoint_idx,
             query = query_idx,
@@ -171,6 +165,15 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    let scenario_name = cli.scenario.to_string();
+    let query_set = cli.scenario.load_query_set()?;
+    let checkpoint_queries: Vec<String> = query_set
+        .get_queries(None, None, None)
+        .await?
+        .iter()
+        .map(|q| q.sql.to_string())
+        .collect();
+
     let dataset_source = cli.dataset_source()?;
     let dataset_config = cli.dataset_config();
 
@@ -190,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     tracing::info!(
+        scenario = %scenario_name,
         dataset = %cli.dataset,
         bucket = %cli.bucket,
         source_prefix = %cli.source_prefix,
@@ -222,7 +226,13 @@ async fn main() -> anyhow::Result<()> {
                     checkpoint = checkpoint_idx,
                     "Pipeline paused, running checkpoint queries"
                 );
-                run_checkpoint_queries(&target, &cli.checkpoint_dir, checkpoint_idx).await?;
+                run_checkpoint_queries(
+                    &target,
+                    &checkpoint_queries,
+                    &cli.checkpoint_dir,
+                    checkpoint_idx,
+                )
+                .await?;
                 checkpoint_idx += 1;
 
                 // Resume the pipeline for the next batch of steps.
@@ -234,7 +244,13 @@ async fn main() -> anyhow::Result<()> {
                     checkpoint = checkpoint_idx,
                     "Pipeline completed, running final checkpoint queries"
                 );
-                run_checkpoint_queries(&target, &cli.checkpoint_dir, checkpoint_idx).await?;
+                run_checkpoint_queries(
+                    &target,
+                    &checkpoint_queries,
+                    &cli.checkpoint_dir,
+                    checkpoint_idx,
+                )
+                .await?;
 
                 // Upload all checkpoints to S3.
                 let checkpoint_store = CheckpointStore::new(
@@ -245,7 +261,7 @@ async fn main() -> anyhow::Result<()> {
                 )?;
                 checkpoint_store
                     .upload_checkpoints(
-                        SCENARIO_NAME,
+                        &scenario_name,
                         &cli.checkpoint_dir,
                         cli.checkpoint_interval_steps as usize,
                     )
