@@ -36,6 +36,7 @@ mod commands;
 mod metrics;
 mod scenario;
 
+use crate::args::CommonArgs;
 use crate::commands::connect_system_adapter;
 use crate::scenario::Scenario;
 
@@ -74,6 +75,136 @@ struct Cli {
 pub enum SystemAdapterExecutionMode {
     AdapterCommand,
     DirectQuery,
+}
+
+async fn run_benchmark(
+    common: &CommonArgs,
+    system_adapter_client: &mut system_adapter_protocol::Client,
+    run_id: uuid::Uuid,
+    adbc_driver: system_adapter_protocol::SetupResponse,
+    dataset_source: DatasetSource,
+    generation_config: &GenerationDatasetConfig,
+    mutations: &MutationConfig,
+    source: Arc<S3Storage>,
+    datasets: HashMap<String, system_adapter_protocol::DatasetConfig>,
+) -> anyhow::Result<()> {
+    // --- Download checkpoints from S3 ---
+    let scenario_name = common.scenario.to_string();
+    let checkpoint_dir = tempfile::tempdir()?;
+
+    let checkpoint_store = CheckpointStore::new(
+        &common.etl_bucket,
+        &common.etl_source_prefix,
+        common.etl_region.as_deref(),
+        common.etl_endpoint.as_deref(),
+    )?;
+
+    let manifest = checkpoint_store.download_manifest().await.map_err(|e| {
+        tracing::warn!("Failed to download checkpoint manifest - results validation will not be enabled: {e}");
+        e
+    }).ok();
+    let mut checkpoint_steps: Option<usize> = None;
+    if let Some(manifest) = manifest
+        && let Some(scenario_info) = manifest.scenarios.get(&scenario_name)
+    {
+        tracing::info!(
+            scenario = %scenario_name,
+            num_checkpoints = scenario_info.num_checkpoints,
+            num_queries = scenario_info.num_queries,
+            checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
+            path = %checkpoint_dir.path().display(),
+            "Downloading checkpoints"
+        );
+        if scenario_info.checkpoint_interval_steps > 0 {
+            checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
+        }
+        if let Err(e) = checkpoint_store
+            .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
+            .await
+        {
+            tracing::warn!(
+                "Failed to download checkpoints - results validation will not be enabled: {e}"
+            );
+        } else {
+            tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
+        }
+    } else {
+        tracing::warn!(
+            scenario = %scenario_name,
+            "No checkpoints found for scenario in manifest"
+        );
+    }
+
+    let driver_name = adbc_driver.driver.to_string();
+    let sink_kwargs = adbc_driver.db_kwargs.clone();
+    let load_kwargs = adbc_driver.db_kwargs;
+
+    let adbc_conn = AdbcConnection::create(&driver_name, sink_kwargs).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to create ADBC connection for driver {}: {e}",
+            driver_name
+        )
+    })?;
+    println!("ADBC connection established (driver: {})", driver_name);
+
+    let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
+    let mut pipeline =
+        ETLPipeline::new(dataset_source, generation_config, source, target, mutations)?;
+
+    if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
+        pipeline.cancel();
+        return Err(anyhow::anyhow!(
+            "Failed to create tables via system adapter: {e}"
+        ));
+    }
+
+    // --- Initialize: ETL the first batch so the target has data ---
+    tracing::info!("Initializing ETL pipeline (first batch)...");
+    pipeline.initialize().await?;
+    tracing::info!("ETL pipeline initialized");
+
+    let load_conn = match AdbcConnection::create(&driver_name, load_kwargs) {
+        Ok(conn) => conn,
+        Err(e) => {
+            pipeline.cancel();
+            return Err(anyhow::anyhow!(
+                "Failed to create benchmark ADBC connection for driver {}: {e}",
+                driver_name
+            ));
+        }
+    };
+
+    commands::load::run(
+        &common.scenario,
+        common,
+        load_conn,
+        &mut pipeline,
+        checkpoint_steps,
+    )
+    .await?;
+
+    // --- Wait for ETL to finish ---
+    // If checkpoint_steps was set, the load runner already handled
+    // the pause/resume loop internally, so the pipeline should be
+    // in a stopped state by now. If it was started without checkpoints
+    // (.start()), the pipeline may still be running.
+    let final_state = pipeline.wait().await;
+    match &final_state {
+        PipelineState::Stopped(StopReason::Completed) => {
+            tracing::info!("ETL pipeline completed successfully");
+        }
+        PipelineState::Stopped(StopReason::Cancelled) => {
+            tracing::warn!("ETL pipeline was cancelled");
+        }
+        PipelineState::Stopped(StopReason::Error(e)) => {
+            tracing::error!(error = %e, "ETL pipeline stopped with error");
+        }
+        other => {
+            tracing::warn!("Unexpected final pipeline state: {other:?}");
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -148,146 +279,23 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // --- Download checkpoints from S3 ---
-    let scenario_name = cli.common.scenario.to_string();
-    let checkpoint_dir = tempfile::tempdir()?;
-
-    let checkpoint_store = CheckpointStore::new(
-        &cli.common.etl_bucket,
-        &cli.common.etl_source_prefix,
-        cli.common.etl_region.as_deref(),
-        cli.common.etl_endpoint.as_deref(),
-    )?;
-
-    let manifest = checkpoint_store.download_manifest().await.map_err(|e| {
-        tracing::warn!("Failed to download checkpoint manifest - results validation will not be enabled: {e}");
-        e
-    }).ok();
-    let mut checkpoint_steps: Option<usize> = None;
-    if let Some(manifest) = manifest
-        && let Some(scenario_info) = manifest.scenarios.get(&scenario_name)
-    {
-        tracing::info!(
-            scenario = %scenario_name,
-            num_checkpoints = scenario_info.num_checkpoints,
-            num_queries = scenario_info.num_queries,
-            checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
-            path = %checkpoint_dir.path().display(),
-            "Downloading checkpoints"
-        );
-        if scenario_info.checkpoint_interval_steps > 0 {
-            checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
-        }
-        if let Err(e) = checkpoint_store
-            .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
-            .await
-        {
-            tracing::warn!(
-                "Failed to download checkpoints - results validation will not be enabled: {e}"
-            );
-        } else {
-            tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
-        }
-    } else {
-        tracing::warn!(
-            scenario = %scenario_name,
-            "No checkpoints found for scenario in manifest"
-        );
-    }
-
-    let driver_name = adbc_driver.driver.to_string();
-    let sink_kwargs = adbc_driver.db_kwargs.clone();
-    let load_kwargs = adbc_driver.db_kwargs;
-
-    let adbc_conn: Option<AdbcConnection> = match AdbcConnection::create(&driver_name, sink_kwargs)
-    {
-        Ok(conn) => {
-            println!(
-                "ADBC connection established (driver: {})",
-                adbc_driver.driver
-            );
-            Some(conn)
-        }
-        Err(e) => {
-            eprintln!(
-                "Failed to create ADBC connection for driver {}: {e}",
-                adbc_driver.driver
-            );
-            None
-        }
-    };
-
-    let Some(adbc_conn) = adbc_conn else {
-        return Err(anyhow::anyhow!(
-            "ADBC connection is required to run benchmarks"
-        ));
-    };
-
-    let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
-    let mut pipeline = ETLPipeline::new(
+    let result = run_benchmark(
+        &cli.common,
+        &mut system_adapter_client,
+        run_id,
+        adbc_driver,
         dataset_source,
         &generation_config,
-        source,
-        target,
         &mutations,
-    )?;
-
-    if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
-        pipeline.cancel();
-        return Err(anyhow::anyhow!(
-            "Failed to create tables via system adapter: {e}"
-        ));
-    }
-
-    // --- Initialize: ETL the first batch so the target has data ---
-    tracing::info!("Initializing ETL pipeline (first batch)...");
-    pipeline.initialize().await?;
-    tracing::info!("ETL pipeline initialized");
-
-    let load_conn = match AdbcConnection::create(&driver_name, load_kwargs) {
-        Ok(conn) => conn,
-        Err(e) => {
-            pipeline.cancel();
-            return Err(anyhow::anyhow!(
-                "Failed to create benchmark ADBC connection for driver {}: {e}",
-                adbc_driver.driver
-            ));
-        }
-    };
-
-    commands::load::run(
-        &cli.common.scenario,
-        &cli.common,
-        load_conn,
-        &mut pipeline,
-        checkpoint_steps,
+        source,
+        datasets,
     )
-    .await?;
+    .await;
 
-    // --- Wait for ETL to finish ---
-    // If checkpoint_steps was set, the load runner already handled
-    // the pause/resume loop internally, so the pipeline should be
-    // in a stopped state by now. If it was started without checkpoints
-    // (.start()), the pipeline may still be running.
-    let final_state = pipeline.wait().await;
-    match &final_state {
-        PipelineState::Stopped(StopReason::Completed) => {
-            tracing::info!("ETL pipeline completed successfully");
-        }
-        PipelineState::Stopped(StopReason::Cancelled) => {
-            tracing::warn!("ETL pipeline was cancelled");
-        }
-        PipelineState::Stopped(StopReason::Error(e)) => {
-            tracing::error!(error = %e, "ETL pipeline stopped with error");
-        }
-        other => {
-            tracing::warn!("Unexpected final pipeline state: {other:?}");
-        }
-    }
-
+    // After successful setup, always teardown even if there are errors in between.
     if let Err(e) = system_adapter_client.teardown(run_id).await {
-        return Err(anyhow::anyhow!("Failed to teardown system adapter: {e}"));
+        tracing::error!("Failed to teardown system adapter: {e}");
     }
 
-    Ok(())
+    result
 }
