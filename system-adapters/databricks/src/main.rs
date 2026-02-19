@@ -441,9 +441,7 @@ impl DatabricksAdapter {
             && let Some(s) = value.as_str()
         {
             return TableFormat::from_metadata_value(s).ok_or_else(|| {
-                anyhow!(
-                    "Unsupported table_format '{s}'. Allowed values: parquet, delta, iceberg"
-                )
+                anyhow!("Unsupported table_format '{s}'. Allowed values: parquet, delta, iceberg")
             });
         }
 
@@ -555,9 +553,10 @@ impl DatabricksAdapter {
         let body: StatementResponse = response.json().await?;
         match body.status.state {
             StatementState::Succeeded => Ok(()),
-            StatementState::Failed => {
-                Err(anyhow!("Databricks SQL statement failed: {}", body.status.error_message()))
-            }
+            StatementState::Failed => Err(anyhow!(
+                "Databricks SQL statement failed: {}",
+                body.status.error_message()
+            )),
             StatementState::Canceled => Err(anyhow!("Databricks SQL statement canceled")),
             StatementState::Pending | StatementState::Running => {
                 self.wait_for_statement_completion(&body.statement_id).await
@@ -812,7 +811,7 @@ impl DatabricksAdapter {
             }
             DataType::Float32 => Ok(UcColumnType::new("FLOAT", "FLOAT".to_string())),
             DataType::Float64 => Ok(UcColumnType::new("DOUBLE", "DOUBLE".to_string())),
-            DataType::Utf8 | DataType::LargeUtf8 => {
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
                 Ok(UcColumnType::new("STRING", "STRING".to_string()))
             }
             DataType::Date32 => Ok(UcColumnType::new("DATE", "DATE".to_string())),
@@ -918,7 +917,6 @@ impl DatabricksAdapter {
             self.uc_table_full_name(table_name)
         ))
     }
-
 }
 
 #[derive(Debug, Deserialize)]
