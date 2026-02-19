@@ -1,0 +1,31 @@
+Error: Failed to create ADBC connection for driver databricks: Failed to create database handle: InvalidArguments: cannot specify both URI and individual connection options (sqlstate: [0, 0, 0, 0, 0], vendor_code: -2147483648)
+
+
+Because in `system-adapters/databricks/src/main.rs` `fn setup`, we use both `uri` and `catalog` and `schema` as options. catalog and schema must be in uri query path. 
+
+databricks://token:<personal-access-token>@<server-hostname>:<port-number>/<http-path>?<param1=value1>&<param2=value2>
+
+Components:
+
+scheme: databricks:// (required)
+
+<personal-access-token>: (required) Databricks personal access token.
+
+<server-hostname>: (required) Server Hostname value.
+
+port-number: (required) Port value, which is typically 443.
+
+http-path: (required) HTTP Path value.
+
+Query params: Databricks connection attributes. For complete list of optional parameters, see Databricks Optional Parameters 
+
+Supported optional connection parameters can be specified in <param=value>. Some of the more frequently used ones include:
+catalog: Sets the initial catalog name in the session.
+schema: Sets the initial schema name in the session.
+maxRows: Sets up the maximum number of rows fetched per request. The default is 10000.
+timeout: Adds the timeout (in seconds) for the server query execution. The default is no timeout.
+userAgentEntry: Used to identify partners. For more information, see your partner's documentation.
+Supported optional session parameters can be specified in param=value. Some of the more frequently used ones include:
+ansi_mode: A Boolean string. true for session statements to adhere to rules specified by the ANSI SQL specification. The system default is false.
+timezone: A string, for example America/Los_Angeles. Sets the timezone of the session. The system default is UTC.
+query_tags: A string of comma-separated key:value pairs to attach to SQL queries for tracking in system.query.history, for example, team:engineering,dashboard:abc123. This feature is in Private Preview. To request access, contact your account team.

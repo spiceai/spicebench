@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "10bab71754cf",
+  "strategy": "manual-commit",
+  "branch": "trunk",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "system-adapters/databricks/Cargo.toml",
+    "system-adapters/databricks/src/main.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/10/bab71754cf/0/metadata.json",
+      "transcript": "/10/bab71754cf/0/full.jsonl",
+      "context": "/10/bab71754cf/0/context.md",
+      "content_hash": "/10/bab71754cf/0/content_hash.txt",
+      "prompt": "/10/bab71754cf/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10,
+    "cache_creation_tokens": 21773,
+    "cache_read_tokens": 268002,
+    "output_tokens": 398,
+    "api_call_count": 8
+  }
+}
