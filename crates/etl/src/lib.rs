@@ -43,6 +43,9 @@ pub mod sink;
 /// Column name appended by the ETL pipeline to every batch.
 const CREATED_AT_COLUMN: &str = "__created_at";
 
+/// Internal columns that must be stripped before writing to the sink.
+const INTERNAL_COLUMNS: &[&str] = &["__op", "__op_index"];
+
 /// Returns a new schema with the `__created_at` timestamp column appended.
 fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
     let mut fields: Vec<_> = schema.fields().iter().cloned().collect();
@@ -70,6 +73,37 @@ fn append_created_at(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
     columns.push(Arc::new(timestamps));
 
     Ok(RecordBatch::try_new(new_schema, columns)?)
+}
+
+/// Removes internal bookkeeping columns (`__op`, `__op_index`) from a
+/// [`RecordBatch`] so they are not persisted to the sink.
+fn strip_internal_columns(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
+    let schema = batch.schema();
+    let indices_to_keep: Vec<usize> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !INTERNAL_COLUMNS.contains(&f.name().as_str()))
+        .map(|(i, _)| i)
+        .collect();
+
+    if indices_to_keep.len() == schema.fields().len() {
+        return Ok(batch.clone());
+    }
+
+    let new_fields: Vec<_> = indices_to_keep
+        .iter()
+        .map(|&i| schema.field(i).clone())
+        .collect();
+    let new_columns: Vec<_> = indices_to_keep
+        .iter()
+        .map(|&i| batch.column(i).clone())
+        .collect();
+
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(new_fields)),
+        new_columns,
+    )?)
 }
 
 /// Specifies which dataset implementation to use for the ETL pipeline.
@@ -301,7 +335,12 @@ impl ETLPipeline {
                 let op = sink_op_from_batch_op(&read_result.operation);
 
                 for batch in read_result.batches {
-                    let rehydrated = append_created_at(&batch).map_err(|e| {
+                    let stripped = strip_internal_columns(&batch).map_err(|e| {
+                        format!(
+                            "strip internal columns from {table_name} batch {first_batch_id}: {e}"
+                        )
+                    })?;
+                    let rehydrated = append_created_at(&stripped).map_err(|e| {
                         format!("append __created_at to {table_name} batch {first_batch_id}: {e}")
                     })?;
 
@@ -636,9 +675,23 @@ async fn run_pipeline(
 
                 let op = sink_op_from_batch_op(&read_result.operation);
 
-                // 2. Append __created_at and write to target
+                // 2. Strip internal columns, append __created_at, and write to target
                 for batch in read_result.batches {
-                    let rehydrated = match append_created_at(&batch) {
+                    let stripped = match strip_internal_columns(&batch) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            error!(
+                                table = %table_name,
+                                batch_id,
+                                error = %e,
+                                "Failed to strip internal columns"
+                            );
+                            return Err(format!(
+                                "strip internal columns from {table_name} batch {batch_id}: {e}"
+                            ));
+                        }
+                    };
+                    let rehydrated = match append_created_at(&stripped) {
                         Ok(b) => b,
                         Err(e) => {
                             error!(
