@@ -135,10 +135,7 @@ async fn main() -> anyhow::Result<()> {
         ),
     ]);
 
-    let adbc_driver = match system_adapter_client
-        .setup(run_id, setup_metadata)
-        .await
-    {
+    let adbc_driver = match system_adapter_client.setup(run_id, setup_metadata).await {
         Ok(response) => response,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
