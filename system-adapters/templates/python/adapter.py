@@ -36,22 +36,13 @@ def method_setup(params: dict[str, Any]) -> dict[str, Any]:
     _run_id = params.get("run_id")
     _datasets = params.get("datasets", {})
 
-    # Stub: Provision or initialize your SUT for this run.
+    # Stub: Provision or initialize your SUT for this run and return
+    # query driver details SpiceBench should use.
     # Example:
     # - create a test database / schema for _run_id
     # - configure ingestion pipelines for _datasets
     # - wait for SUT readiness checks to pass
-
-    return {"ok": True}
-
-
-def method_query_method(params: dict[str, Any]) -> dict[str, Any]:
-    _run_id = params.get("run_id")
-
-    # Stub: Resolve real connection details from your SUT control plane.
-    # Example:
-    # - fetch endpoint and auth token from orchestrator APIs
-    # - map TLS and port settings from environment or secret store
+    # - resolve connection details from your control plane
 
     host = os.getenv("SUT_HOST", "127.0.0.1")
     port = int(os.getenv("SUT_PORT", "50051"))
@@ -66,6 +57,17 @@ def method_query_method(params: dict[str, Any]) -> dict[str, Any]:
             "tls": use_tls,
         },
     }
+
+
+def method_create_tables(params: dict[str, Any]) -> dict[str, Any]:
+    _run_id = params.get("run_id")
+
+    # Stub: Create/register destination tables for benchmark datasets.
+    # Example:
+    # - create tables if they do not exist
+    # - apply expected schema/partitioning
+
+    return {"ok": True}
 
 
 def method_teardown(params: dict[str, Any]) -> dict[str, Any]:
@@ -110,7 +112,7 @@ def method_rpc_methods() -> dict[str, Any]:
     return {
         "methods": [
             "setup",
-            "query_method",
+            "create_tables",
             "teardown",
             "metrics",
             "rpc.methods",
@@ -135,8 +137,8 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
     try:
         if method == "setup":
             return jsonrpc_success(request_id, method_setup(params))
-        if method == "query_method":
-            return jsonrpc_success(request_id, method_query_method(params))
+        if method == "create_tables":
+            return jsonrpc_success(request_id, method_create_tables(params))
         if method == "teardown":
             return jsonrpc_success(request_id, method_teardown(params))
         if method == "metrics":

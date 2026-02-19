@@ -4947,6 +4947,7 @@ version = "0.1.0"
 dependencies = [
  "adbc_client",
  "arrow",
+ "arrow-schema",
  "async-trait",
  "clap",
  "data-generation",

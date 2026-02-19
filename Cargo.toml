@@ -136,6 +136,7 @@ version.workspace = true
 [dependencies]
 adbc_client = { path = "crates/adbc_client" }
 arrow.workspace = true
+arrow-schema.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 data-generation = { path = "crates/data-generation" }
