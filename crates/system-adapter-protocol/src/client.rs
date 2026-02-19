@@ -179,12 +179,10 @@ impl Client {
     pub async fn setup(
         &mut self,
         run_id: uuid::Uuid,
-        datasets: std::collections::HashMap<String, crate::DatasetConfig>,
         metadata: std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<crate::SetupResponse> {
         let request = crate::SetupRequest {
             run_id,
-            datasets,
             metadata,
         };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::SETUP, request);
@@ -198,8 +196,9 @@ impl Client {
     pub async fn create_tables(
         &mut self,
         run_id: uuid::Uuid,
+        datasets: std::collections::HashMap<String, crate::DatasetConfig>,
     ) -> Result<crate::CreateTablesResponse> {
-        let request = crate::CreateTablesRequest { run_id };
+        let request = crate::CreateTablesRequest { run_id, datasets };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::CREATE_TABLES, request);
         let response = self.call_typed(rpc_request).await?;
         response

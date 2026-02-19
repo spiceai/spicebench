@@ -41,8 +41,8 @@ limitations under the License.
 //!
 //! // Setup a benchmark run
 //! let run_id = Uuid::new_v4();
-//! let setup_response = client.setup(run_id, HashMap::new(), HashMap::new()).await?;
-//! let create_tables_response = client.create_tables(run_id).await?;
+//! let setup_response = client.setup(run_id, HashMap::new()).await?;
+//! let create_tables_response = client.create_tables(run_id, HashMap::new()).await?;
 //!
 //! println!("Driver: {:?}", setup_response.driver);
 //!
@@ -72,7 +72,6 @@ limitations under the License.
 //!     async fn setup(
 //!         &mut self,
 //!         run_id: Uuid,
-//!         datasets: HashMap<String, DatasetConfig>,
 //!         metadata: HashMap<String, serde_json::Value>,
 //!     ) -> Result<SetupResponse, String> {
 //!         // Your setup logic here
@@ -83,7 +82,11 @@ limitations under the License.
 //!         })
 //!     }
 //!
-//!     async fn create_tables(&mut self, run_id: Uuid) -> Result<CreateTablesResponse, String> {
+//!     async fn create_tables(
+//!         &mut self,
+//!         run_id: Uuid,
+//!         datasets: HashMap<String, DatasetConfig>,
+//!     ) -> Result<CreateTablesResponse, String> {
 //!         Ok(CreateTablesResponse { ok: true })
 //!     }
 //!
@@ -149,8 +152,6 @@ pub struct DatasetConfig {
 pub struct SetupRequest {
     /// Unique identifier for this benchmark run
     pub run_id: Uuid,
-    /// Map of dataset name to dataset definition
-    pub datasets: HashMap<String, DatasetConfig>,
     /// Arbitrary run metadata propagated from spicebench to adapters
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
@@ -172,6 +173,8 @@ pub struct SetupResponse {
 pub struct CreateTablesRequest {
     /// Unique identifier for this benchmark run
     pub run_id: Uuid,
+    /// Map of dataset name to dataset definition
+    pub datasets: HashMap<String, DatasetConfig>,
 }
 
 /// Response from create_tables request
