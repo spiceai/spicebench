@@ -141,9 +141,6 @@ mod tests {
             .expect("Failed to execute TPC-H Q22");
 
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert!(
-            total_rows > 0,
-            "Expected at least one row from TPC-H Q22"
-        );
+        assert!(total_rows > 0, "Expected at least one row from TPC-H Q22");
     }
 }

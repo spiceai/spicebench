@@ -697,8 +697,7 @@ pub fn get_tpch_test_queries(overrides: Option<QueryOverrides>) -> Vec<Query> {
             q18,
             q19,
             // q20, Binder Error; https://github.com/spiceai/spiceai/issues/7356
-            q21
-            // q22, Binder Error; https://github.com/spiceai/spiceai/issues/7356
+            q21 // q22, Binder Error; https://github.com/spiceai/spiceai/issues/7356
         ),
         Some(QueryOverrides::GlueCatalog) => generate_tpch_queries_override!(
             "glue_catalog",
