@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "1169c7a67db5",
+  "strategy": "manual-commit",
+  "branch": "jeadie/26-02-19/test-framework",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/test-framework/Cargo.toml",
+    "crates/test-framework/src/app_utils/mod.rs",
+    "crates/test-framework/src/arrow_record_batch_gen/mod.rs",
+    "crates/test-framework/src/constants.rs",
+    "crates/test-framework/src/gh_utils/mod.rs",
+    "crates/test-framework/src/lib.rs",
+    "crates/test-framework/src/object_store/mod.rs",
+    "crates/test-framework/src/pki/mod.rs",
+    "crates/test-framework/src/process/mod.rs",
+    "crates/test-framework/src/spiced/mod.rs",
+    "crates/test-framework/src/spicepod_utils/mod.rs",
+    "crates/test-framework/src/spicetest/mod.rs",
+    "crates/test-framework/src/spicetest/search/evaluate.rs",
+    "crates/test-framework/src/spicetest/search/mod.rs",
+    "crates/test-framework/src/spicetest/search/worker.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/metrics.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/mod.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/parse.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/task_history.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/worker.rs",
+    "crates/test-framework/src/utils/mod.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/11/69c7a67db5/0/metadata.json",
+      "transcript": "/11/69c7a67db5/0/full.jsonl",
+      "context": "/11/69c7a67db5/0/context.md",
+      "content_hash": "/11/69c7a67db5/0/content_hash.txt",
+      "prompt": "/11/69c7a67db5/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 51,
+    "cache_creation_tokens": 182825,
+    "cache_read_tokens": 3341513,
+    "output_tokens": 673,
+    "api_call_count": 49
+  }
+}

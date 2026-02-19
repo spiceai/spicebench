@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "1169c7a67db5",
+  "session_id": "fcb89115-56bb-49f6-899e-46624fe94b30",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-19T20:30:11.629328Z",
+  "branch": "jeadie/26-02-19/test-framework",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/test-framework/Cargo.toml",
+    "crates/test-framework/src/app_utils/mod.rs",
+    "crates/test-framework/src/arrow_record_batch_gen/mod.rs",
+    "crates/test-framework/src/constants.rs",
+    "crates/test-framework/src/gh_utils/mod.rs",
+    "crates/test-framework/src/lib.rs",
+    "crates/test-framework/src/object_store/mod.rs",
+    "crates/test-framework/src/pki/mod.rs",
+    "crates/test-framework/src/process/mod.rs",
+    "crates/test-framework/src/spiced/mod.rs",
+    "crates/test-framework/src/spicepod_utils/mod.rs",
+    "crates/test-framework/src/spicetest/mod.rs",
+    "crates/test-framework/src/spicetest/search/evaluate.rs",
+    "crates/test-framework/src/spicetest/search/mod.rs",
+    "crates/test-framework/src/spicetest/search/worker.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/metrics.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/mod.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/parse.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/task_history.rs",
+    "crates/test-framework/src/spicetest/text_to_sql/worker.rs",
+    "crates/test-framework/src/utils/mod.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "ff61eeca3123",
+  "transcript_identifier_at_start": "bb2c275e-68c2-4d14-8096-8a018839ed50",
+  "token_usage": {
+    "input_tokens": 51,
+    "cache_creation_tokens": 182825,
+    "cache_read_tokens": 3341513,
+    "output_tokens": 673,
+    "api_call_count": 49
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-19T20:30:11.083116Z",
+    "agent_lines": 31,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 31,
+    "agent_percentage": 100
+  },
+  "transcript_path": ".claude/projects/-Users-jeadie-Github-spicebench-2/fcb89115-56bb-49f6-899e-46624fe94b30.jsonl"
+}

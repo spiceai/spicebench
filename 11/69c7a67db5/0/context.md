@@ -1,0 +1,8 @@
+# Session Context
+
+## User Prompts
+
+### Prompt 1
+
+`crates/test-framework` was copied from a different project. We only use a small fraction of it. Find what is used and remove the rest
+
