@@ -233,12 +233,12 @@ impl Query {
     /// - The SQL query cannot be parsed
     /// - The query contains multiple statements (only single statements are supported)
     pub fn rewrite_with_reference_schema(&self, reference_schema: &str) -> anyhow::Result<Self> {
-        use datafusion::sql::sqlparser::ast::{Ident, ObjectNamePart, visit_relations_mut};
-        use datafusion::sql::sqlparser::parser::Parser;
+        use sqlparser::ast::{Ident, ObjectNamePart, visit_relations_mut};
+        use sqlparser::parser::Parser;
         use std::ops::ControlFlow;
 
         // Parse the SQL query using sqlparser
-        let dialect = datafusion::sql::sqlparser::dialect::PostgreSqlDialect {};
+        let dialect = sqlparser::dialect::PostgreSqlDialect {};
         let mut statements = Parser::parse_sql(&dialect, &self.sql).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse query '{}' for reference schema rewrite: {}",

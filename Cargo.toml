@@ -49,7 +49,6 @@ byte-unit = "5.1.4"
 bytes = "1.10.0"
 chrono = "0.4.42"
 clap = { version = "4.5.54", features = ["derive", "env"] }
-datafusion = "51.0.0"
 duckdb = "1.4.4"
 duration-parse = { path = "crates/duration-parse" }
 tpchgen = "2.0.2"
@@ -142,7 +141,6 @@ checkpointer = { path = "crates/checkpointer" }
 clap.workspace = true
 data-generation = { path = "crates/data-generation" }
 etl = { path = "crates/etl" }
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }
