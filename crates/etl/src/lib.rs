@@ -18,13 +18,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow::array::{RecordBatch, TimestampMicrosecondArray};
+use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray};
+use arrow::compute;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use data_generation::config::DatasetConfig as GenerationDatasetConfig;
 use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
 use data_generation::dataset::{Dataset, MutationConfig};
-use data_generation::storage::{BatchOperation, DataStorage};
+use data_generation::storage::DataStorage;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
@@ -44,7 +45,7 @@ pub mod sink;
 const CREATED_AT_COLUMN: &str = "__created_at";
 
 /// Internal columns that must be stripped before writing to the sink.
-const INTERNAL_COLUMNS: &[&str] = &["__op", "__op_index"];
+const INTERNAL_COLUMNS: &[&str] = &["_op", "_op_index"];
 
 /// Returns a new schema with the `__created_at` timestamp column appended.
 fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
@@ -75,7 +76,7 @@ fn append_created_at(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
     Ok(RecordBatch::try_new(new_schema, columns)?)
 }
 
-/// Removes internal bookkeeping columns (`__op`, `__op_index`) from a
+/// Removes internal bookkeeping columns (`_op`, `_op_index`) from a
 /// [`RecordBatch`] so they are not persisted to the sink.
 fn strip_internal_columns(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
     let schema = batch.schema();
@@ -104,6 +105,110 @@ fn strip_internal_columns(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
         Arc::new(Schema::new(new_fields)),
         new_columns,
     )?)
+}
+
+/// A sub-batch of rows sharing the same operation type, derived from the
+/// `_op` column values.
+struct OpSegment {
+    /// The sink operation for this segment.
+    op: InsertOp,
+    /// The `RecordBatch` containing only the rows for this segment, with
+    /// internal columns (`_op`, `_op_index`) already stripped.
+    batch: RecordBatch,
+}
+
+/// Sorts rows by `_op_index`, then splits the batch into consecutive segments
+/// of the same `_op` value. Each segment is returned as an [`OpSegment`]
+/// with internal columns stripped.
+///
+/// If the batch has no `_op` / `_op_index` columns (e.g. a pure-insert
+/// initial batch), a single `Insert` segment covering all rows is returned.
+fn split_batch_by_op(
+    batch: &RecordBatch,
+    key_columns: &[String],
+) -> anyhow::Result<Vec<OpSegment>> {
+    let schema = batch.schema();
+
+    // If there is no _op column, treat the whole batch as an insert.
+    let op_idx = match schema.index_of("_op") {
+        Ok(idx) => idx,
+        Err(_) => {
+            let stripped = strip_internal_columns(batch)?;
+            return Ok(vec![OpSegment {
+                op: InsertOp::Insert,
+                batch: stripped,
+            }]);
+        }
+    };
+
+    // Sort by _op_index to ensure correct replay order.
+    let sorted_batch = if let Ok(oi_idx) = schema.index_of("_op_index") {
+        let op_index_col = batch.column(oi_idx);
+        let sort_indices = compute::sort_to_indices(op_index_col, None, None)?;
+        let columns: Vec<_> = batch
+            .columns()
+            .iter()
+            .map(|c| compute::take(c.as_ref(), &sort_indices, None).map_err(|e| e.into()))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        RecordBatch::try_new(batch.schema(), columns)?
+    } else {
+        batch.clone()
+    };
+
+    let op_array = sorted_batch
+        .column(op_idx)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| anyhow::anyhow!("_op column is not a StringArray"))?;
+
+    let num_rows = sorted_batch.num_rows();
+    if num_rows == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Walk through rows and group consecutive runs of the same operation.
+    let mut segments = Vec::new();
+    let mut run_start = 0usize;
+    let mut current_op = op_array.value(0);
+
+    for i in 1..num_rows {
+        let row_op = op_array.value(i);
+        if row_op != current_op {
+            // Flush the current run.
+            let slice = sorted_batch.slice(run_start, i - run_start);
+            let stripped = strip_internal_columns(&slice)?;
+            segments.push(OpSegment {
+                op: op_str_to_insert_op(current_op, key_columns),
+                batch: stripped,
+            });
+            run_start = i;
+            current_op = row_op;
+        }
+    }
+
+    // Flush the final run.
+    let slice = sorted_batch.slice(run_start, num_rows - run_start);
+    let stripped = strip_internal_columns(&slice)?;
+    segments.push(OpSegment {
+        op: op_str_to_insert_op(current_op, key_columns),
+        batch: stripped,
+    });
+
+    Ok(segments)
+}
+
+/// Maps a `_op` column value (`"c"`, `"u"`, `"d"`) to an [`InsertOp`].
+fn op_str_to_insert_op(op: &str, key_columns: &[String]) -> InsertOp {
+    match op {
+        "u" => InsertOp::Update {
+            key_columns: key_columns.to_vec(),
+        },
+        "d" => InsertOp::Delete {
+            key_columns: key_columns.to_vec(),
+        },
+        // "c" and anything else default to Insert.
+        _ => InsertOp::Insert,
+    }
 }
 
 /// Specifies which dataset implementation to use for the ETL pipeline.
@@ -335,22 +440,25 @@ impl ETLPipeline {
                         format!("No data for table {table_name} at batch {first_batch_id}")
                     })?;
 
-                let op = sink_op_from_batch_op(&read_result.operation);
+                let key_columns = &read_result.key_columns;
 
-                for batch in read_result.batches {
-                    let stripped = strip_internal_columns(&batch).map_err(|e| {
+                for batch in &read_result.batches {
+                    let segments = split_batch_by_op(batch, key_columns).map_err(|e| {
                         format!(
-                            "strip internal columns from {table_name} batch {first_batch_id}: {e}"
+                            "split batch by op for {table_name} batch {first_batch_id}: {e}"
                         )
                     })?;
-                    let rehydrated = append_created_at(&stripped).map_err(|e| {
-                        format!("append __created_at to {table_name} batch {first_batch_id}: {e}")
-                    })?;
 
-                    target
-                        .write(&table_name, first_batch_id, rehydrated, op.clone())
-                        .await
-                        .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
+                    for segment in segments {
+                        let rehydrated = append_created_at(&segment.batch).map_err(|e| {
+                            format!("append __created_at to {table_name} batch {first_batch_id}: {e}")
+                        })?;
+
+                        target
+                            .write(&table_name, first_batch_id, rehydrated, segment.op)
+                            .await
+                            .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
+                    }
                 }
 
                 debug!(
@@ -676,51 +784,54 @@ async fn run_pipeline(
                     }
                 };
 
-                let op = sink_op_from_batch_op(&read_result.operation);
+                let key_columns = &read_result.key_columns;
 
-                // 2. Strip internal columns, append __created_at, and write to target
-                for batch in read_result.batches {
-                    let stripped = match strip_internal_columns(&batch) {
-                        Ok(b) => b,
+                // 2. Split by _op, strip internal columns, append __created_at, and write to target
+                for batch in &read_result.batches {
+                    let segments = match split_batch_by_op(batch, key_columns) {
+                        Ok(s) => s,
                         Err(e) => {
                             error!(
                                 table = %table_name,
                                 batch_id,
                                 error = %e,
-                                "Failed to strip internal columns"
+                                "Failed to split batch by operation"
                             );
                             return Err(format!(
-                                "strip internal columns from {table_name} batch {batch_id}: {e}"
-                            ));
-                        }
-                    };
-                    let rehydrated = match append_created_at(&stripped) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            error!(
-                                table = %table_name,
-                                batch_id,
-                                error = %e,
-                                "Failed to append __created_at column"
-                            );
-                            return Err(format!(
-                                "append __created_at to {table_name} batch {batch_id}: {e}"
+                                "split batch by op for {table_name} batch {batch_id}: {e}"
                             ));
                         }
                     };
 
-                    // 3. Write to sink
-                    if let Err(e) = data_sink
-                        .write(&table_name, batch_id, rehydrated, op.clone())
-                        .await
-                    {
-                        error!(
-                            table = %table_name,
-                            batch_id,
-                            error = %e,
-                            "Failed to write batch to target"
-                        );
-                        return Err(format!("write {table_name} batch {batch_id}: {e}"));
+                    for segment in segments {
+                        let rehydrated = match append_created_at(&segment.batch) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                error!(
+                                    table = %table_name,
+                                    batch_id,
+                                    error = %e,
+                                    "Failed to append __created_at column"
+                                );
+                                return Err(format!(
+                                    "append __created_at to {table_name} batch {batch_id}: {e}"
+                                ));
+                            }
+                        };
+
+                        // 3. Write to sink
+                        if let Err(e) = data_sink
+                            .write(&table_name, batch_id, rehydrated, segment.op)
+                            .await
+                        {
+                            error!(
+                                table = %table_name,
+                                batch_id,
+                                error = %e,
+                                "Failed to write batch to target"
+                            );
+                            return Err(format!("write {table_name} batch {batch_id}: {e}"));
+                        }
                     }
                 }
 
@@ -772,16 +883,4 @@ async fn run_pipeline(
         "ETL pipeline completed successfully"
     );
     PipelineState::Stopped(StopReason::Completed)
-}
-
-fn sink_op_from_batch_op(op: &BatchOperation) -> InsertOp {
-    match op {
-        BatchOperation::Insert => InsertOp::Insert,
-        BatchOperation::Update { key_columns } => InsertOp::Update {
-            key_columns: key_columns.clone(),
-        },
-        BatchOperation::Delete { key_columns } => InsertOp::Delete {
-            key_columns: key_columns.clone(),
-        },
-    }
 }
