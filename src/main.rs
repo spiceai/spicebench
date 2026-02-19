@@ -18,6 +18,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use adbc_client::AdbcConnection;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use checkpointer::CheckpointStore;
 use clap::Parser;
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
 use data_generation::dataset::Dataset;
@@ -144,6 +145,40 @@ async fn main() -> anyhow::Result<()> {
             return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
         }
     };
+
+    // --- Download checkpoints from S3 ---
+    let scenario_name = cli.common.scenario.to_string();
+    let checkpoint_dir = tempfile::tempdir()?;
+
+    let checkpoint_store = CheckpointStore::new(
+        &cli.common.etl_bucket,
+        &cli.common.etl_source_prefix,
+        cli.common.etl_region.as_deref(),
+        cli.common.etl_endpoint.as_deref(),
+    )?;
+
+    let manifest = checkpoint_store.download_manifest().await?;
+    if let Some(scenario_info) = manifest.scenarios.get(&scenario_name) {
+        tracing::info!(
+            scenario = %scenario_name,
+            num_checkpoints = scenario_info.num_checkpoints,
+            num_queries = scenario_info.num_queries,
+            path = %checkpoint_dir.path().display(),
+            "Downloading checkpoints"
+        );
+        if let Err(e) = checkpoint_store
+            .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
+            .await {
+                tracing::warn!("Failed to download checkpoints - results validation will not be enabled: {e}");
+            } else {
+                tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
+            }
+    } else {
+        tracing::warn!(
+            scenario = %scenario_name,
+            "No checkpoints found for scenario in manifest"
+        );
+    }
 
     let driver_name = adbc_driver.driver.to_string();
     let sink_kwargs = adbc_driver.db_kwargs.clone();
