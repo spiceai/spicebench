@@ -142,6 +142,11 @@ impl DataGenerator {
             batch_ids.insert(table.clone(), self.dataset.clone().batch_ids(table).await);
         }
 
+        // Track which batch IDs were successfully written per table so we can
+        // persist them in the table metadata at the end of the run.
+        let written_batch_ids: Arc<std::sync::Mutex<HashMap<String, Vec<u64>>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+
         loop {
             let source_batches = match self.dataset.next_batches().await {
                 Ok(Some(batches)) => batches,
@@ -168,11 +173,18 @@ impl DataGenerator {
                         0
                     });
 
+                let written_ids = Arc::clone(&written_batch_ids);
                 join_set.spawn(async move {
                     let start = Instant::now();
                     match target.write(&table_name, next_batch_id, batch).await {
                         Ok(result) => {
                             metrics.record_write(&result, start.elapsed());
+                            written_ids
+                                .lock()
+                                .expect("written_batch_ids lock poisoned")
+                                .entry(table_name)
+                                .or_default()
+                                .push(next_batch_id);
                         }
                         Err(e) => {
                             metrics.record_error();
@@ -192,6 +204,24 @@ impl DataGenerator {
         }
 
         logger_handle.abort();
+
+        // Persist table-level metadata (key columns + batch IDs) for each table.
+        let written = Arc::try_unwrap(written_batch_ids)
+            .expect("all tasks should be finished")
+            .into_inner()
+            .expect("mutex should not be poisoned");
+        for (table_name, mut ids) in written {
+            ids.sort_unstable();
+            let key_columns = self.dataset.primary_key(&table_name);
+            self.target
+                .write_table_metadata(&table_name, &key_columns, &ids)
+                .await?;
+            tracing::info!(
+                table = %table_name,
+                batch_count = ids.len(),
+                "Table metadata written"
+            );
+        }
 
         let summary = self.metrics.summary();
         tracing::info!(

@@ -34,7 +34,7 @@ use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-use super::{BatchOperation, ReadResult, WriteResult};
+use super::{ReadResult, WriteResult};
 
 /// Unified S3 storage backend that implements both [`Source`] and [`Target`].
 ///
@@ -114,9 +114,8 @@ impl S3Storage {
 
     /// Reads the key columns from the table-level metadata.
     ///
-    /// Scans the batch entries in `metadata.json` and returns the
-    /// `key_columns` array from the first entry that contains one.
-    /// Returns an empty `Vec` if no key columns are found (pure inserts).
+    /// Returns the `key_columns` array from `metadata.json`.
+    /// Returns an empty `Vec` if no metadata exists or key columns are not set.
     async fn read_key_columns_from_metadata(
         &self,
         table_name: &str,
@@ -131,26 +130,14 @@ impl S3Storage {
         let bytes = get_result.bytes().await?;
         let table_meta: serde_json::Value = serde_json::from_slice(&bytes)?;
 
-        let Some(batches) = table_meta.get("batches").and_then(|b| b.as_object()) else {
+        let Some(keys) = table_meta.get("key_columns").and_then(|v| v.as_array()) else {
             return Ok(Vec::new());
         };
 
-        // Find the first batch entry that has key_columns defined.
-        for (_batch_key, entry) in batches {
-            if let Some(keys_value) = entry.get("key_columns") {
-                if let Some(keys) = keys_value.as_array() {
-                    let parsed: Vec<String> = keys
-                        .iter()
-                        .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                        .collect();
-                    if !parsed.is_empty() {
-                        return Ok(parsed);
-                    }
-                }
-            }
-        }
-
-        Ok(Vec::new())
+        Ok(keys
+            .iter()
+            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+            .collect())
     }
 }
 
@@ -229,49 +216,18 @@ impl DataStorage for S3Storage {
         })
     }
 
-    async fn write_batch_operation(
+    async fn write_table_metadata(
         &self,
         table_name: &str,
-        batch_id: u64,
-        operation: &BatchOperation,
+        key_columns: &[String],
+        batch_ids: &[u64],
     ) -> anyhow::Result<()> {
         let path = self.table_metadata_object_path(table_name);
 
-        // Read existing table-level metadata (if any) so we can merge.
-        let mut table_meta = match self.store.get(&path).await {
-            Ok(r) => {
-                let bytes = r.bytes().await?;
-                serde_json::from_slice::<serde_json::Value>(&bytes)
-                    .unwrap_or_else(|_| serde_json::json!({ "batches": {} }))
-            }
-            Err(object_store::Error::NotFound { .. }) => serde_json::json!({ "batches": {} }),
-            Err(e) => return Err(e.into()),
-        };
-
-        let batch_entry = match operation {
-            BatchOperation::Insert => serde_json::json!({
-                "operation": "insert"
-            }),
-            BatchOperation::Update { key_columns } => serde_json::json!({
-                "operation": "update",
-                "key_columns": key_columns,
-            }),
-            BatchOperation::Delete { key_columns } => serde_json::json!({
-                "operation": "delete",
-                "key_columns": key_columns,
-            }),
-        };
-
-        // Ensure the "batches" object exists and insert/update the entry.
-        let batches = table_meta
-            .as_object_mut()
-            .expect("table metadata should be an object")
-            .entry("batches")
-            .or_insert_with(|| serde_json::json!({}));
-        batches
-            .as_object_mut()
-            .expect("batches should be an object")
-            .insert(batch_id.to_string(), batch_entry);
+        let table_meta = serde_json::json!({
+            "key_columns": key_columns,
+            "batch_ids": batch_ids,
+        });
 
         let bytes = serde_json::to_vec_pretty(&table_meta)?;
         self.store.put(&path, PutPayload::from(bytes)).await?;
@@ -303,13 +259,13 @@ impl DataStorage for S3Storage {
         let bytes = get_result.bytes().await?;
         let table_meta: serde_json::Value = serde_json::from_slice(&bytes)?;
 
-        let Some(batches) = table_meta.get("batches").and_then(|b| b.as_object()) else {
+        let Some(ids_array) = table_meta.get("batch_ids").and_then(|v| v.as_array()) else {
             return Ok(VecDeque::new());
         };
 
-        let mut ids: Vec<u64> = batches
-            .keys()
-            .filter_map(|k| k.parse::<u64>().ok())
+        let mut ids: Vec<u64> = ids_array
+            .iter()
+            .filter_map(|v| v.as_u64())
             .collect();
         ids.sort_unstable();
         Ok(VecDeque::from(ids))
