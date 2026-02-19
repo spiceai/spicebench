@@ -352,8 +352,12 @@ impl DatabricksAdapter {
 
     fn databricks_uri(&self) -> String {
         format!(
-            "databricks://token:{}@{}:443/{}",
-            self.config.token, self.config.endpoint, self.config.http_path
+            "databricks://token:{}@{}:443/{}?catalog={}&schema={}",
+            self.config.token,
+            self.config.endpoint,
+            self.config.http_path,
+            urlencoding::encode(&self.config.catalog),
+            urlencoding::encode(&self.config.schema),
         )
     }
 
@@ -1069,19 +1073,15 @@ impl Handler for DatabricksAdapter {
                 cluster_created_by_adapter,
             },
         );
+        // The Databricks ADBC driver does not allow specifying both a URI and
+        // individual connection options (e.g. catalog, schema). All connection
+        // parameters must be encoded as query parameters in the URI.
         Ok(SetupResponse {
             driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([
-                ("uri".to_string(), Value::String(self.databricks_uri())),
-                (
-                    "catalog".to_string(),
-                    Value::String(self.config.catalog.clone()),
-                ),
-                (
-                    "schema".to_string(),
-                    Value::String(self.config.schema.clone()),
-                ),
-            ]),
+            db_kwargs: HashMap::from([(
+                "uri".to_string(),
+                Value::String(self.databricks_uri()),
+            )]),
         })
     }
 
