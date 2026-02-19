@@ -22,7 +22,8 @@ use arrow::array::{
     Int8Array, Int16Array, Int32Array, Int64Array, RecordBatch, StringArray, StringViewArray,
     TimestampMicrosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
-use arrow::datatypes::DataType;
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate};
 
@@ -82,6 +83,7 @@ impl AdbcSink {
         let conn = Arc::clone(&self.conn);
         let target_table = table_name.to_string();
         let target_schema = self.schema_name.clone();
+        let batch = normalize_utf8view_to_utf8(batch)?;
         tokio::task::spawn_blocking(move || {
             let mut guard = conn
                 .lock()
@@ -243,6 +245,34 @@ fn where_clause_for_row(
 
 fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+/// Cast any `Utf8View` columns to `Utf8` so the batch schema matches the
+/// DDL-created table schema (which uses `VARCHAR` / `Utf8`).
+fn normalize_utf8view_to_utf8(batch: RecordBatch) -> anyhow::Result<RecordBatch> {
+    let schema = batch.schema();
+    if !schema.fields().iter().any(|f| f.data_type() == &DataType::Utf8View) {
+        return Ok(batch);
+    }
+
+    let mut new_fields = Vec::with_capacity(schema.fields().len());
+    let mut new_columns: Vec<ArrayRef> = Vec::with_capacity(batch.num_columns());
+
+    for (i, field) in schema.fields().iter().enumerate() {
+        if field.data_type() == &DataType::Utf8View {
+            new_fields.push(Arc::new(Field::new(field.name(), DataType::Utf8, field.is_nullable())));
+            let casted = cast(batch.column(i), &DataType::Utf8)
+                .map_err(|e| anyhow::anyhow!("Failed to cast Utf8View to Utf8 for column '{}': {e}", field.name()))?;
+            new_columns.push(casted);
+        } else {
+            new_fields.push(Arc::clone(field));
+            new_columns.push(Arc::clone(batch.column(i)));
+        }
+    }
+
+    let new_schema = Arc::new(Schema::new(new_fields));
+    RecordBatch::try_new(new_schema, new_columns)
+        .map_err(|e| anyhow::anyhow!("Failed to rebuild RecordBatch after Utf8View normalization: {e}"))
 }
 
 fn quote_string_literal(value: &str) -> String {
