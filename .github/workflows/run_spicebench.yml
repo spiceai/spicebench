@@ -228,6 +228,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
+          SPIDAPTER_ICEBERG_CATALOG_ACCOUNT_ID: https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: 'info'
         run: |
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-num-steps ${ETL_NUM_STEPS}"
