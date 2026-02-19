@@ -16,6 +16,7 @@ limitations under the License.
 
 use std::{
     fmt::Display,
+    future::Future,
     path::PathBuf,
     process::{Child, Command},
     time::Duration,
@@ -28,11 +29,36 @@ use spicepod::spec::SpicepodDefinition;
 use sysinfo::Pid;
 use tempfile::TempDir;
 
-use crate::{
-    constants::{FLIGHT_URL, HEALTH_ENDPOINT, HTTP_BASE_URL, READY_ENDPOINT},
-    process::Process,
-    utils::wait_until_true,
-};
+const HTTP_BASE_URL: &str = "http://localhost:8090";
+const FLIGHT_URL: &str = "http://localhost:50051";
+const HEALTH_ENDPOINT: &str = "/health";
+const READY_ENDPOINT: &str = "/v1/ready";
+
+async fn wait_until_true<F, Fut>(max_wait: Duration, mut f: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let start = std::time::Instant::now();
+    while start.elapsed() < max_wait {
+        if f().await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+pub struct Process {
+    _pid: Pid,
+}
+
+impl Process {
+    #[must_use]
+    pub fn new(pid: Pid) -> Self {
+        Self { _pid: pid }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SpicedVersion(String);

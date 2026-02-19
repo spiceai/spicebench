@@ -16,26 +16,15 @@ limitations under the License.
 
 #![allow(clippy::missing_errors_doc)]
 
-pub mod app_utils;
-#[expect(clippy::expect_used, clippy::missing_panics_doc)]
-// this is our test framework, used in tests - expect is acceptable
-pub mod arrow_record_batch_gen;
-pub mod constants;
 pub mod execution;
 pub mod flight;
-pub mod gh_utils;
 pub mod git;
 pub mod metrics;
-pub mod object_store;
-pub mod pki;
-pub mod process;
 pub mod queries;
 pub mod snapshot;
 pub mod spiced;
-pub mod spicepod_utils;
 pub mod spicetest;
 pub mod telemetry;
-pub mod utils;
 
 use std::fmt::Display;
 
@@ -43,17 +32,10 @@ use queries::QuerySet;
 use spicetest::datasets::EndCondition;
 
 pub use anyhow;
-pub use app;
 pub use arrow;
-pub use flight_client;
-pub use futures;
-pub use octocrab;
 pub use opentelemetry;
 pub use opentelemetry_sdk;
 pub use rustls;
-pub use spicepod;
-pub use tokio_util;
-pub use yaml;
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub enum Scenario {
