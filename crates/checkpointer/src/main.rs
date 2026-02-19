@@ -182,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
     let target = Arc::new(DuckDBSink::new(&cli.duckdb_path)?);
     let target_sink: Arc<dyn etl::sink::Sink> = Arc::clone(&target) as Arc<dyn etl::sink::Sink>;
 
-    let mutations = MutationConfig::new(0.1, 0.1);
+    let mutations = MutationConfig::new(0.0, 0.0);
 
     let mut pipeline = ETLPipeline::new(
         dataset_source,
