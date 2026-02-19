@@ -132,6 +132,15 @@ pub struct CommonArgs {
     /// Scale factor for the ETL dataset
     #[arg(long, default_value_t = 1.0)]
     pub(crate) scale_factor: f64,
+
+    #[arg(long)]
+    pub(crate) sink_type: Option<SinkType>,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub(crate) enum SinkType {
+    Adbc,
+    S3
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {

@@ -24,6 +24,7 @@ use data_generation::dataset::Dataset;
 use data_generation::dataset::MutationConfig;
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
+use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
@@ -35,6 +36,7 @@ mod commands;
 mod metrics;
 mod scenario;
 
+use crate::args::SinkType;
 use crate::commands::connect_system_adapter;
 use crate::scenario::Scenario;
 
@@ -175,7 +177,21 @@ async fn main() -> anyhow::Result<()> {
         ));
     };
 
-    let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
+    let target: Arc<dyn Sink> = match cli.common.sink_type {
+        Some(SinkType::Adbc) | None => {
+            Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None))
+        }
+        Some(SinkType::S3) => {
+            tracing::warn!("Using S3Storage as sink");
+            Arc::new(S3Storage::new(&TargetConfig {
+                bucket: cli.common.etl_bucket.clone(),
+                prefix: cli.common.etl_target_base_prefix.clone(),
+                region: cli.common.etl_region.clone(),
+                endpoint: cli.common.etl_endpoint.clone(),
+             })?) as Arc<dyn etl::sink::Sink>
+        }
+    };
+
     let mut pipeline = ETLPipeline::new(
         dataset_source,
         &generation_config,
