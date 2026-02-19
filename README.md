@@ -120,11 +120,11 @@ flowchart TB
 
 A **Run** is a single end-to-end execution of the benchmark for one system. Each Run proceeds through three phases:
 
-| Phase                    | What happens                                                                                                                                                                                      | Timed? |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Phase                    | What happens                                                                                                                                                                       | Timed? |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
 | **1. Setup**             | Connect to system adapter via JSON-RPC (stdio or HTTP). Call `setup(run_id, metadata)` to provision the SUT and return ADBC driver config, then `create_tables(run_id, datasets)`. | No     |
-| **2. Benchmark (timed)** | Three sequential stages — warm-up (1× query set), baseline (10% of duration, 60s–600s), and load test (full duration with concurrent clients).                                                    | Yes    |
-| **3. Teardown**          | Call `teardown(run_id)` via the adapter to deprovision resources and clean up.                                                                                                                    | No     |
+| **2. Benchmark (timed)** | Three sequential stages — warm-up (1× query set), baseline (10% of duration, 60s–600s), and load test (full duration with concurrent clients).                                     | Yes    |
+| **3. Teardown**          | Call `teardown(run_id)` via the adapter to deprovision resources and clean up.                                                                                                     | No     |
 
 The **E2E benchmark duration** (phase 2, load test stage) is the primary ranking metric. After the load test, each query's p99 latency is compared against the baseline: >20% increase = FAIL, 10–20% = WARN, ≥3 WARNs = FAIL.
 
