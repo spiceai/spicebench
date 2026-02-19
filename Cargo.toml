@@ -1,4 +1,4 @@
-[workspace] 
+[workspace]
 exclude = ["system-adapters/databricks"]
 members = [
     ".",
