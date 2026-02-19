@@ -3,7 +3,7 @@ exclude = ["system-adapters/databricks"]
 members = [
     ".",
     "crates/adbc_client",
-    "crates/app",
+    "crates/app", "crates/checkpointer",
     "crates/data-generation",
     "crates/duration-parse", "crates/etl",
     "crates/flight_client",
