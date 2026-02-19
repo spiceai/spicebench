@@ -59,6 +59,11 @@ on:
         required: false
         default: 'github-hosted-ubuntu-latest'
         type: string
+      with_created_at:
+        description: 'Append a __created_at timestamp column to every batch written to the sink'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   run-spicebench:
@@ -260,6 +265,11 @@ jobs:
             ADAPTER_ENVS=""
           fi
 
+          WITH_CREATED_AT_FLAG=""
+          if [ "${{ github.event.inputs.with_created_at }}" = "true" ]; then
+            WITH_CREATED_AT_FLAG="--with-created-at"
+          fi
+
           ~/.spice/bin/spicebench \
             --concurrency 2  \
             --scenario "${SCENARIO}" \
@@ -267,4 +277,5 @@ jobs:
             ${ETL_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
-            ${ADAPTER_ENVS}
+            ${ADAPTER_ENVS} \
+            ${WITH_CREATED_AT_FLAG}
