@@ -88,15 +88,15 @@ impl DuckDBSink {
             let guard = conn
                 .lock()
                 .map_err(|e| anyhow::anyhow!("DuckDB connection lock poisoned: {e}"))?;
-            let mut appender = guard
-                .appender(&table)
-                .map_err(|e| anyhow::anyhow!("Failed to create DuckDB appender for '{table}': {e}"))?;
+            let mut appender = guard.appender(&table).map_err(|e| {
+                anyhow::anyhow!("Failed to create DuckDB appender for '{table}': {e}")
+            })?;
             appender
                 .append_record_batch(batch)
                 .map_err(|e| anyhow::anyhow!("Failed to append record batch to '{table}': {e}"))?;
-            appender
-                .flush()
-                .map_err(|e| anyhow::anyhow!("Failed to flush DuckDB appender for '{table}': {e}"))?;
+            appender.flush().map_err(|e| {
+                anyhow::anyhow!("Failed to flush DuckDB appender for '{table}': {e}")
+            })?;
             Ok::<_, anyhow::Error>(())
         })
         .await?
@@ -217,15 +217,15 @@ impl DuckDBSink {
                 .map_err(|e| anyhow::anyhow!("DuckDB connection lock poisoned: {e}"))?;
 
             // Create temporary staging table.
-            guard
-                .execute(&create_sql, [])
-                .map_err(|e| anyhow::anyhow!("Failed to create staging table '{staging_name}': {e}"))?;
+            guard.execute(&create_sql, []).map_err(|e| {
+                anyhow::anyhow!("Failed to create staging table '{staging_name}': {e}")
+            })?;
 
             // Bulk-insert the batch into the staging table via the Appender.
             {
-                let mut appender = guard
-                    .appender(&staging_name)
-                    .map_err(|e| anyhow::anyhow!("Failed to create appender for staging table: {e}"))?;
+                let mut appender = guard.appender(&staging_name).map_err(|e| {
+                    anyhow::anyhow!("Failed to create appender for staging table: {e}")
+                })?;
                 appender
                     .append_record_batch(batch)
                     .map_err(|e| anyhow::anyhow!("Failed to append to staging table: {e}"))?;

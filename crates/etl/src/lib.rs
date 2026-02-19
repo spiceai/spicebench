@@ -336,7 +336,9 @@ impl ETLPipeline {
 
                 for batch in read_result.batches {
                     let stripped = strip_internal_columns(&batch).map_err(|e| {
-                        format!("strip internal columns from {table_name} batch {first_batch_id}: {e}")
+                        format!(
+                            "strip internal columns from {table_name} batch {first_batch_id}: {e}"
+                        )
                     })?;
                     let rehydrated = append_created_at(&stripped).map_err(|e| {
                         format!("append __created_at to {table_name} batch {first_batch_id}: {e}")
