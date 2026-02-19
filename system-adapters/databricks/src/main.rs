@@ -804,27 +804,30 @@ impl DatabricksAdapter {
 
     fn uc_column_type_for_arrow(data_type: &DataType) -> Result<UcColumnType> {
         match data_type {
-            DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN".to_string())),
+            DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN", r#""boolean""#)),
             DataType::Int8
             | DataType::Int16
             | DataType::Int32
             | DataType::UInt8
-            | DataType::UInt16 => Ok(UcColumnType::new("INT", "INT".to_string())),
+            | DataType::UInt16 => Ok(UcColumnType::new("INT", "INT", r#""integer""#)),
             DataType::Int64 | DataType::UInt32 | DataType::UInt64 => {
-                Ok(UcColumnType::new("LONG", "BIGINT".to_string()))
+                Ok(UcColumnType::new("LONG", "BIGINT", r#""long""#))
             }
-            DataType::Float32 => Ok(UcColumnType::new("FLOAT", "FLOAT".to_string())),
-            DataType::Float64 => Ok(UcColumnType::new("DOUBLE", "DOUBLE".to_string())),
+            DataType::Float32 => Ok(UcColumnType::new("FLOAT", "FLOAT", r#""float""#)),
+            DataType::Float64 => Ok(UcColumnType::new("DOUBLE", "DOUBLE", r#""double""#)),
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
-                Ok(UcColumnType::new("STRING", "STRING".to_string()))
+                Ok(UcColumnType::new("STRING", "STRING", r#""string""#))
             }
-            DataType::Date32 => Ok(UcColumnType::new("DATE", "DATE".to_string())),
-            DataType::Timestamp(_, _) => {
-                Ok(UcColumnType::new("TIMESTAMP", "TIMESTAMP".to_string()))
-            }
+            DataType::Date32 => Ok(UcColumnType::new("DATE", "DATE", r#""date""#)),
+            DataType::Timestamp(_, _) => Ok(UcColumnType::new(
+                "TIMESTAMP",
+                "TIMESTAMP",
+                r#""timestamp""#,
+            )),
             DataType::Decimal128(precision, scale) => Ok(UcColumnType::new(
                 "DECIMAL",
                 format!("DECIMAL({precision}, {scale})"),
+                format!(r#""decimal({precision},{scale})""#),
             )),
             other => Err(anyhow!(
                 "Unsupported Arrow data type for Unity Catalog table creation: {other:?}"
@@ -881,6 +884,7 @@ impl DatabricksAdapter {
                     name: field.name().clone(),
                     type_name: col_type.type_name,
                     type_text: col_type.type_text,
+                    type_json: col_type.type_json,
                     position,
                     nullable: field.is_nullable(),
                 })
@@ -971,13 +975,19 @@ struct UcSchemaCreateRequest {
 struct UcColumnType {
     type_name: String,
     type_text: String,
+    type_json: String,
 }
 
 impl UcColumnType {
-    fn new(type_name: impl Into<String>, type_text: impl Into<String>) -> Self {
+    fn new(
+        type_name: impl Into<String>,
+        type_text: impl Into<String>,
+        type_json: impl Into<String>,
+    ) -> Self {
         Self {
             type_name: type_name.into(),
             type_text: type_text.into(),
+            type_json: type_json.into(),
         }
     }
 }
@@ -987,6 +997,7 @@ struct UcTableColumnCreateRequest {
     name: String,
     type_name: String,
     type_text: String,
+    type_json: String,
     position: usize,
     nullable: bool,
 }
@@ -1076,10 +1087,7 @@ impl Handler for DatabricksAdapter {
         // parameters must be encoded as query parameters in the URI.
         Ok(SetupResponse {
             driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([(
-                "uri".to_string(),
-                Value::String(self.databricks_uri()),
-            )]),
+            db_kwargs: HashMap::from([("uri".to_string(), Value::String(self.databricks_uri()))]),
         })
     }
 
