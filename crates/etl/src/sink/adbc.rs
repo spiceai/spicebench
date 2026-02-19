@@ -329,7 +329,7 @@ fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<&'static str> {
         DataType::Int64 | DataType::UInt32 | DataType::UInt64 => Ok("BIGINT"),
         DataType::Float32 => Ok("FLOAT"),
         DataType::Float64 => Ok("DOUBLE"),
-        DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING"),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok("STRING"),
         DataType::Date32 => Ok("DATE"),
         DataType::Timestamp(_, _) => Ok("TIMESTAMP"),
         DataType::Decimal128(_, _) => Ok("DECIMAL(38, 18)"),
@@ -399,6 +399,14 @@ fn sql_literal_for_value(
                 .as_any()
                 .downcast_ref::<arrow::array::LargeStringArray>()
                 .ok_or_else(|| anyhow::anyhow!("Failed to downcast LargeUtf8 array"))?
+                .value(row_idx);
+            Ok(quote_string_literal(value))
+        }
+        DataType::Utf8View => {
+            let value = column
+                .as_any()
+                .downcast_ref::<arrow::array::StringViewArray>()
+                .ok_or_else(|| anyhow::anyhow!("Failed to downcast Utf8View array"))?
                 .value(row_idx);
             Ok(quote_string_literal(value))
         }

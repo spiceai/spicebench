@@ -84,7 +84,7 @@ jobs:
 
       - name: pull spidapter image
         if: ${{ github.event.inputs.system_adapter == 'spidapter' }}
-        run: docker pull ghcr.io/spiceai/spidapter:latest
+        run: docker pull ghcr.io/spiceai/spidapter:a4ff52141245205a9abc67d331e0e69c98c69911
 
       - uses: ./.github/actions/build-spicebench
 
