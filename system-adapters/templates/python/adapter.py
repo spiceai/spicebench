@@ -34,13 +34,11 @@ def jsonrpc_error(request_id: Any, code: int, message: str, data: Any | None = N
 
 def method_setup(params: dict[str, Any]) -> dict[str, Any]:
     _run_id = params.get("run_id")
-    _datasets = params.get("datasets", {})
 
     # Stub: Provision or initialize your SUT for this run and return
     # query driver details SpiceBench should use.
     # Example:
     # - create a test database / schema for _run_id
-    # - configure ingestion pipelines for _datasets
     # - wait for SUT readiness checks to pass
     # - resolve connection details from your control plane
 
@@ -61,10 +59,12 @@ def method_setup(params: dict[str, Any]) -> dict[str, Any]:
 
 def method_create_tables(params: dict[str, Any]) -> dict[str, Any]:
     _run_id = params.get("run_id")
+    _datasets = params.get("datasets", {})
 
     # Stub: Create/register destination tables for benchmark datasets.
     # Example:
     # - create tables if they do not exist
+    # - iterate _datasets to map each dataset to a destination table
     # - apply expected schema/partitioning
 
     return {"ok": True}

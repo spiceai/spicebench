@@ -118,10 +118,10 @@ public final class AdapterServer {
     }
 
     return switch (method) {
-      case "setup" -> jsonrpcSuccess(id, methodSetup());
-      case "create_tables" -> jsonrpcSuccess(id, methodCreateTables());
-      case "teardown" -> jsonrpcSuccess(id, methodTeardown());
-      case "metrics" -> jsonrpcSuccess(id, methodMetrics());
+      case "setup" -> jsonrpcSuccess(id, methodSetup(params));
+      case "create_tables" -> jsonrpcSuccess(id, methodCreateTables(params));
+      case "teardown" -> jsonrpcSuccess(id, methodTeardown(params));
+      case "metrics" -> jsonrpcSuccess(id, methodMetrics(params));
       case "rpc.methods" -> jsonrpcSuccess(id, methodRpcMethods());
       default -> jsonrpcError(id, -32601, "Method not found", null);
     };
@@ -151,14 +151,20 @@ public final class AdapterServer {
     return response;
   }
 
-  private static JsonNode methodSetup() {
+  private static JsonNode methodSetup(JsonNode params) {
+    JsonNode runId = params.get("run_id");
+    if (runId == null) {
+      runId = MAPPER.nullNode();
+    }
+
     // Stub: Provision or initialize your SUT for this run and return
     // query driver details SpiceBench should use.
     // Example:
     // - create run-scoped schema/database
-    // - configure ingestion resources for datasets
+    // - configure ingestion resources needed before table creation
     // - wait for readiness checks to pass
     // - resolve endpoint and credentials from your control plane
+    runId.asText();
     String host = getenvOr("SUT_HOST", "127.0.0.1");
     int port = getenvIntOr("SUT_PORT", 50051);
     boolean tls = "true".equalsIgnoreCase(getenvOr("SUT_TLS", "false"));
@@ -176,32 +182,59 @@ public final class AdapterServer {
     return result;
   }
 
-  private static JsonNode methodCreateTables() {
+  private static JsonNode methodCreateTables(JsonNode params) {
+    JsonNode runId = params.get("run_id");
+    JsonNode datasets = params.get("datasets");
+    if (runId == null) {
+      runId = MAPPER.nullNode();
+    }
+    if (datasets == null) {
+      datasets = MAPPER.createObjectNode();
+    }
+
     // Stub: Create/register destination tables for benchmark datasets.
     // Example:
     // - create tables if they do not exist
+    // - iterate datasets and map each schema to table DDL
     // - apply expected schema/partitioning
+    runId.asText();
+    datasets.isObject();
+
     ObjectNode result = MAPPER.createObjectNode();
     result.put("ok", true);
     return result;
   }
 
-  private static JsonNode methodTeardown() {
+  private static JsonNode methodTeardown(JsonNode params) {
+    JsonNode runId = params.get("run_id");
+    if (runId == null) {
+      runId = MAPPER.nullNode();
+    }
+
     // Stub: Deprovision resources created in setup.
     // Example:
     // - drop run-scoped schema/database
     // - stop ingestion workers/jobs
+    runId.asText();
+
     ObjectNode result = MAPPER.createObjectNode();
     result.put("ok", true);
     return result;
   }
 
-  private static JsonNode methodMetrics() {
+  private static JsonNode methodMetrics(JsonNode params) {
+    JsonNode runId = params.get("run_id");
+    if (runId == null) {
+      runId = MAPPER.nullNode();
+    }
+
     // Stub: Poll live SUT telemetry and map to this metrics schema.
     // Example sources:
     // - CPU/memory/disk from host/cloud monitoring APIs
     // - ingestion throughput from ingestion status endpoint
     // - active connections from DB/service diagnostics endpoint
+    runId.asText();
+
     ObjectNode resource = MAPPER.createObjectNode();
     resource.put("cpu_usage_percent", 0.0);
     resource.put("memory_usage_bytes", 0);

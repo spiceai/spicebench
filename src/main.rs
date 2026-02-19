@@ -37,7 +37,7 @@ mod scenario;
 use crate::commands::connect_system_adapter;
 use crate::scenario::Scenario;
 
-fn setup_request_datasets(
+fn create_tables_request_datasets(
     dataset: &Arc<dyn Dataset>,
 ) -> HashMap<String, system_adapter_protocol::DatasetConfig> {
     dataset
@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
     let mutations = MutationConfig::new(0.1, 0.1);
 
     let setup_dataset = dataset_source.create(&generation_config, &mutations)?;
-    let datasets = setup_request_datasets(&setup_dataset);
+    let datasets = create_tables_request_datasets(&setup_dataset);
 
     let setup_metadata = std::collections::HashMap::from([
         (
@@ -136,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     ]);
 
     let adbc_driver = match system_adapter_client
-        .setup(run_id, datasets, setup_metadata)
+        .setup(run_id, setup_metadata)
         .await
     {
         Ok(response) => response,
@@ -182,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
         &mutations,
     )?;
 
-    if let Err(e) = system_adapter_client.create_tables(run_id).await {
+    if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
         pipeline.cancel();
         return Err(anyhow::anyhow!(
             "Failed to create tables via system adapter: {e}"
