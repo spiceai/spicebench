@@ -104,9 +104,13 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) etl_bucket: String,
 
-    /// S3 key prefix for the ETL source data
+    /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
     #[arg(long, default_value = "")]
-    pub(crate) etl_source_prefix: String,
+    pub(crate) etl_prefix: String,
+
+    /// Version identifier for the data generation to read from.
+    #[arg(long)]
+    pub(crate) etl_version: u64,
 
     /// Base S3 key prefix for the ETL target (rehydrated) data.
     /// A random suffix is appended automatically to create a unique destination per run.

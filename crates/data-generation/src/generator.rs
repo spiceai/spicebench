@@ -25,12 +25,28 @@ use super::config::IngestorConfig;
 use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
 use super::storage::DataStorage;
+use super::version::{
+    MutationsMetadata, TableMetadata, VersionMetadata, arrow_schema_to_json,
+};
+
+/// Configuration for the version metadata that will be written at the end
+/// of a data generation run.
+pub struct VersionConfig {
+    pub version: u64,
+    pub scenario: String,
+    pub scale_factor: f64,
+    pub num_steps: u16,
+    pub dataset_type: String,
+    pub update_ratio: f64,
+    pub delete_ratio: f64,
+}
 
 pub struct DataGenerator {
     dataset: Arc<dyn Dataset>,
     target: Arc<dyn DataStorage>,
     metrics: Metrics,
     semaphore: Arc<Semaphore>,
+    version_config: VersionConfig,
 }
 
 impl DataGenerator {
@@ -39,12 +55,14 @@ impl DataGenerator {
         target: Arc<dyn DataStorage>,
         config: &IngestorConfig,
         metrics: Metrics,
+        version_config: VersionConfig,
     ) -> Self {
         Self {
             dataset,
             target,
             metrics,
             semaphore: Arc::new(Semaphore::new(config.max_concurrency)),
+            version_config,
         }
     }
 
@@ -205,23 +223,58 @@ impl DataGenerator {
 
         logger_handle.abort();
 
-        // Persist table-level metadata (key columns + batch IDs) for each table.
+        // Build and persist the consolidated version metadata (version.json).
         let written = Arc::try_unwrap(written_batch_ids)
             .expect("all tasks should be finished")
             .into_inner()
             .expect("mutex should not be poisoned");
+
+        let dataset_tables = self.dataset.tables();
+        let mut tables_metadata = HashMap::new();
         for (table_name, mut ids) in written {
             ids.sort_unstable();
             let key_columns = self.dataset.primary_key(&table_name);
-            self.target
-                .write_table_metadata(&table_name, &key_columns, &ids)
-                .await?;
+            let dataset_table = dataset_tables.get(&table_name);
+            let schema_json = dataset_table
+                .map(|t| arrow_schema_to_json(&t.rehydrated_schema()))
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+            let time_column = dataset_table
+                .map(|t| t.time_column.clone())
+                .unwrap_or_default();
+
+            tables_metadata.insert(
+                table_name.clone(),
+                TableMetadata {
+                    name: table_name.clone(),
+                    schema: schema_json,
+                    time_column,
+                    key_columns,
+                    batch_ids: ids.clone(),
+                },
+            );
+
             tracing::info!(
                 table = %table_name,
                 batch_count = ids.len(),
-                "Table metadata written"
+                "Table metadata collected"
             );
         }
+
+        let version_metadata = VersionMetadata {
+            version: self.version_config.version,
+            scenario: self.version_config.scenario.clone(),
+            scale_factor: self.version_config.scale_factor,
+            num_steps: self.version_config.num_steps,
+            dataset_type: self.version_config.dataset_type.clone(),
+            mutations: MutationsMetadata {
+                update_ratio: self.version_config.update_ratio,
+                delete_ratio: self.version_config.delete_ratio,
+            },
+            tables: tables_metadata,
+        };
+
+        self.target.write_version_metadata(&version_metadata).await?;
+        tracing::info!("version.json written");
 
         let summary = self.metrics.summary();
         tracing::info!(

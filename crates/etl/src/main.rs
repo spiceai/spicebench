@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use adbc_client::AdbcConnection;
 use clap::Parser;
-use data_generation::config::{DatasetConfig, TargetConfig};
+use data_generation::config::{DatasetConfig, TargetConfig, build_version_prefix};
 use data_generation::dataset::MutationConfig;
 use data_generation::storage::s3::S3Storage;
 use etl::sink::adbc::AdbcSink;
@@ -31,6 +31,14 @@ use tracing_subscriber::EnvFilter;
     about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC"
 )]
 struct Cli {
+    /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
+    #[arg(long, default_value = "tpch")]
+    scenario: String,
+
+    /// Version identifier for the data generation to read from.
+    #[arg(long)]
+    version: u64,
+
     /// Dataset type: "tpch" or "simple_sequence"
     #[arg(long, default_value = "tpch")]
     dataset: String,
@@ -47,9 +55,10 @@ struct Cli {
     #[arg(long)]
     bucket: String,
 
-    /// S3 key prefix for source data
+    /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
     #[arg(long, default_value = "")]
-    source_prefix: String,
+    prefix: String,
+
     /// AWS region
     #[arg(long)]
     region: Option<String>,
@@ -94,10 +103,13 @@ impl Cli {
         }
     }
 
+    /// Builds the source config with the versioned prefix:
+    /// `{prefix}/{scenario}/{version}`
     fn source_config(&self) -> TargetConfig {
+        let version_prefix = build_version_prefix(&self.prefix, &self.scenario, self.version);
         TargetConfig {
             bucket: self.bucket.clone(),
-            prefix: self.source_prefix.clone(),
+            prefix: version_prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }
@@ -130,9 +142,11 @@ async fn main() -> anyhow::Result<()> {
             .with_created_at(cli.with_created_at);
 
     tracing::info!(
+        scenario = %cli.scenario,
+        version = cli.version,
         dataset = %cli.dataset,
         bucket = %cli.bucket,
-        source_prefix = %cli.source_prefix,
+        prefix = %cli.prefix,
         adbc_driver = %cli.adbc_driver,
         adbc_schema = ?cli.adbc_schema,
         scale_factor = cli.scale_factor,

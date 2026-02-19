@@ -21,7 +21,7 @@ use std::sync::Arc;
 use arrow::array::RecordBatch;
 use checkpointer::CheckpointStore;
 use clap::Parser;
-use data_generation::config::{DatasetConfig, TargetConfig};
+use data_generation::config::{DatasetConfig, TargetConfig, build_version_prefix};
 use data_generation::dataset::MutationConfig;
 use data_generation::storage::s3::S3Storage;
 use etl::sink::duckdb::DuckDBSink;
@@ -39,6 +39,10 @@ struct Cli {
     #[arg(long, value_enum, default_value = "tpch")]
     scenario: Scenario,
 
+    /// Version identifier for the data generation to read from.
+    #[arg(long)]
+    version: u64,
+
     /// Dataset type: "tpch" or "simple_sequence"
     #[arg(long, default_value = "tpch")]
     dataset: String,
@@ -55,9 +59,10 @@ struct Cli {
     #[arg(long)]
     bucket: String,
 
-    /// S3 key prefix for source data
+    /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
     #[arg(long, default_value = "")]
-    source_prefix: String,
+    prefix: String,
+
     /// AWS region
     #[arg(long)]
     region: Option<String>,
@@ -102,10 +107,17 @@ impl Cli {
         }
     }
 
+    /// Builds the source config with the versioned prefix:
+    /// `{prefix}/{scenario}/{version}`
     fn source_config(&self) -> TargetConfig {
+        let version_prefix = build_version_prefix(
+            &self.prefix,
+            &self.scenario.to_string(),
+            self.version,
+        );
         TargetConfig {
             bucket: self.bucket.clone(),
-            prefix: self.source_prefix.clone(),
+            prefix: version_prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }
@@ -195,7 +207,9 @@ async fn main() -> anyhow::Result<()> {
     let dataset_source = cli.dataset_source()?;
     let dataset_config = cli.dataset_config();
 
-    let source = Arc::new(S3Storage::new(&cli.source_config())?);
+    let source_config = cli.source_config();
+    let version_prefix = source_config.prefix.clone();
+    let source = Arc::new(S3Storage::new(&source_config)?);
 
     let target = Arc::new(DuckDBSink::new(&cli.duckdb_path)?);
     let target_sink: Arc<dyn etl::sink::Sink> = Arc::clone(&target) as Arc<dyn etl::sink::Sink>;
@@ -213,9 +227,11 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(
         scenario = %scenario_name,
+        version = cli.version,
         dataset = %cli.dataset,
         bucket = %cli.bucket,
-        source_prefix = %cli.source_prefix,
+        prefix = %cli.prefix,
+        version_prefix = %version_prefix,
         duckdb_path = %cli.duckdb_path.display(),
         scale_factor = cli.scale_factor,
         num_steps = cli.num_steps,
@@ -271,10 +287,10 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await?;
 
-                // Upload all checkpoints to S3.
+                // Upload all checkpoints to S3 under the version prefix.
                 let checkpoint_store = CheckpointStore::new(
                     &cli.bucket,
-                    &cli.source_prefix,
+                    &version_prefix,
                     cli.region.as_deref(),
                     cli.endpoint.as_deref(),
                 )?;

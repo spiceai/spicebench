@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use clap::Parser;
-use data_generation::generator::DataGenerator;
+use data_generation::generator::{DataGenerator, VersionConfig};
 use data_generation::storage::DataStorage;
 use tracing_subscriber::EnvFilter;
 
@@ -60,6 +60,8 @@ fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
         max_concurrency = ingestor_config.max_concurrency,
         bucket = target_config.bucket,
         prefix = target_config.prefix,
+        version = args.version,
+        scenario = %args.scenario,
         "Configuration"
     );
 
@@ -72,11 +74,22 @@ fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
 
     let metrics = Metrics::new();
 
+    let version_config = VersionConfig {
+        version: args.version,
+        scenario: args.scenario.clone(),
+        scale_factor: args.scale_factor,
+        num_steps: args.num_steps,
+        dataset_type: args.dataset.clone(),
+        update_ratio: mutations_config.update_ratio,
+        delete_ratio: mutations_config.delete_ratio,
+    };
+
     let ingestor = DataGenerator::new(
         dataset,
         target as Arc<dyn DataStorage>,
         &ingestor_config,
         metrics,
+        version_config,
     );
     Ok(ingestor)
 }
