@@ -255,7 +255,14 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    commands::load::run(&cli.common.scenario, &cli.common, load_conn, &mut pipeline, checkpoint_steps).await?;
+    commands::load::run(
+        &cli.common.scenario,
+        &cli.common,
+        load_conn,
+        &mut pipeline,
+        checkpoint_steps,
+    )
+    .await?;
 
     // --- Wait for ETL to finish ---
     // If checkpoint_steps was set, the load runner already handled
