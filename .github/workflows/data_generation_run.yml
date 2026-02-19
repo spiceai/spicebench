@@ -173,11 +173,17 @@ jobs:
           PREFIX="${PREFIX_BASE}"
           PREFIX="${PREFIX%/}/${SCENARIO}"
 
+          # The data-generation binary appends the scale factor (formatted to
+          # one decimal place) to the prefix. Mirror that here so the
+          # checkpointer reads from the same S3 path.
+          SF_FORMATTED=$(printf '%.1f' "${SCALE_FACTOR}")
+          SOURCE_PREFIX="${PREFIX}/${SF_FORMATTED}"
+
           ARGS="--scenario ${SCENARIO}"
           ARGS="${ARGS} --dataset ${SCENARIO}"
           ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
           ARGS="${ARGS} --bucket ${BUCKET}"
-          ARGS="${ARGS} --source-prefix ${PREFIX}"
+          ARGS="${ARGS} --source-prefix ${SOURCE_PREFIX}"
           ARGS="${ARGS} --duckdb-path ./checkpointer.duckdb"
           ARGS="${ARGS} --checkpoint-dir ./checkpoints"
 
