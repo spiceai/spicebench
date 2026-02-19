@@ -444,20 +444,22 @@ impl ETLPipeline {
 
                 for batch in &read_result.batches {
                     let segments = split_batch_by_op(batch, key_columns).map_err(|e| {
-                        format!(
-                            "split batch by op for {table_name} batch {first_batch_id}: {e}"
-                        )
+                        format!("split batch by op for {table_name} batch {first_batch_id}: {e}")
                     })?;
 
                     for segment in segments {
                         let rehydrated = append_created_at(&segment.batch).map_err(|e| {
-                            format!("append __created_at to {table_name} batch {first_batch_id}: {e}")
+                            format!(
+                                "append __created_at to {table_name} batch {first_batch_id}: {e}"
+                            )
                         })?;
 
                         target
                             .write(&table_name, first_batch_id, rehydrated, segment.op)
                             .await
-                            .map_err(|e| format!("write {table_name} batch {first_batch_id}: {e}"))?;
+                            .map_err(|e| {
+                                format!("write {table_name} batch {first_batch_id}: {e}")
+                            })?;
                     }
                 }
 
