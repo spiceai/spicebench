@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "bf89cf7ab0b7",
+  "session_id": "ea944396-6f59-4db3-8808-a3ec71806383",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-19T13:12:16.208842Z",
+  "branch": "jeadie/26-02-19/teardown",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/main.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "7eebac5aeb9c",
+  "transcript_identifier_at_start": "1fcae089-0601-4da1-81ef-20a20ea94b0b",
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 13912,
+    "cache_read_tokens": 271655,
+    "output_tokens": 56,
+    "api_call_count": 10
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-19T13:12:16.11688Z",
+    "agent_lines": 112,
+    "human_added": 0,
+    "human_modified": 3,
+    "human_removed": 5,
+    "total_committed": 115,
+    "agent_percentage": 97.3913043478261
+  },
+  "transcript_path": ".claude/projects/-Users-jeadie-Github-spicebench/ea944396-6f59-4db3-8808-a3ec71806383.jsonl"
+}

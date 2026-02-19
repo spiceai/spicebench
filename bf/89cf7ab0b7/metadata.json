@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "bf89cf7ab0b7",
+  "strategy": "manual-commit",
+  "branch": "jeadie/26-02-19/teardown",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/main.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bf/89cf7ab0b7/0/metadata.json",
+      "transcript": "/bf/89cf7ab0b7/0/full.jsonl",
+      "context": "/bf/89cf7ab0b7/0/context.md",
+      "content_hash": "/bf/89cf7ab0b7/0/content_hash.txt",
+      "prompt": "/bf/89cf7ab0b7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 13912,
+    "cache_read_tokens": 271655,
+    "output_tokens": 56,
+    "api_call_count": 10
+  }
+}
