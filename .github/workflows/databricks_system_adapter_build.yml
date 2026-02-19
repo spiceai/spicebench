@@ -25,6 +25,7 @@ jobs:
         with:
           toolchain: 1.91
           cache: true
+          rustflags: ""
 
       - name: Build databricks system adapter
         run: cargo build --manifest-path system-adapters/databricks/Cargo.toml
