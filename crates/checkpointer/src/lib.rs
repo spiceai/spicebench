@@ -153,7 +153,8 @@ impl CheckpointStore {
         }
 
         let mut checkpoint_indexes: Vec<usize> = Vec::new();
-        let mut query_indexes_set: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut query_indexes_set: std::collections::BTreeSet<usize> =
+            std::collections::BTreeSet::new();
 
         // Iterate over checkpoint index directories (0, 1, 2, …).
         let mut checkpoint_dirs: Vec<_> = std::fs::read_dir(local_checkpoint_dir)?
