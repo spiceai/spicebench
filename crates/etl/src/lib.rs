@@ -440,15 +440,25 @@ impl ETLPipeline {
     /// the system adapter.
     pub fn create_tables_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
         let with_created_at = self.with_created_at;
+
         self.dataset
             .tables()
             .into_iter()
             .map(|(name, table)| {
-                let schema = if with_created_at {
-                    schema_with_created_at(&table.schema)
-                } else {
-                    table.schema.clone()
-                };
+                // Strip internal columns (_op, _op_index) that are used for
+                // change-tracking but never written to the target sink.
+                let fields: Vec<_> = table
+                    .schema
+                    .fields()
+                    .iter()
+                    .filter(|f| !INTERNAL_COLUMNS.contains(&f.name().as_str()))
+                    .cloned()
+                    .collect();
+                let mut schema: SchemaRef = Arc::new(Schema::new(fields));
+
+                if with_created_at {
+                    schema = schema_with_created_at(&schema);
+                }
                 let config = ProtocolDatasetConfig { schema };
                 (name, config)
             })

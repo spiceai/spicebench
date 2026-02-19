@@ -43,12 +43,26 @@ fn create_tables_request_datasets(
     dataset: &Arc<dyn Dataset>,
     with_created_at: bool,
 ) -> HashMap<String, system_adapter_protocol::DatasetConfig> {
+    /// Internal columns that are used for change-tracking but never written to
+    /// the target sink.
+    const INTERNAL_COLUMNS: &[&str] = &["_op", "_op_index"];
+
     dataset
         .tables()
         .into_iter()
         .map(|(name, table)| {
+            // Strip internal columns (_op, _op_index) that are used for
+            // change-tracking but never written to the target sink.
+            let fields: Vec<_> = table
+                .schema
+                .fields()
+                .iter()
+                .filter(|f| !INTERNAL_COLUMNS.contains(&f.name().as_str()))
+                .cloned()
+                .collect();
+
             let schema = if with_created_at {
-                let mut fields: Vec<_> = table.schema.fields().iter().cloned().collect();
+                let mut fields = fields;
                 fields.push(Arc::new(Field::new(
                     "__created_at",
                     DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
@@ -56,7 +70,7 @@ fn create_tables_request_datasets(
                 )));
                 Arc::new(Schema::new(fields))
             } else {
-                table.schema.clone()
+                Arc::new(Schema::new(fields))
             };
 
             (name, system_adapter_protocol::DatasetConfig { schema })
