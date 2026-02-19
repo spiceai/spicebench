@@ -163,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("Failed to download checkpoint manifest - results validation will not be enabled: {e}");
         e
     }).ok();
+    let mut checkpoint_steps: Option<usize> = None;
     if let Some(manifest) = manifest
         && let Some(scenario_info) = manifest.scenarios.get(&scenario_name)
     {
@@ -170,9 +171,13 @@ async fn main() -> anyhow::Result<()> {
             scenario = %scenario_name,
             num_checkpoints = scenario_info.num_checkpoints,
             num_queries = scenario_info.num_queries,
+            checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
             path = %checkpoint_dir.path().display(),
             "Downloading checkpoints"
         );
+        if scenario_info.checkpoint_interval_steps > 0 {
+            checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
+        }
         if let Err(e) = checkpoint_store
             .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
             .await
@@ -250,9 +255,20 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    commands::load::run(&cli.common.scenario, &cli.common, load_conn, &mut pipeline).await?;
+    commands::load::run(
+        &cli.common.scenario,
+        &cli.common,
+        load_conn,
+        &mut pipeline,
+        checkpoint_steps,
+    )
+    .await?;
 
     // --- Wait for ETL to finish ---
+    // If checkpoint_steps was set, the load runner already handled
+    // the pause/resume loop internally, so the pipeline should be
+    // in a stopped state by now. If it was started without checkpoints
+    // (.start()), the pipeline may still be running.
     let final_state = pipeline.wait().await;
     match &final_state {
         PipelineState::Stopped(StopReason::Completed) => {
