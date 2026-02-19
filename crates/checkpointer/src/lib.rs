@@ -46,10 +46,18 @@ pub struct CheckpointManifest {
 /// Per-scenario metadata stored inside the manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioCheckpoint {
-    /// Total number of checkpoint snapshots stored for this scenario.
-    pub num_checkpoints: usize,
-    /// Number of query results stored in each checkpoint snapshot.
-    pub num_queries: usize,
+    /// The checkpoint snapshot indexes that are stored for this scenario.
+    ///
+    /// Replaces the old `num_checkpoints` count — callers should iterate
+    /// over this vec directly rather than assuming a contiguous `0..N` range.
+    #[serde(default)]
+    pub checkpoint_indexes: Vec<usize>,
+    /// The query indexes that have results stored in each checkpoint.
+    ///
+    /// Replaces the old `num_queries` count — callers should iterate
+    /// over this vec directly rather than assuming a contiguous `0..N` range.
+    #[serde(default)]
+    pub query_indexes: Vec<usize>,
     /// Number of ETL steps between each checkpoint.
     ///
     /// This is the step count that was passed to [`ETLPipeline::run`] during
@@ -144,8 +152,9 @@ impl CheckpointStore {
             );
         }
 
-        let mut num_checkpoints: usize = 0;
-        let mut num_queries: usize = 0;
+        let mut checkpoint_indexes: Vec<usize> = Vec::new();
+        let mut query_indexes_set: std::collections::BTreeSet<usize> =
+            std::collections::BTreeSet::new();
 
         // Iterate over checkpoint index directories (0, 1, 2, …).
         let mut checkpoint_dirs: Vec<_> = std::fs::read_dir(local_checkpoint_dir)?
@@ -187,21 +196,22 @@ impl CheckpointStore {
                 );
                 self.store.put(&dest, PutPayload::from(bytes)).await?;
 
-                if q_idx >= num_queries {
-                    num_queries = q_idx + 1;
-                }
+                query_indexes_set.insert(q_idx);
             }
 
-            num_checkpoints = checkpoint_idx + 1;
+            checkpoint_indexes.push(checkpoint_idx);
         }
 
         // Merge into manifest.
         let mut manifest = self.download_manifest().await.unwrap_or_default();
+        let query_indexes: Vec<usize> = query_indexes_set.into_iter().collect();
+        let num_checkpoints = checkpoint_indexes.len();
+        let num_queries = query_indexes.len();
         manifest.scenarios.insert(
             scenario.to_owned(),
             ScenarioCheckpoint {
-                num_checkpoints,
-                num_queries,
+                checkpoint_indexes,
+                query_indexes,
                 checkpoint_interval_steps,
             },
         );
@@ -243,11 +253,11 @@ impl CheckpointStore {
         info: &ScenarioCheckpoint,
         local_dir: &Path,
     ) -> anyhow::Result<()> {
-        for checkpoint_idx in 0..info.num_checkpoints {
+        for &checkpoint_idx in &info.checkpoint_indexes {
             let checkpoint_dir = local_dir.join(checkpoint_idx.to_string());
             std::fs::create_dir_all(&checkpoint_dir)?;
 
-            for q_idx in 0..info.num_queries {
+            for &q_idx in &info.query_indexes {
                 let remote = self.checkpoint_parquet_path(checkpoint_idx, q_idx);
                 let data = self.store.get(&remote).await?.bytes().await?;
                 let local_path = checkpoint_dir.join(format!("{q_idx}.parquet"));

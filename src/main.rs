@@ -110,8 +110,8 @@ async fn run_benchmark(
     {
         tracing::info!(
             scenario = %scenario_name,
-            num_checkpoints = scenario_info.num_checkpoints,
-            num_queries = scenario_info.num_queries,
+            num_checkpoints = scenario_info.checkpoint_indexes.len(),
+            num_queries = scenario_info.query_indexes.len(),
             checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
             path = %checkpoint_dir.path().display(),
             "Downloading checkpoints"
