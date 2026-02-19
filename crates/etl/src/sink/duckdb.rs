@@ -355,23 +355,23 @@ fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
-fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<&'static str> {
+fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {
     match data_type {
-        DataType::Boolean => Ok("BOOLEAN"),
-        DataType::Int8 => Ok("TINYINT"),
-        DataType::Int16 => Ok("SMALLINT"),
-        DataType::Int32 => Ok("INTEGER"),
-        DataType::UInt8 => Ok("UTINYINT"),
-        DataType::UInt16 => Ok("USMALLINT"),
-        DataType::UInt32 => Ok("UINTEGER"),
-        DataType::Int64 => Ok("BIGINT"),
-        DataType::UInt64 => Ok("UBIGINT"),
-        DataType::Float32 => Ok("FLOAT"),
-        DataType::Float64 => Ok("DOUBLE"),
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok("VARCHAR"),
-        DataType::Date32 => Ok("DATE"),
-        DataType::Timestamp(_, _) => Ok("TIMESTAMP"),
-        DataType::Decimal128(_, _) => Ok("DECIMAL(38, 18)"),
+        DataType::Boolean => Ok("BOOLEAN".to_string()),
+        DataType::Int8 => Ok("TINYINT".to_string()),
+        DataType::Int16 => Ok("SMALLINT".to_string()),
+        DataType::Int32 => Ok("INTEGER".to_string()),
+        DataType::UInt8 => Ok("UTINYINT".to_string()),
+        DataType::UInt16 => Ok("USMALLINT".to_string()),
+        DataType::UInt32 => Ok("UINTEGER".to_string()),
+        DataType::Int64 => Ok("BIGINT".to_string()),
+        DataType::UInt64 => Ok("UBIGINT".to_string()),
+        DataType::Float32 => Ok("FLOAT".to_string()),
+        DataType::Float64 => Ok("DOUBLE".to_string()),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok("VARCHAR".to_string()),
+        DataType::Date32 => Ok("DATE".to_string()),
+        DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
+        DataType::Decimal128(p, s) => Ok(format!("DECIMAL({p}, {s})")),
         other => anyhow::bail!("Unsupported Arrow data type for DuckDB sink: {other:?}"),
     }
 }
