@@ -254,7 +254,7 @@ jobs:
             fi
           else
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY ghcr.io/spiceai/spidapter:latest stdio --verbose"
             ADAPTER_ENVS=""
           fi
 
