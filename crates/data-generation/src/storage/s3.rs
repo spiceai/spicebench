@@ -107,10 +107,7 @@ impl S3Storage {
         if self.prefix.is_empty() {
             ObjectPath::from(format!("{table_name}/metadata.json"))
         } else {
-            ObjectPath::from(format!(
-                "{}/{table_name}/metadata.json",
-                self.prefix
-            ))
+            ObjectPath::from(format!("{}/{table_name}/metadata.json", self.prefix))
         }
     }
 
