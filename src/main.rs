@@ -14,14 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use adbc_client::AdbcConnection;
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use checkpointer::CheckpointStore;
 use clap::Parser;
 use data_generation::config::{TargetConfig, build_version_prefix};
-use data_generation::dataset::Dataset;
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
@@ -38,31 +36,6 @@ mod scenario;
 
 use crate::args::CommonArgs;
 use crate::commands::connect_system_adapter;
-
-fn create_tables_request_datasets(
-    dataset: &Arc<dyn Dataset>,
-    with_created_at: bool,
-) -> HashMap<String, system_adapter_protocol::DatasetConfig> {
-    dataset
-        .tables()
-        .into_iter()
-        .map(|(name, table)| {
-            let schema = if with_created_at {
-                let mut fields: Vec<_> = table.schema.fields().iter().cloned().collect();
-                fields.push(Arc::new(Field::new(
-                    "__created_at",
-                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                    true,
-                )));
-                Arc::new(Schema::new(fields))
-            } else {
-                table.schema.clone()
-            };
-
-            (name, system_adapter_protocol::DatasetConfig { schema })
-        })
-        .collect()
-}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -84,7 +57,6 @@ async fn run_benchmark(
     adbc_driver: system_adapter_protocol::SetupResponse,
     version_metadata: &VersionMetadata,
     source: Arc<S3Storage>,
-    datasets: HashMap<String, system_adapter_protocol::DatasetConfig>,
 ) -> anyhow::Result<()> {
     // --- Download checkpoints from S3 ---
     let scenario_name = common.scenario.to_string();
@@ -160,6 +132,8 @@ async fn run_benchmark(
         &mutations,
     )?
     .with_created_at(common.with_created_at);
+
+    let datasets = pipeline.create_tables_request_datasets();
 
     if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
         pipeline.cancel();
@@ -252,10 +226,6 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
-    let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
-    let generation_config = version_metadata.dataset_config();
-    let mutations = version_metadata.mutation_config();
-
     // --- Connect to the system adapter ---
     let mut system_adapter_client = match connect_system_adapter(&cli.common).await {
         Ok(system_adapter_client) => system_adapter_client,
@@ -265,13 +235,6 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let run_id = uuid::Uuid::new_v4();
-
-    let setup_dataset = dataset_source.create(
-        &generation_config,
-        &mutations,
-        Arc::clone(&source) as Arc<dyn DataStorage>,
-    )?;
-    let datasets = create_tables_request_datasets(&setup_dataset, cli.common.with_created_at);
 
     let setup_metadata = std::collections::HashMap::from([
         (
@@ -298,7 +261,6 @@ async fn main() -> anyhow::Result<()> {
         adbc_driver,
         &version_metadata,
         source,
-        datasets,
     )
     .await;
 
