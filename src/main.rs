@@ -20,9 +20,7 @@ use adbc_client::AdbcConnection;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use checkpointer::CheckpointStore;
 use clap::Parser;
-use data_generation::config::{
-    TargetConfig, build_version_prefix,
-};
+use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::dataset::Dataset;
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
