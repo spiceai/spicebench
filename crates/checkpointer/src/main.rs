@@ -110,11 +110,8 @@ impl Cli {
     /// Builds the source config with the versioned prefix:
     /// `{prefix}/{scenario}/{version}`
     fn source_config(&self) -> TargetConfig {
-        let version_prefix = build_version_prefix(
-            &self.prefix,
-            &self.scenario.to_string(),
-            self.version,
-        );
+        let version_prefix =
+            build_version_prefix(&self.prefix, &self.scenario.to_string(), self.version);
         TargetConfig {
             bucket: self.bucket.clone(),
             prefix: version_prefix,

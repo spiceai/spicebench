@@ -100,9 +100,7 @@ impl S3Storage {
     /// Path: `{prefix}/tables/{table_name}/batch-{batch_id:06}.parquet`
     pub(crate) fn batch_object_path(&self, table_name: &str, batch_id: u64) -> ObjectPath {
         if self.prefix.is_empty() {
-            ObjectPath::from(format!(
-                "tables/{table_name}/batch-{batch_id:06}.parquet"
-            ))
+            ObjectPath::from(format!("tables/{table_name}/batch-{batch_id:06}.parquet"))
         } else {
             ObjectPath::from(format!(
                 "{}/tables/{table_name}/batch-{batch_id:06}.parquet",
@@ -208,10 +206,7 @@ impl DataStorage for S3Storage {
         })
     }
 
-    async fn write_version_metadata(
-        &self,
-        metadata: &VersionMetadata,
-    ) -> anyhow::Result<()> {
+    async fn write_version_metadata(&self, metadata: &VersionMetadata) -> anyhow::Result<()> {
         let path = self.version_metadata_object_path();
         let bytes = serde_json::to_vec_pretty(metadata)?;
         self.store.put(&path, PutPayload::from(bytes)).await?;

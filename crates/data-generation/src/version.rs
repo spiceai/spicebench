@@ -34,9 +34,18 @@ pub fn arrow_schema_to_json(schema: &SchemaRef) -> serde_json::Value {
         .iter()
         .map(|field| {
             let mut obj = serde_json::Map::new();
-            obj.insert("name".to_string(), serde_json::Value::String(field.name().clone()));
-            obj.insert("type".to_string(), serde_json::Value::String(format!("{:?}", field.data_type())));
-            obj.insert("nullable".to_string(), serde_json::Value::Bool(field.is_nullable()));
+            obj.insert(
+                "name".to_string(),
+                serde_json::Value::String(field.name().clone()),
+            );
+            obj.insert(
+                "type".to_string(),
+                serde_json::Value::String(format!("{:?}", field.data_type())),
+            );
+            obj.insert(
+                "nullable".to_string(),
+                serde_json::Value::Bool(field.is_nullable()),
+            );
             serde_json::Value::Object(obj)
         })
         .collect();

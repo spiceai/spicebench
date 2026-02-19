@@ -68,10 +68,7 @@ pub trait DataStorage: Send + Sync + 'static {
     /// Writes the consolidated version metadata (`version.json`) for this
     /// generation version. Contains scale factor, mutations config, and
     /// per-table metadata (schemas, key columns, batch IDs).
-    async fn write_version_metadata(
-        &self,
-        _metadata: &VersionMetadata,
-    ) -> anyhow::Result<()> {
+    async fn write_version_metadata(&self, _metadata: &VersionMetadata) -> anyhow::Result<()> {
         Ok(())
     }
 

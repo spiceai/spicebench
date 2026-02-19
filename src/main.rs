@@ -20,7 +20,9 @@ use adbc_client::AdbcConnection;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use checkpointer::CheckpointStore;
 use clap::Parser;
-use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig, build_version_prefix};
+use data_generation::config::{
+    DatasetConfig as GenerationDatasetConfig, TargetConfig, build_version_prefix,
+};
 use data_generation::dataset::Dataset;
 use data_generation::dataset::MutationConfig;
 use data_generation::storage::DataStorage;
@@ -93,11 +95,8 @@ async fn run_benchmark(
     let scenario_name = common.scenario.to_string();
     let checkpoint_dir = tempfile::tempdir()?;
 
-    let version_prefix = build_version_prefix(
-        &common.etl_prefix,
-        &scenario_name,
-        common.etl_version,
-    );
+    let version_prefix =
+        build_version_prefix(&common.etl_prefix, &scenario_name, common.etl_version);
     let checkpoint_store = CheckpointStore::new(
         &common.etl_bucket,
         &version_prefix,

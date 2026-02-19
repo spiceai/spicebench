@@ -25,9 +25,7 @@ use super::config::IngestorConfig;
 use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
 use super::storage::DataStorage;
-use super::version::{
-    MutationsMetadata, TableMetadata, VersionMetadata, arrow_schema_to_json,
-};
+use super::version::{MutationsMetadata, TableMetadata, VersionMetadata, arrow_schema_to_json};
 
 /// Configuration for the version metadata that will be written at the end
 /// of a data generation run.
@@ -273,7 +271,9 @@ impl DataGenerator {
             tables: tables_metadata,
         };
 
-        self.target.write_version_metadata(&version_metadata).await?;
+        self.target
+            .write_version_metadata(&version_metadata)
+            .await?;
         tracing::info!("version.json written");
 
         let summary = self.metrics.summary();
