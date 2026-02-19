@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
     let target = Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()));
 
-    let mutations = MutationConfig::new(0.1, 0.1);
+    let mutations = MutationConfig::new(0.0, 0.0);
 
     let mut pipeline =
         ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
