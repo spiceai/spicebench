@@ -16,8 +16,8 @@ A JSON-RPC 2.0 adapter that supports both transports:
 
 Required methods:
 
-- `setup(run_id, datasets)`
-- `create_tables(run_id)`
+- `setup(run_id, metadata)`
+- `create_tables(run_id, datasets)`
 - `teardown(run_id)`
 - `metrics(run_id)`
 - `rpc.methods`

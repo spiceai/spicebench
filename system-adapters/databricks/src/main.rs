@@ -183,7 +183,6 @@ impl TableFormat {
 
 #[derive(Debug, Clone)]
 struct RunState {
-    datasets: HashMap<String, DatasetConfig>,
     table_format: TableFormat,
     created_tables: Vec<String>,
     cluster_id: Option<String>,
@@ -1025,13 +1024,9 @@ impl Handler for DatabricksAdapter {
     async fn setup(
         &mut self,
         run_id: Uuid,
-        datasets: HashMap<String, DatasetConfig>,
         metadata: HashMap<String, Value>,
     ) -> std::result::Result<SetupResponse, String> {
-        eprintln!(
-            "[databricks-adapter] setup: run_id={run_id}, datasets={}",
-            datasets.len()
-        );
+        eprintln!("[databricks-adapter] setup: run_id={run_id}");
 
         let (cluster_id, cluster_created_by_adapter) = match &self.config.compute_target {
             ComputeTarget::SparkCluster(_) => {
@@ -1068,7 +1063,6 @@ impl Handler for DatabricksAdapter {
         self.runs.insert(
             run_id,
             RunState {
-                datasets,
                 table_format,
                 created_tables: Vec::new(),
                 cluster_id,
@@ -1094,13 +1088,14 @@ impl Handler for DatabricksAdapter {
     async fn create_tables(
         &mut self,
         run_id: Uuid,
+        datasets: HashMap<String, DatasetConfig>,
     ) -> std::result::Result<CreateTablesResponse, String> {
-        let (datasets, table_format) = {
+        let table_format = {
             let state = self
                 .runs
                 .get(&run_id)
                 .ok_or_else(|| format!("Unknown run_id: {run_id}"))?;
-            (state.datasets.clone(), state.table_format)
+            state.table_format
         };
 
         let mut created_tables = Vec::with_capacity(datasets.len());

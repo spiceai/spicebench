@@ -104,8 +104,8 @@ flowchart TB
 
     orchestrator -->|"start run"| run
 
-    adapter_iface -->|"setup(run_id, datasets)\n→ ADBC driver + kwargs"| executors
-    adapter_iface -->|"create_tables(run_id)"| sut
+    adapter_iface -->|"setup(run_id, metadata)\n→ ADBC driver + kwargs"| executors
+    adapter_iface -->|"create_tables(run_id, datasets)"| sut
     setup_phase -->|"system ready"| bench_phase
     bench_phase -->|"benchmark complete"| teardown_phase
 
@@ -120,11 +120,11 @@ flowchart TB
 
 A **Run** is a single end-to-end execution of the benchmark for one system. Each Run proceeds through three phases:
 
-| Phase                    | What happens                                                                                                                                                                                      | Timed? |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| **1. Setup**             | Connect to system adapter via JSON-RPC (stdio or HTTP). Call `setup(run_id, datasets)` to provision the SUT and return ADBC driver config, then `create_tables(run_id)`. | No     |
-| **2. Benchmark (timed)** | Three sequential stages — warm-up (1× query set), baseline (10% of duration, 60s–600s), and load test (full duration with concurrent clients).                                                    | Yes    |
-| **3. Teardown**          | Call `teardown(run_id)` via the adapter to deprovision resources and clean up.                                                                                                                    | No     |
+| Phase                    | What happens                                                                                                                                                                       | Timed? |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| **1. Setup**             | Connect to system adapter via JSON-RPC (stdio or HTTP). Call `setup(run_id, metadata)` to provision the SUT and return ADBC driver config, then `create_tables(run_id, datasets)`. | No     |
+| **2. Benchmark (timed)** | Three sequential stages — warm-up (1× query set), baseline (10% of duration, 60s–600s), and load test (full duration with concurrent clients).                                     | Yes    |
+| **3. Teardown**          | Call `teardown(run_id)` via the adapter to deprovision resources and clean up.                                                                                                     | No     |
 
 The **E2E benchmark duration** (phase 2, load test stage) is the primary ranking metric. After the load test, each query's p99 latency is compared against the baseline: >20% increase = FAIL, 10–20% = WARN, ≥3 WARNs = FAIL.
 
@@ -215,8 +215,8 @@ Results from every Run are published to [SpiceBench.com](https://spicebench.com)
 
 To benchmark a new platform, implement the JSON-RPC 2.0 adapter with these methods:
 
-1. **`setup(run_id, datasets)`** — Provision infrastructure and configure the target system.
-2. **`create_tables(run_id)`** — Create/register destination tables for the benchmark datasets.
+1. **`setup(run_id, metadata)`** — Provision infrastructure and configure the target system.
+2. **`create_tables(run_id, datasets)`** — Create/register destination tables for the benchmark datasets.
 3. **`teardown(run_id)`** — Clean up provisioned resources.
 4. **`metrics(run_id)`** *(optional)* — Return current resource usage (CPU, memory, disk, IOPS) and ingestion progress (rows, bytes, rows/s, active connections).
 
@@ -243,8 +243,8 @@ The `spicebench` CLI connects to a system adapter using JSON-RPC 2.0 over either
 
 For each run, SpiceBench calls adapter JSON-RPC methods in this order:
 
-1. `setup(run_id, datasets, metadata)`
-2. `create_tables(run_id)`
+1. `setup(run_id, metadata)`
+2. `create_tables(run_id, datasets)`
 3. benchmark execution and optional periodic `metrics(run_id)` scraping
 4. `teardown(run_id)`
 
@@ -256,7 +256,8 @@ Tiny `create_tables` request example:
     "id": 2,
     "method": "create_tables",
     "params": {
-        "run_id": "00000000-0000-0000-0000-000000000000"
+        "run_id": "00000000-0000-0000-0000-000000000000",
+        "datasets": {}
     }
 }
 ```

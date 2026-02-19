@@ -75,7 +75,6 @@ pub trait Handler: Send + Sync {
     async fn setup(
         &mut self,
         run_id: Uuid,
-        datasets: HashMap<String, DatasetConfig>,
         metadata: HashMap<String, serde_json::Value>,
     ) -> std::result::Result<SetupResponse, String>;
 
@@ -83,6 +82,7 @@ pub trait Handler: Send + Sync {
     async fn create_tables(
         &mut self,
         run_id: Uuid,
+        datasets: HashMap<String, DatasetConfig>,
     ) -> std::result::Result<CreateTablesResponse, String>;
 
     /// Teardown a benchmark run
@@ -242,12 +242,7 @@ impl<H: Handler> Server<H> {
             Ok(r) => r,
             Err(e) => return e,
         };
-        Self::handler_response(
-            self.handler
-                .setup(req.run_id, req.datasets, req.metadata)
-                .await,
-            id,
-        )
+        Self::handler_response(self.handler.setup(req.run_id, req.metadata).await, id)
     }
 
     async fn handle_create_tables(
@@ -259,7 +254,10 @@ impl<H: Handler> Server<H> {
             Ok(r) => r,
             Err(e) => return e,
         };
-        Self::handler_response(self.handler.create_tables(req.run_id).await, id)
+        Self::handler_response(
+            self.handler.create_tables(req.run_id, req.datasets).await,
+            id,
+        )
     }
 
     async fn handle_teardown(
@@ -304,7 +302,6 @@ mod tests {
         async fn setup(
             &mut self,
             _run_id: Uuid,
-            _datasets: HashMap<String, DatasetConfig>,
             _metadata: HashMap<String, serde_json::Value>,
         ) -> std::result::Result<SetupResponse, String> {
             Ok(SetupResponse {
@@ -316,6 +313,7 @@ mod tests {
         async fn create_tables(
             &mut self,
             _run_id: Uuid,
+            _datasets: HashMap<String, DatasetConfig>,
         ) -> std::result::Result<CreateTablesResponse, String> {
             Ok(CreateTablesResponse { ok: true })
         }
@@ -335,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_setup() {
         let mut server = Server::new(TestHandler);
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","datasets":{},"metadata":{}}}"#;
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","metadata":{}}}"#;
         let response = server.handle_request(request).await;
 
         assert!(response.get("result").is_some());

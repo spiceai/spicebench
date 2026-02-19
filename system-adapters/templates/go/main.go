@@ -68,7 +68,7 @@ func methodSetup(_ map[string]interface{}) interface{} {
 	// query driver details SpiceBench should use.
 	// Example:
 	// - create run-scoped database/schema
-	// - configure ingestion resources for dataset list
+	// - configure ingestion resources needed before table creation
 	// - resolve query endpoint and auth material from control plane
 
 	host := getenvOr("SUT_HOST", "127.0.0.1")
@@ -95,6 +95,7 @@ func methodCreateTables(_ map[string]interface{}) interface{} {
 	// Stub: Create/register destination tables for benchmark datasets.
 	// Example:
 	// - create tables if they do not exist
+	// - iterate datasets passed in params to build table definitions
 	// - apply expected schema/partitioning
 	return map[string]interface{}{"ok": true}
 }
