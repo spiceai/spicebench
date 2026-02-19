@@ -142,3 +142,47 @@ jobs:
 
           echo "Running: data-generation run ${ARGS}"
           ~/.spice/bin/data-generation run ${ARGS}
+
+      - name: Cache checkpointer binary
+        id: cache-checkpointer
+        uses: actions/cache@v4
+        with:
+          path: ~/.spice/bin/checkpointer
+          key: checkpointer-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
+          restore-keys: |
+            checkpointer-${{ runner.os }}-
+
+      - name: Build checkpointer
+        if: steps.cache-checkpointer.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.spice/bin
+          cargo build --release -p checkpointer
+          install -m 755 target/release/checkpointer ~/.spice/bin/checkpointer
+
+      - name: Run checkpointer
+        env:
+          SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
+          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '1.0' }}
+          BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
+          PREFIX_BASE: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
+          REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          RUST_LOG: info
+        run: |
+          PREFIX="${PREFIX_BASE}"
+          PREFIX="${PREFIX%/}/${SCENARIO}"
+
+          ARGS="--dataset ${SCENARIO}"
+          ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
+          ARGS="${ARGS} --bucket ${BUCKET}"
+          ARGS="${ARGS} --source-prefix ${PREFIX}"
+          ARGS="${ARGS} --duckdb-path ./checkpointer.duckdb"
+          ARGS="${ARGS} --checkpoint-dir ./checkpoints"
+
+          if [ -n "${REGION}" ]; then
+            ARGS="${ARGS} --region ${REGION}"
+          fi
+
+          echo "Running: checkpointer ${ARGS}"
+          ~/.spice/bin/checkpointer ${ARGS}
