@@ -42,24 +42,25 @@ use crate::scenario::Scenario;
 
 fn create_tables_request_datasets(
     dataset: &Arc<dyn Dataset>,
+    with_created_at: bool,
 ) -> HashMap<String, system_adapter_protocol::DatasetConfig> {
     dataset
         .tables()
         .into_iter()
         .map(|(name, table)| {
-            let mut fields: Vec<_> = table.schema.fields().iter().cloned().collect();
-            fields.push(Arc::new(Field::new(
-                "__created_at",
-                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                true,
-            )));
+            let schema = if with_created_at {
+                let mut fields: Vec<_> = table.schema.fields().iter().cloned().collect();
+                fields.push(Arc::new(Field::new(
+                    "__created_at",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    true,
+                )));
+                Arc::new(Schema::new(fields))
+            } else {
+                table.schema.clone()
+            };
 
-            (
-                name,
-                system_adapter_protocol::DatasetConfig {
-                    schema: Arc::new(Schema::new(fields)),
-                },
-            )
+            (name, system_adapter_protocol::DatasetConfig { schema })
         })
         .collect()
 }
@@ -149,7 +150,8 @@ async fn run_benchmark(
 
     let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
     let mut pipeline =
-        ETLPipeline::new(dataset_source, generation_config, source, target, mutations)?;
+        ETLPipeline::new(dataset_source, generation_config, source, target, mutations)?
+            .with_created_at(common.with_created_at);
 
     if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
         pipeline.cancel();
@@ -259,7 +261,7 @@ async fn main() -> anyhow::Result<()> {
         &mutations,
         Arc::clone(&source) as Arc<dyn DataStorage>,
     )?;
-    let datasets = create_tables_request_datasets(&setup_dataset);
+    let datasets = create_tables_request_datasets(&setup_dataset, cli.common.with_created_at);
 
     let setup_metadata = std::collections::HashMap::from([
         (

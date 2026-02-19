@@ -69,6 +69,10 @@ struct Cli {
     /// Optional schema name to prefix destination table names
     #[arg(long)]
     adbc_schema: Option<String>,
+
+    /// Append a `__created_at` timestamp column to every batch written to the sink.
+    #[arg(long, default_value_t = false)]
+    with_created_at: bool,
 }
 
 impl Cli {
@@ -122,7 +126,8 @@ async fn main() -> anyhow::Result<()> {
     let mutations = MutationConfig::new(0.0, 0.0);
 
     let mut pipeline =
-        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
+        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?
+            .with_created_at(cli.with_created_at);
 
     tracing::info!(
         dataset = %cli.dataset,
