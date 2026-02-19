@@ -119,7 +119,7 @@ public final class AdapterServer {
 
     return switch (method) {
       case "setup" -> jsonrpcSuccess(id, methodSetup());
-      case "query_method" -> jsonrpcSuccess(id, methodQueryMethod());
+      case "create_tables" -> jsonrpcSuccess(id, methodCreateTables());
       case "teardown" -> jsonrpcSuccess(id, methodTeardown());
       case "metrics" -> jsonrpcSuccess(id, methodMetrics());
       case "rpc.methods" -> jsonrpcSuccess(id, methodRpcMethods());
@@ -152,21 +152,13 @@ public final class AdapterServer {
   }
 
   private static JsonNode methodSetup() {
-    // Stub: Provision or initialize your SUT for this run.
+    // Stub: Provision or initialize your SUT for this run and return
+    // query driver details SpiceBench should use.
     // Example:
     // - create run-scoped schema/database
     // - configure ingestion resources for datasets
     // - wait for readiness checks to pass
-    ObjectNode result = MAPPER.createObjectNode();
-    result.put("ok", true);
-    return result;
-  }
-
-  private static JsonNode methodQueryMethod() {
-    // Stub: Resolve real endpoint and credentials from your control plane.
-    // Example:
-    // - query orchestrator APIs for current endpoint
-    // - fetch run-scoped credentials from secret manager
+    // - resolve endpoint and credentials from your control plane
     String host = getenvOr("SUT_HOST", "127.0.0.1");
     int port = getenvIntOr("SUT_PORT", 50051);
     boolean tls = "true".equalsIgnoreCase(getenvOr("SUT_TLS", "false"));
@@ -181,6 +173,16 @@ public final class AdapterServer {
     dbKwargs.put("tls", tls);
 
     result.set("db_kwargs", dbKwargs);
+    return result;
+  }
+
+  private static JsonNode methodCreateTables() {
+    // Stub: Create/register destination tables for benchmark datasets.
+    // Example:
+    // - create tables if they do not exist
+    // - apply expected schema/partitioning
+    ObjectNode result = MAPPER.createObjectNode();
+    result.put("ok", true);
     return result;
   }
 
@@ -223,7 +225,7 @@ public final class AdapterServer {
   private static JsonNode methodRpcMethods() {
     ArrayNode methods = MAPPER.createArrayNode();
     methods.add("setup");
-    methods.add("query_method");
+    methods.add("create_tables");
     methods.add("teardown");
     methods.add("metrics");
     methods.add("rpc.methods");

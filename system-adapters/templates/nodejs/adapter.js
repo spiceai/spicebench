@@ -30,22 +30,13 @@ function methodSetup(params) {
   void params.run_id;
   void (params.datasets || {});
 
-  // Stub: Provision or initialize your SUT for this run.
+  // Stub: Provision or initialize your SUT for this run and return
+  // query driver details SpiceBench should use.
   // Example:
   // - create a test database or schema for this run_id
   // - configure ingestion routes for provided datasets
   // - block until SUT readiness checks are healthy
-
-  return { ok: true };
-}
-
-function methodQueryMethod(params) {
-  void params.run_id;
-
-  // Stub: Resolve live endpoint + credentials from your SUT control plane.
-  // Example:
-  // - call your infrastructure API for service endpoint
-  // - obtain run-scoped credentials from secret manager
+  // - resolve endpoint + credentials from your control plane
 
   const host = process.env.SUT_HOST || '127.0.0.1';
   const port = Number(process.env.SUT_PORT || '50051');
@@ -60,6 +51,17 @@ function methodQueryMethod(params) {
       tls: useTls,
     },
   };
+}
+
+function methodCreateTables(params) {
+  void params.run_id;
+
+  // Stub: Create/register destination tables for benchmark datasets.
+  // Example:
+  // - create tables if they do not exist
+  // - apply expected schema/partitioning
+
+  return { ok: true };
 }
 
 function methodTeardown(params) {
@@ -102,7 +104,7 @@ function methodMetrics(params) {
 
 function methodRpcMethods() {
   return {
-    methods: ['setup', 'query_method', 'teardown', 'metrics', 'rpc.methods'],
+    methods: ['setup', 'create_tables', 'teardown', 'metrics', 'rpc.methods'],
   };
 }
 
@@ -128,8 +130,8 @@ function dispatch(request) {
     switch (request.method) {
       case 'setup':
         return jsonrpcSuccess(id, methodSetup(params));
-      case 'query_method':
-        return jsonrpcSuccess(id, methodQueryMethod(params));
+      case 'create_tables':
+        return jsonrpcSuccess(id, methodCreateTables(params));
       case 'teardown':
         return jsonrpcSuccess(id, methodTeardown(params));
       case 'metrics':
