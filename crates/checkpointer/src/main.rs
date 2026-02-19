@@ -14,16 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use adbc_client::AdbcConnection;
 use clap::Parser;
 use data_generation::config::{DatasetConfig, TargetConfig};
 use data_generation::dataset::MutationConfig;
 use data_generation::storage::s3::S3Storage;
-use etl::sink::adbc::AdbcSink;
+use etl::sink::duckdb::DuckDBSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
-use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -58,17 +57,9 @@ struct Cli {
     #[arg(long)]
     endpoint: Option<String>,
 
-    /// ADBC driver name (for example: databricks, flightsql)
+    /// Path to the local DuckDB database file to sink data into
     #[arg(long)]
-    adbc_driver: String,
-
-    /// ADBC connection URI passed as db option `uri`
-    #[arg(long)]
-    adbc_uri: String,
-
-    /// Optional schema name to prefix destination table names
-    #[arg(long)]
-    adbc_schema: Option<String>,
+    duckdb_path: PathBuf,
 
     /// Every N steps to take a checkpoint
     #[arg(long, default_value_t = 100)]
@@ -117,11 +108,7 @@ async fn main() -> anyhow::Result<()> {
 
     let source = Arc::new(S3Storage::new(&cli.source_config())?);
 
-    let adbc_conn = AdbcConnection::create(
-        &cli.adbc_driver,
-        std::collections::HashMap::from([("uri".to_string(), Value::String(cli.adbc_uri.clone()))]),
-    )?;
-    let target = Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()));
+    let target = Arc::new(DuckDBSink::new(&cli.duckdb_path)?);
 
     let mutations = MutationConfig::new(0.1, 0.1);
 
@@ -132,11 +119,10 @@ async fn main() -> anyhow::Result<()> {
         dataset = %cli.dataset,
         bucket = %cli.bucket,
         source_prefix = %cli.source_prefix,
-        adbc_driver = %cli.adbc_driver,
-        adbc_schema = ?cli.adbc_schema,
+        duckdb_path = %cli.duckdb_path.display(),
         scale_factor = cli.scale_factor,
         num_steps = cli.num_steps,
-        "Starting ETL pipeline"
+        "Starting Checkpointer"
     );
 
     // Log the tables and schemas that will be processed.
@@ -151,14 +137,14 @@ async fn main() -> anyhow::Result<()> {
     match pipeline.wait().await {
         PipelineState::Paused => {}
         PipelineState::Stopped(StopReason::Completed) => {
-            tracing::info!("ETL pipeline completed successfully");
+            tracing::info!("Checkpointer completed successfully");
         }
         PipelineState::Stopped(StopReason::Cancelled) => {
-            tracing::warn!("ETL pipeline was cancelled");
+            tracing::warn!("Checkpointer was cancelled");
         }
         PipelineState::Stopped(StopReason::Error(e)) => {
-            tracing::error!(error = %e, "ETL pipeline stopped with error");
-            anyhow::bail!("ETL pipeline failed: {e}");
+            tracing::error!(error = %e, "Checkpointer stopped with error");
+            anyhow::bail!("Checkpointer failed: {e}");
         }
         other => {
             anyhow::bail!("Unexpected final pipeline state: {other:?}");

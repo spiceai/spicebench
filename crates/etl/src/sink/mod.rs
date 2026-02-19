@@ -19,6 +19,9 @@ use async_trait::async_trait;
 
 pub mod adbc;
 
+#[cfg(feature = "duckdb")]
+pub mod duckdb;
+
 #[derive(Debug, Clone)]
 pub enum InsertOp {
     Insert,

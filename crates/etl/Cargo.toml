@@ -24,9 +24,14 @@ async-trait.workspace = true
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
+duckdb = { workspace = true, optional = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
 serde_json.workspace = true
 system-adapter-protocol = { path = "../system-adapter-protocol" }
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[features]
+default = []
+duckdb = ["dep:duckdb"]
