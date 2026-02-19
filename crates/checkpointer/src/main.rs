@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
+use checkpointer::CheckpointStore;
 use clap::Parser;
 use data_generation::config::{DatasetConfig, TargetConfig};
 use data_generation::dataset::MutationConfig;
@@ -27,6 +28,9 @@ use etl::sink::duckdb::DuckDBSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use parquet::arrow::ArrowWriter;
 use tracing_subscriber::EnvFilter;
+
+/// Static scenario name used until we derive it from the scenario configuration.
+const SCENARIO_NAME: &str = "default";
 
 /// Static list of checkpoint queries to run against the DuckDB database at
 /// each checkpoint boundary.
@@ -231,6 +235,18 @@ async fn main() -> anyhow::Result<()> {
                     "Pipeline completed, running final checkpoint queries"
                 );
                 run_checkpoint_queries(&target, &cli.checkpoint_dir, checkpoint_idx).await?;
+
+                // Upload all checkpoints to S3.
+                let checkpoint_store = CheckpointStore::new(
+                    &cli.bucket,
+                    &cli.source_prefix,
+                    cli.region.as_deref(),
+                    cli.endpoint.as_deref(),
+                )?;
+                checkpoint_store
+                    .upload_checkpoints(SCENARIO_NAME, &cli.checkpoint_dir)
+                    .await?;
+
                 tracing::info!("Checkpointer completed successfully");
                 break;
             }

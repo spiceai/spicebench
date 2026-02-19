@@ -138,6 +138,7 @@ adbc_client = { path = "crates/adbc_client" }
 arrow.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
+checkpointer = { path = "crates/checkpointer" }
 clap.workspace = true
 data-generation = { path = "crates/data-generation" }
 etl = { path = "crates/etl" }
@@ -145,6 +146,7 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }
+tempfile.workspace = true
 test-framework = { path = "crates/test-framework" }
 tokio.workspace = true
 tokio-util.workspace = true
