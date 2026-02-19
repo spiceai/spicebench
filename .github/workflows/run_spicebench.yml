@@ -5,12 +5,12 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Scenario/query set to run (e.g. tpch)'
+        description: "Scenario/query set to run (e.g. tpch)"
         required: true
-        default: 'tpch'
+        default: "tpch"
         type: string
       system_adapter:
-        description: 'System adapter to run (docker spidapter or local databricks adapter)'
+        description: "System adapter to run (docker spidapter or local databricks adapter)"
         required: true
         default: spidapter
         type: choice
@@ -18,46 +18,46 @@ on:
           - spidapter
           - databricks
       databricks_variant:
-        description: 'Databricks adapter variant (databricks or lakebase)'
+        description: "Databricks adapter variant (databricks or lakebase)"
         required: false
-        default: 'databricks'
+        default: "databricks"
         type: choice
         options:
           - databricks
           - lakebase
       etl_bucket:
-        description: 'S3 bucket for ETL source and target data'
+        description: "S3 bucket for ETL source and target data"
         required: true
-        default: 'spiceai-public-datasets'
+        default: "spiceai-public-datasets"
         type: string
       etl_source_prefix:
-        description: 'S3 key prefix for ETL source data'
+        description: "S3 key prefix for ETL source data"
         required: false
-        default: 'data-gen/tpch/1.0'
+        default: "data-gen/tpch/1.0"
         type: string
       etl_region:
-        description: 'AWS region for the ETL S3 bucket'
+        description: "AWS region for the ETL S3 bucket"
         required: false
-        default: 'us-east-1'
+        default: "us-east-1"
         type: string
       etl_endpoint:
-        description: 'S3 endpoint URL for ETL bucket (for MinIO/LocalStack)'
+        description: "S3 endpoint URL for ETL bucket (for MinIO/LocalStack)"
         required: false
         type: string
       etl_num_steps:
-        description: 'Number of ETL data generation steps (partitions)'
+        description: "Number of ETL data generation steps (partitions)"
         required: false
-        default: '25'
+        default: "25"
         type: string
       table_format:
-        description: 'Table format across generation and adapter setup (iceberg, parquet, delta)'
+        description: "Table format across generation and adapter setup (iceberg, parquet, delta)"
         required: false
-        default: 'parquet'
+        default: "parquet"
         type: string
       executor_instance_type:
-        description: 'Executor instance type label for benchmark comparison and dashboarding'
+        description: "Executor instance type label for benchmark comparison and dashboarding"
         required: false
-        default: 'github-hosted-ubuntu-latest'
+        default: "github-hosted-ubuntu-latest"
         type: string
 
 jobs:
@@ -101,6 +101,8 @@ jobs:
       - name: Build databricks adapter
         if: ${{ github.event.inputs.system_adapter == 'databricks' && steps.cache-databricks-adapter.outputs.cache-hit != 'true' }}
         id: build-databricks-adapter
+        env:
+          RUSTFLAGS: ""
         run: |
           mkdir -p ~/.spice/bin
           cargo build --manifest-path system-adapters/databricks/Cargo.toml
@@ -229,7 +231,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
-          RUST_LOG: 'info'
+          RUST_LOG: "info"
         run: |
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-num-steps ${ETL_NUM_STEPS}"
           if [ -n "${ETL_SOURCE_PREFIX}" ]; then

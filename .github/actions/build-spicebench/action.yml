@@ -31,6 +31,8 @@ runs:
       id: build-spicebench
       if: steps.cache-spicebench.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        RUSTFLAGS: ""
       run: |
         mkdir -p ~/.spice/bin
         cargo build -p spicebench
