@@ -31,37 +31,23 @@ arrow = { version = "57.0.0", features = ["prettyprint"] }
 arrow-array = "57.0.0"
 arrow-buffer = "57.0.0"
 arrow-flight = "57.0.0"
-arrow-json = "57.0.0"
 arrow-schema = "57.0.0"
-async-openai = { git = "https://github.com/spiceai/async-openai", rev = "7d5d31718143bf847cbc46286d4be26f035b58a0", features = [
-    "byot",
-    "embedding",
-    "chat-completion",
-    "responses",
-    "model",
-] }
 async-trait = "0.1.89"
-aws-config = "1.8.13"
-aws-credential-types = "1.2.11"
-aws-sdk-dynamodb = "1.104.0"
 base64 = "0.22.1"
 byte-unit = "5.1.4"
 bytes = "1.10.0"
 chrono = "0.4.42"
 clap = { version = "4.5.54", features = ["derive", "env"] }
-datafusion = "51.0.0"
 duckdb = "1.4.4"
 duration-parse = { path = "crates/duration-parse" }
 tpchgen = "2.0.2"
 tpchgen-arrow = "2.0.2"
 futures = "0.3.30"
-hf-hub = { version = "0.4", features = ["tokio"] }
 http = "1.3.1"
 humantime = "2.1.0"
-indexmap = "2"
+indexmap = { version = "2", features = ["serde"] }
 insta = { version = "1.46.1", features = ["filters"] }
-itertools = "0.14"
-nix = "0.30"
+nix = { version = "0.30", features = ["signal"] }
 object_store = { version = "0.12.4", features = [
     "aws",
     "gcp",
@@ -121,7 +107,6 @@ url = { version = "2.5", features = ["serde"] }
 util = { path = "crates/util" }
 uuid = "1"
 
-spiceai = { git = "https://github.com/spiceai/spice-rs.git", rev = "4c63970cf1d78c71eb69e2f4346d5d4795631b47" } # branch: trunk
 
 [package]
 edition.workspace = true
@@ -142,8 +127,6 @@ checkpointer = { path = "crates/checkpointer" }
 clap.workspace = true
 data-generation = { path = "crates/data-generation" }
 etl = { path = "crates/etl" }
-parquet.workspace = true
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }
