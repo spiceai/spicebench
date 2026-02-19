@@ -424,8 +424,8 @@ impl ETLPipeline {
     /// is called. Only meaningful when the pipeline uses a step budget.
     pub fn checkpoint_idx(&self) -> usize {
         self.checkpoint_idx
-    }  
-      
+    }
+
     /// Returns a shared handle to the per-table most recent `__created_at`
     /// timestamps (microseconds UTC) written by the pipeline.
     pub fn last_created_at_us(&self) -> Arc<HashMap<String, AtomicI64>> {
