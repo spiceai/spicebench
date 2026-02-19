@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 pub mod databricks;
+pub mod spiceai;
 
 use std::collections::HashMap;
 

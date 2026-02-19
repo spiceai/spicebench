@@ -590,7 +590,7 @@ impl QueryOverrides {
 pub fn get_tpch_test_queries(overrides: Option<QueryOverrides>) -> Vec<Query> {
     let queries = generate_tpch_queries!(
         q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q16, q17, q18, q19, q20, q21,
-        q22, simple_q1, simple_q2, simple_q3, simple_q4, simple_q5, simple_q6, simple_q7
+        q22
     );
 
     match overrides {
@@ -608,7 +608,7 @@ pub fn get_tpch_test_queries(overrides: Option<QueryOverrides>) -> Vec<Query> {
             2, // Analysis error: [UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.UNSUPPORTED_CORRELATED_SCALAR_SUBQUERY] Unsupported subquery expression: Correlated scalar subqueries can only be used in filters, aggregations, projections, and UPDATE/MERGE/DELETE commands
             17 // Analysis error: [UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.UNSUPPORTED_CORRELATED_SCALAR_SUBQUERY] Unsupported subquery expression: Correlated scalar subqueries can only be used in filters, aggregations, projections, and UPDATE/MERGE/DELETE commands
         ),
-        Some(QueryOverrides::MySQL) => remove_tpch_query!(queries, simple_q7),
+        Some(QueryOverrides::MySQL) => queries,
         Some(QueryOverrides::DynamoDB) => remove_tpch_query!(
             queries, 6 // Unsupported Decimals
         ),
@@ -634,19 +634,11 @@ pub fn get_tpch_test_queries(overrides: Option<QueryOverrides>) -> Vec<Query> {
             q19,
             q20,
             q21,
-            q22,
-            simple_q1,
-            simple_q2,
-            simple_q3,
-            simple_q4,
-            simple_q5,
-            simple_q6,
-            simple_q7
+            q22
         ),
         Some(QueryOverrides::Oracle) => generate_tpch_queries_override!(
             "oracle", q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q16, q17, q18,
-            q19, q20, q21, q22, simple_q1, simple_q2, simple_q3, simple_q4, simple_q5, simple_q6,
-            simple_q7
+            q19, q20, q21, q22
         ),
         Some(QueryOverrides::IcebergSF1) => generate_tpch_queries_override!(
             "iceberg_sf1",
@@ -670,19 +662,11 @@ pub fn get_tpch_test_queries(overrides: Option<QueryOverrides>) -> Vec<Query> {
             q19,
             q20,
             q21,
-            q22,
-            simple_q1,
-            simple_q2,
-            simple_q3,
-            simple_q4,
-            simple_q5,
-            simple_q6,
-            simple_q7
+            q22
         ),
         Some(QueryOverrides::IcebergHadoop) => generate_tpch_queries_override!(
             "hadoop", q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q16, q17, q18,
-            q19, q20, q21, q22, simple_q1, simple_q2, simple_q3, simple_q4, simple_q5, simple_q6,
-            simple_q7
+            q19, q20, q21, q22
         ),
         Some(QueryOverrides::Spicecloud) => remove_tpch_query!(
             queries,
@@ -713,15 +697,8 @@ pub fn get_tpch_test_queries(overrides: Option<QueryOverrides>) -> Vec<Query> {
             q18,
             q19,
             // q20, Binder Error; https://github.com/spiceai/spiceai/issues/7356
-            q21,
+            q21
             // q22, Binder Error; https://github.com/spiceai/spiceai/issues/7356
-            simple_q1,
-            simple_q2,
-            simple_q3,
-            simple_q4,
-            simple_q5,
-            simple_q6,
-            simple_q7
         ),
         Some(QueryOverrides::GlueCatalog) => generate_tpch_queries_override!(
             "glue_catalog",
@@ -745,14 +722,7 @@ pub fn get_tpch_test_queries(overrides: Option<QueryOverrides>) -> Vec<Query> {
             q19,
             q20,
             q21,
-            q22,
-            simple_q1,
-            simple_q2,
-            simple_q3,
-            simple_q4,
-            simple_q5,
-            simple_q6,
-            simple_q7
+            q22
         ),
         Some(QueryOverrides::DuckDBPartitioned) => remove_tpch_query!(
             queries,
