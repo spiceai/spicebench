@@ -321,18 +321,15 @@ impl DuckDBSink {
             // via IPC serialization round-trip for crate compatibility.
             let mut buf = Vec::new();
             {
-                let mut writer = duckdb::arrow::ipc::writer::FileWriter::try_new(
-                    &mut buf,
-                    &duckdb_schema,
-                )
-                .map_err(|e| anyhow::anyhow!("IPC write init failed: {e}"))?;
+                let mut writer =
+                    duckdb::arrow::ipc::writer::FileWriter::try_new(&mut buf, &duckdb_schema)
+                        .map_err(|e| anyhow::anyhow!("IPC write init failed: {e}"))?;
                 writer
                     .finish()
                     .map_err(|e| anyhow::anyhow!("IPC finish failed: {e}"))?;
             }
-            let reader =
-                arrow::ipc::reader::FileReader::try_new(std::io::Cursor::new(buf), None)
-                    .map_err(|e| anyhow::anyhow!("IPC read failed: {e}"))?;
+            let reader = arrow::ipc::reader::FileReader::try_new(std::io::Cursor::new(buf), None)
+                .map_err(|e| anyhow::anyhow!("IPC read failed: {e}"))?;
             Ok(reader.schema())
         })
         .await?
