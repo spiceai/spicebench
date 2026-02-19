@@ -17,8 +17,8 @@ limitations under the License.
 //! Server implementations for system adapter JSON-RPC protocol.
 
 use crate::{
-    DatasetConfig, JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse,
-    SetupRequest, SetupResponse, TeardownRequest, TeardownResponse, error_codes, methods,
+    DatasetConfig, JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse, SetupRequest,
+    SetupResponse, TeardownRequest, TeardownResponse, error_codes, methods,
 };
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
