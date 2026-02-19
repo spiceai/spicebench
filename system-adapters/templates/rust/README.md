@@ -7,6 +7,7 @@ Runtime target: Rust stable toolchain.
 Implemented methods:
 
 - `setup`
+- `create_tables`
 - `query_method`
 - `teardown`
 - `metrics`

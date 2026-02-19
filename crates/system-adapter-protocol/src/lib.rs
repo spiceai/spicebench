@@ -22,7 +22,7 @@ limitations under the License.
 //!
 //! # Features
 //!
-//! - **Protocol types**: Request/response types for setup, query_method, and teardown
+//! - **Protocol types**: Request/response types for setup, create_tables, query_method, and teardown
 //! - **Client**: Ready-to-use client with Stdio and HTTP transports (requires `client` feature)
 //! - **Server**: Easy server implementation via Handler trait (requires `server` feature)
 //! - **JSON-RPC**: Standard JSON-RPC 2.0 envelope types
@@ -42,6 +42,7 @@ limitations under the License.
 //! // Setup a benchmark run
 //! let run_id = Uuid::new_v4();
 //! let setup_response = client.setup(run_id, HashMap::new(), HashMap::new()).await?;
+//! let create_tables_response = client.create_tables(run_id).await?;
 //!
 //! // Get query method information
 //! let query_response = client.query_method(run_id).await?;
@@ -59,8 +60,8 @@ limitations under the License.
 //! # #[cfg(feature = "server")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use system_adapter_protocol::{
-//!     Handler, Server, SetupResponse, QueryMethodResponse, TeardownResponse,
-//!     AdbcDriver, DatasetConfig
+//!     AdbcDriver, CreateTablesResponse, DatasetConfig, Handler, QueryMethodResponse, Server,
+//!     SetupResponse, TeardownResponse,
 //! };
 //! use async_trait::async_trait;
 //! use std::collections::HashMap;
@@ -86,6 +87,10 @@ limitations under the License.
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
 //!         })
+//!     }
+//!
+//!     async fn create_tables(&mut self, run_id: Uuid) -> Result<CreateTablesResponse, String> {
+//!         Ok(CreateTablesResponse { ok: true })
 //!     }
 //!
 //!     async fn teardown(&mut self, run_id: Uuid) -> Result<TeardownResponse, String> {
@@ -161,6 +166,22 @@ pub struct SetupRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SetupResponse {
     /// Indicates if setup was successful
+    pub ok: bool,
+}
+
+/// Request to create benchmark tables in the system under test.
+///
+/// JSON-RPC method: `create_tables`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTablesRequest {
+    /// Unique identifier for this benchmark run
+    pub run_id: Uuid,
+}
+
+/// Response from create_tables request
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateTablesResponse {
+    /// Indicates if table creation was successful
     pub ok: bool,
 }
 
@@ -355,6 +376,7 @@ pub mod error_codes {
 /// Method names for the system adapter protocol
 pub mod methods {
     pub const SETUP: &str = "setup";
+    pub const CREATE_TABLES: &str = "create_tables";
     pub const QUERY_METHOD: &str = "query_method";
     pub const TEARDOWN: &str = "teardown";
     pub const METRICS: &str = "metrics";

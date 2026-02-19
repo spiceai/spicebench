@@ -84,29 +84,29 @@ impl Metrics {
         self.inner.batches_generated.fetch_add(1, Ordering::Relaxed);
 
         // Count inserts, updates, and deletes from the `_op` column.
-        if let Ok(idx) = batch.schema().index_of("_op") {
-            if let Some(op_array) = batch.column(idx).as_any().downcast_ref::<StringArray>() {
-                let mut creates = 0u64;
-                let mut updates = 0u64;
-                let mut deletes = 0u64;
-                for i in 0..op_array.len() {
-                    match op_array.value(i) {
-                        "c" => creates += 1,
-                        "u" => updates += 1,
-                        "d" => deletes += 1,
-                        _ => {}
-                    }
+        if let Ok(idx) = batch.schema().index_of("_op")
+            && let Some(op_array) = batch.column(idx).as_any().downcast_ref::<StringArray>()
+        {
+            let mut creates = 0u64;
+            let mut updates = 0u64;
+            let mut deletes = 0u64;
+            for i in 0..op_array.len() {
+                match op_array.value(i) {
+                    "c" => creates += 1,
+                    "u" => updates += 1,
+                    "d" => deletes += 1,
+                    _ => {}
                 }
-                self.inner
-                    .rows_created
-                    .fetch_add(creates, Ordering::Relaxed);
-                self.inner
-                    .rows_updated
-                    .fetch_add(updates, Ordering::Relaxed);
-                self.inner
-                    .rows_deleted
-                    .fetch_add(deletes, Ordering::Relaxed);
             }
+            self.inner
+                .rows_created
+                .fetch_add(creates, Ordering::Relaxed);
+            self.inner
+                .rows_updated
+                .fetch_add(updates, Ordering::Relaxed);
+            self.inner
+                .rows_deleted
+                .fetch_add(deletes, Ordering::Relaxed);
         }
     }
 

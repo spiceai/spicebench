@@ -194,6 +194,19 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
+    /// Create benchmark tables for a benchmark run
+    pub async fn create_tables(
+        &mut self,
+        run_id: uuid::Uuid,
+    ) -> Result<crate::CreateTablesResponse> {
+        let request = crate::CreateTablesRequest { run_id };
+        let rpc_request = JsonRpcRequest::new(1, crate::methods::CREATE_TABLES, request);
+        let response = self.call_typed(rpc_request).await?;
+        response
+            .result
+            .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
+    }
+
     /// Get query method/driver information for a benchmark run
     pub async fn query_method(&mut self, run_id: uuid::Uuid) -> Result<crate::QueryMethodResponse> {
         let request = crate::QueryMethodRequest { run_id };

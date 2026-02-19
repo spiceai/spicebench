@@ -17,9 +17,9 @@ limitations under the License.
 //! Server implementations for system adapter JSON-RPC protocol.
 
 use crate::{
-    DatasetConfig, JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse,
-    QueryMethodRequest, QueryMethodResponse, SetupRequest, SetupResponse, TeardownRequest,
-    TeardownResponse, error_codes, methods,
+    CreateTablesRequest, CreateTablesResponse, DatasetConfig, JsonRpcError, JsonRpcResponse,
+    MetricsRequest, MetricsResponse, QueryMethodRequest, QueryMethodResponse, SetupRequest,
+    SetupResponse, TeardownRequest, TeardownResponse, error_codes, methods,
 };
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -79,6 +79,12 @@ pub trait Handler: Send + Sync {
         metadata: HashMap<String, serde_json::Value>,
     ) -> std::result::Result<SetupResponse, String>;
 
+    /// Create benchmark tables for a run
+    async fn create_tables(
+        &mut self,
+        run_id: Uuid,
+    ) -> std::result::Result<CreateTablesResponse, String>;
+
     /// Get query method/driver information for a benchmark run
     async fn query_method(
         &mut self,
@@ -104,6 +110,7 @@ pub trait Handler: Send + Sync {
     fn rpc_methods(&self) -> Vec<String> {
         vec![
             methods::SETUP.to_string(),
+            methods::CREATE_TABLES.to_string(),
             methods::QUERY_METHOD.to_string(),
             methods::TEARDOWN.to_string(),
             methods::METRICS.to_string(),
@@ -181,6 +188,7 @@ impl<H: Handler> Server<H> {
         // Dispatch to appropriate handler
         let result = match method {
             methods::SETUP => self.handle_setup(&request, id.clone()).await,
+            methods::CREATE_TABLES => self.handle_create_tables(&request, id.clone()).await,
             methods::QUERY_METHOD => self.handle_query_method(&request, id.clone()).await,
             methods::TEARDOWN => self.handle_teardown(&request, id.clone()).await,
             methods::METRICS => self.handle_metrics(&request, id.clone()).await,
@@ -262,6 +270,18 @@ impl<H: Handler> Server<H> {
         Self::handler_response(self.handler.query_method(req.run_id).await, id)
     }
 
+    async fn handle_create_tables(
+        &mut self,
+        request: &serde_json::Value,
+        id: serde_json::Value,
+    ) -> serde_json::Value {
+        let req: CreateTablesRequest = match Self::parse_params(request, &id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        Self::handler_response(self.handler.create_tables(req.run_id).await, id)
+    }
+
     async fn handle_teardown(
         &mut self,
         request: &serde_json::Value,
@@ -318,6 +338,13 @@ mod tests {
                 driver: crate::AdbcDriver::Flightsql,
                 db_kwargs: HashMap::new(),
             })
+        }
+
+        async fn create_tables(
+            &mut self,
+            _run_id: Uuid,
+        ) -> std::result::Result<CreateTablesResponse, String> {
+            Ok(CreateTablesResponse { ok: true })
         }
 
         async fn teardown(

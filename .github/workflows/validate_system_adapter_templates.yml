@@ -152,9 +152,10 @@ jobs:
         working-directory: system-adapters/templates/go
         run: go build ./...
       - name: Smoke test Go template (HTTP setup)
+        working-directory: system-adapters/templates/go
         run: |
           set -euo pipefail
-          go run ./system-adapters/templates/go --transport http --host 127.0.0.1 --port 18083 --path /jsonrpc > /tmp/go-template.log 2>&1 &
+          go run . --transport http --host 127.0.0.1 --port 18083 --path /jsonrpc > /tmp/go-template.log 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
 

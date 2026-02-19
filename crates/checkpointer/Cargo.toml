@@ -1,5 +1,5 @@
 [package]
-name = "etl"
+name = "checkpointer"
 edition.workspace = true
 exclude.workspace = true
 homepage.workspace = true
@@ -8,30 +8,16 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
-[lib]
-name = "etl"
-path = "src/lib.rs"
-
-[[bin]]
-name = "etl"
-path = "src/main.rs"
-
 [dependencies]
-adbc_client = { path = "../adbc_client" }
 anyhow.workspace = true
 arrow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
-duckdb = { workspace = true, optional = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
-serde_json.workspace = true
+etl = { path = "../etl", features = ["duckdb"] }
 system-adapter-protocol = { path = "../system-adapter-protocol" }
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-
-[features]
-default = []
-duckdb = ["dep:duckdb"]
