@@ -78,11 +78,7 @@ impl AdbcSink {
         .await?
     }
 
-    async fn bulk_ingest_batch(
-        &self,
-        table_name: &str,
-        batch: RecordBatch,
-    ) -> anyhow::Result<()> {
+    async fn bulk_ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
         let conn = Arc::clone(&self.conn);
         let target_table = table_name.to_string();
         let target_schema = self.schema_name.clone();

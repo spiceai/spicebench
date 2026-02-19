@@ -22,7 +22,7 @@ pub use adbc_core::options::IngestMode;
 use std::collections::HashMap;
 
 use adbc_core::options::{self, AdbcVersion, OptionDatabase, OptionValue};
-use adbc_core::{Connection, Database, Driver, Optionable, LOAD_FLAG_DEFAULT, Statement};
+use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Optionable, Statement};
 use adbc_driver_manager::ManagedDriver;
 use arrow_array::RecordBatch;
 use snafu::prelude::*;
@@ -138,16 +138,22 @@ impl AdbcConnection {
             reason: e.to_string(),
         })?;
 
-        stmt.set_option(options::OptionStatement::TargetTable, OptionValue::from(target_table))
-            .map_err(|e| Error::ExecuteQuery {
-                reason: format!("Failed to set target table: {e}"),
-            })?;
+        stmt.set_option(
+            options::OptionStatement::TargetTable,
+            OptionValue::from(target_table),
+        )
+        .map_err(|e| Error::ExecuteQuery {
+            reason: format!("Failed to set target table: {e}"),
+        })?;
 
         if let Some(schema) = target_db_schema {
-            stmt.set_option(options::OptionStatement::TargetDbSchema, OptionValue::from(schema))
-                .map_err(|e| Error::ExecuteQuery {
-                    reason: format!("Failed to set target db schema: {e}"),
-                })?;
+            stmt.set_option(
+                options::OptionStatement::TargetDbSchema,
+                OptionValue::from(schema),
+            )
+            .map_err(|e| Error::ExecuteQuery {
+                reason: format!("Failed to set target db schema: {e}"),
+            })?;
         }
 
         stmt.set_option(options::OptionStatement::IngestMode, mode.into())
