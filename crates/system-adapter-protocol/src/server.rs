@@ -242,10 +242,7 @@ impl<H: Handler> Server<H> {
             Ok(r) => r,
             Err(e) => return e,
         };
-        Self::handler_response(
-            self.handler.setup(req.run_id, req.metadata).await,
-            id,
-        )
+        Self::handler_response(self.handler.setup(req.run_id, req.metadata).await, id)
     }
 
     async fn handle_create_tables(
@@ -257,7 +254,10 @@ impl<H: Handler> Server<H> {
             Ok(r) => r,
             Err(e) => return e,
         };
-        Self::handler_response(self.handler.create_tables(req.run_id, req.datasets).await, id)
+        Self::handler_response(
+            self.handler.create_tables(req.run_id, req.datasets).await,
+            id,
+        )
     }
 
     async fn handle_teardown(
