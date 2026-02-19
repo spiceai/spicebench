@@ -186,7 +186,7 @@ struct PipelineWorkState {
 /// # Lifecycle
 ///
 /// 1. **[`NotStarted`](PipelineState::NotStarted)** — created via [`ETLPipeline::new`]
-///    with a dataset, source, and target. Call [`setup_request_datasets`](ETLPipeline::setup_request_datasets)
+///    with a dataset, source, and target. Call [`create_tables_request_datasets`](ETLPipeline::create_tables_request_datasets)
 ///    to obtain the dataset configurations that a system adapter needs.
 /// 2. **[`Initialized`](PipelineState::Initialized)** — the first batch (batch 0)
 ///    has been ETL'd into the target via [`initialize`](ETLPipeline::initialize).
@@ -280,14 +280,14 @@ impl ETLPipeline {
         self.cancel_token.cancel();
     }
 
-    /// Returns the dataset configurations required to set up the system adapter.
+    /// Returns the dataset configurations required for `create_tables`.
     ///
     /// Each entry maps a table name to its
     /// [`DatasetConfig`](system_adapter_protocol::DatasetConfig), which includes
     /// the rehydrated Arrow schema. This can be used to build a
-    /// [`SetupRequest`](system_adapter_protocol::SetupRequest) for the system
-    /// adapter.
-    pub fn setup_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
+    /// [`CreateTablesRequest`](system_adapter_protocol::CreateTablesRequest) for
+    /// the system adapter.
+    pub fn create_tables_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
         self.dataset
             .tables()
             .into_iter()
