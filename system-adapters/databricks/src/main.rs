@@ -903,7 +903,7 @@ impl DatabricksAdapter {
                 name: table_name.to_string(),
                 catalog_name: self.config.catalog.clone(),
                 schema_name: self.config.schema.clone(),
-                table_type: "MANAGED".to_string(),
+                table_type: "EXTERNAL".to_string(),
                 data_source_format: "DELTA".to_string(),
                 columns,
             })
