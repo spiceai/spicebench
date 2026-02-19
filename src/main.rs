@@ -136,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     ]);
 
     let adbc_driver = match system_adapter_client
-        .setup(run_id, datasets, setup_metadata)
+        .setup(run_id, setup_metadata)
         .await
     {
         Ok(response) => response,
@@ -182,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
         &mutations,
     )?;
 
-    if let Err(e) = system_adapter_client.create_tables(run_id).await {
+    if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
         pipeline.cancel();
         return Err(anyhow::anyhow!(
             "Failed to create tables via system adapter: {e}"

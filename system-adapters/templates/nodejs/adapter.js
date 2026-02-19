@@ -28,13 +28,11 @@ function jsonrpcError(id, code, message, data) {
 
 function methodSetup(params) {
   void params.run_id;
-  void (params.datasets || {});
 
   // Stub: Provision or initialize your SUT for this run and return
   // query driver details SpiceBench should use.
   // Example:
   // - create a test database or schema for this run_id
-  // - configure ingestion routes for provided datasets
   // - block until SUT readiness checks are healthy
   // - resolve endpoint + credentials from your control plane
 
@@ -55,8 +53,10 @@ function methodSetup(params) {
 
 function methodCreateTables(params) {
   void params.run_id;
+  void (params.datasets || {});
 
   // Stub: Create/register destination tables for benchmark datasets.
+  // params.datasets is an object mapping table name to its schema definition.
   // Example:
   // - create tables if they do not exist
   // - apply expected schema/partitioning
