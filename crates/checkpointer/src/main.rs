@@ -176,12 +176,11 @@ async fn main() -> anyhow::Result<()> {
     let source = Arc::new(S3Storage::new(&source_config)?);
 
     // Read version metadata to derive dataset config and mutations.
-    let version_metadata = source
-        .read_version_metadata()
-        .await?
-        .ok_or_else(|| anyhow::anyhow!(
+    let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
+        anyhow::anyhow!(
             "No version.json found at {version_prefix}. Was data generation run for this version?"
-        ))?;
+        )
+    })?;
 
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let dataset_config = version_metadata.dataset_config();

@@ -21,7 +21,7 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use checkpointer::CheckpointStore;
 use clap::Parser;
 use data_generation::config::{
-    DatasetConfig as GenerationDatasetConfig, TargetConfig, build_version_prefix,
+    TargetConfig, build_version_prefix,
 };
 use data_generation::dataset::Dataset;
 use data_generation::storage::DataStorage;
@@ -154,9 +154,14 @@ async fn run_benchmark(
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let generation_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
-    let mut pipeline =
-        ETLPipeline::new(dataset_source, &generation_config, source, target, &mutations)?
-            .with_created_at(common.with_created_at);
+    let mut pipeline = ETLPipeline::new(
+        dataset_source,
+        &generation_config,
+        source,
+        target,
+        &mutations,
+    )?
+    .with_created_at(common.with_created_at);
 
     if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
         pipeline.cancel();
@@ -242,13 +247,12 @@ async fn main() -> anyhow::Result<()> {
     let source = Arc::new(S3Storage::new(&source_config)?);
 
     // Read version metadata to derive dataset config and mutations.
-    let version_metadata = source
-        .read_version_metadata()
-        .await?
-        .ok_or_else(|| anyhow::anyhow!(
+    let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
+        anyhow::anyhow!(
             "No version.json found at {}. Was data generation run for this version?",
             source_config.prefix,
-        ))?;
+        )
+    })?;
 
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let generation_config = version_metadata.dataset_config();
