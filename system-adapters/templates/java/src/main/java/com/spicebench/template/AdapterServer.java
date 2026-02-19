@@ -156,7 +156,6 @@ public final class AdapterServer {
     // query driver details SpiceBench should use.
     // Example:
     // - create run-scoped schema/database
-    // - configure ingestion resources for datasets
     // - wait for readiness checks to pass
     // - resolve endpoint and credentials from your control plane
     String host = getenvOr("SUT_HOST", "127.0.0.1");
@@ -178,6 +177,7 @@ public final class AdapterServer {
 
   private static JsonNode methodCreateTables() {
     // Stub: Create/register destination tables for benchmark datasets.
+    // params.get("datasets") contains a map of table name to schema definition.
     // Example:
     // - create tables if they do not exist
     // - apply expected schema/partitioning
