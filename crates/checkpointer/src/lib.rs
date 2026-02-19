@@ -19,12 +19,13 @@ limitations under the License.
 //! ## Layout
 //!
 //! ```text
-//! s3://{bucket}/{prefix}/{scenario}/checkpoints/{checkpoint_idx}/{query_idx}.parquet
+//! s3://{bucket}/{prefix}/checkpoints/{checkpoint_idx}/{query_idx}.parquet
 //! s3://{bucket}/{prefix}/checkpoints.json          ← manifest
 //! ```
 //!
 //! The manifest (`checkpoints.json`) contains metadata for every scenario
-//! that has been checkpointed under the given prefix.
+//! that has been checkpointed under the given prefix. The prefix is expected
+//! to already scope to the scenario and scale factor (e.g. `data-gen/tpch/1.0`).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -113,12 +114,11 @@ impl CheckpointStore {
 
     fn checkpoint_parquet_path(
         &self,
-        scenario: &str,
         checkpoint_idx: usize,
         query_idx: usize,
     ) -> ObjectPath {
         self.object_path(&format!(
-            "{scenario}/checkpoints/{checkpoint_idx}/{query_idx}.parquet"
+            "checkpoints/{checkpoint_idx}/{query_idx}.parquet"
         ))
     }
 
@@ -182,7 +182,7 @@ impl CheckpointStore {
                     .unwrap_or(0);
 
                 let bytes = std::fs::read(qf.path())?;
-                let dest = self.checkpoint_parquet_path(scenario, checkpoint_idx, q_idx);
+                let dest = self.checkpoint_parquet_path(checkpoint_idx, q_idx);
 
                 tracing::info!(
                     scenario,
@@ -254,7 +254,7 @@ impl CheckpointStore {
             std::fs::create_dir_all(&checkpoint_dir)?;
 
             for q_idx in 0..info.num_queries {
-                let remote = self.checkpoint_parquet_path(scenario, checkpoint_idx, q_idx);
+                let remote = self.checkpoint_parquet_path(checkpoint_idx, q_idx);
                 let data = self.store.get(&remote).await?.bytes().await?;
                 let local_path = checkpoint_dir.join(format!("{q_idx}.parquet"));
                 std::fs::write(&local_path, &data)?;
