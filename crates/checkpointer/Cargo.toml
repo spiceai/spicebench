@@ -17,6 +17,7 @@ clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
 etl = { path = "../etl", features = ["duckdb"] }
 system-adapter-protocol = { path = "../system-adapter-protocol" }
+parquet.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

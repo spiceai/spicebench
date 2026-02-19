@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema};
 use async_trait::async_trait;
+use duckdb::arrow::record_batch::RecordBatch as DuckDBRecordBatch;
 use tokio::sync::Mutex as TokioMutex;
 
 use super::{InsertOp, Sink};
@@ -245,6 +246,55 @@ impl DuckDBSink {
                 .map_err(|e| anyhow::anyhow!("Failed to drop staging table: {e}"))?;
 
             Ok::<_, anyhow::Error>(())
+        })
+        .await?
+    }
+}
+
+impl DuckDBSink {
+    /// Executes an arbitrary SQL query against the underlying DuckDB connection
+    /// and returns all result rows collected into `RecordBatch`es.
+    pub async fn query(&self, sql: &str) -> anyhow::Result<Vec<RecordBatch>> {
+        let conn = Arc::clone(&self.conn);
+        let sql = sql.to_string();
+        tokio::task::spawn_blocking(move || {
+            let guard = conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("DuckDB connection lock poisoned: {e}"))?;
+            let mut stmt = guard
+                .prepare(&sql)
+                .map_err(|e| anyhow::anyhow!("Failed to prepare DuckDB query: {e}"))?;
+            let duckdb_batches: Vec<DuckDBRecordBatch> = stmt
+                .query_arrow([])
+                .map_err(|e| anyhow::anyhow!("Failed to execute DuckDB query: {e}"))?
+                .collect();
+
+            // Convert from duckdb::arrow RecordBatch to arrow::array::RecordBatch
+            // via IPC serialization round-trip for crate compatibility.
+            let mut batches = Vec::with_capacity(duckdb_batches.len());
+            for db_batch in duckdb_batches {
+                let mut buf = Vec::new();
+                {
+                    let mut writer = duckdb::arrow::ipc::writer::FileWriter::try_new(
+                        &mut buf,
+                        &db_batch.schema(),
+                    )
+                    .map_err(|e| anyhow::anyhow!("IPC write init failed: {e}"))?;
+                    writer
+                        .write(&db_batch)
+                        .map_err(|e| anyhow::anyhow!("IPC write failed: {e}"))?;
+                    writer
+                        .finish()
+                        .map_err(|e| anyhow::anyhow!("IPC finish failed: {e}"))?;
+                }
+                let reader =
+                    arrow::ipc::reader::FileReader::try_new(std::io::Cursor::new(buf), None)
+                        .map_err(|e| anyhow::anyhow!("IPC read failed: {e}"))?;
+                for batch in reader {
+                    batches.push(batch.map_err(|e| anyhow::anyhow!("IPC batch read failed: {e}"))?);
+                }
+            }
+            Ok::<_, anyhow::Error>(batches)
         })
         .await?
     }

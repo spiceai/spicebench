@@ -938,6 +938,7 @@ dependencies = [
  "clap",
  "data-generation",
  "etl",
+ "parquet",
  "system-adapter-protocol",
  "tokio",
  "tokio-util",
