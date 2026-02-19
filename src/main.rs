@@ -37,7 +37,9 @@ mod scenario;
 use crate::commands::connect_system_adapter;
 use crate::scenario::Scenario;
 
-fn setup_request_datasets(dataset: &Arc<dyn Dataset>) -> HashMap<String, system_adapter_protocol::DatasetConfig> {
+fn setup_request_datasets(
+    dataset: &Arc<dyn Dataset>,
+) -> HashMap<String, system_adapter_protocol::DatasetConfig> {
     dataset
         .tables()
         .into_iter()
