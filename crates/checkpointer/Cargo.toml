@@ -16,6 +16,9 @@ chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
 etl = { path = "../etl", features = ["duckdb"] }
+object_store = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 system-adapter-protocol = { path = "../system-adapter-protocol" }
 parquet.workspace = true
 tokio.workspace = true
