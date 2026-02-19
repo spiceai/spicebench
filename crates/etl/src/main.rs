@@ -142,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     pipeline.initialize().await?;
-    pipeline.start()?;
+    pipeline.start().await?;
 
     let final_state = pipeline.wait().await;
     match &final_state {

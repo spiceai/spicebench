@@ -32,6 +32,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 use super::{BatchOperation, ReadResult, WriteResult};
 
@@ -333,6 +334,29 @@ impl DataStorage for S3Storage {
             .collect();
 
         Ok(paths)
+    }
+
+    async fn read_batch_ids(&self, table_name: &str) -> anyhow::Result<VecDeque<u64>> {
+        let metadata_path = self.table_metadata_object_path(table_name);
+        let get_result = match self.store.get(&metadata_path).await {
+            Ok(r) => r,
+            Err(object_store::Error::NotFound { .. }) => return Ok(VecDeque::new()),
+            Err(e) => return Err(e.into()),
+        };
+
+        let bytes = get_result.bytes().await?;
+        let table_meta: serde_json::Value = serde_json::from_slice(&bytes)?;
+
+        let Some(batches) = table_meta.get("batches").and_then(|b| b.as_object()) else {
+            return Ok(VecDeque::new());
+        };
+
+        let mut ids: Vec<u64> = batches
+            .keys()
+            .filter_map(|k| k.parse::<u64>().ok())
+            .collect();
+        ids.sort_unstable();
+        Ok(VecDeque::from(ids))
     }
 
     async fn read_batch(

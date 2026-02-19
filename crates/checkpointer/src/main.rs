@@ -204,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     pipeline.initialize().await?;
-    pipeline.run(cli.checkpoint_interval_steps as usize)?;
+    pipeline.run(cli.checkpoint_interval_steps as usize).await?;
 
     let mut checkpoint_idx: usize = 0;
 

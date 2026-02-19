@@ -26,6 +26,7 @@ use rand::Rng;
 use crate::config::DatasetConfig;
 use crate::dataset::MutationConfig;
 use crate::dataset::key_set::IndexedKeySet;
+use crate::storage::DataStorage;
 
 use super::{Dataset, DatasetTable};
 
@@ -59,10 +60,16 @@ pub struct SimpleSequenceDataset {
     key_set: Mutex<IndexedKeySet<i64>>,
     /// Global monotonically increasing operation counter for replay ordering.
     op_counter: AtomicI64,
+    /// The storage backend for reading/writing table metadata.
+    storage: Arc<dyn DataStorage>,
 }
 
 impl SimpleSequenceDataset {
-    pub fn new(config: &DatasetConfig, mutations: &MutationConfig) -> Self {
+    pub fn new(
+        config: &DatasetConfig,
+        mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
+    ) -> Self {
         let batch_size = (config.scale_factor * 1000.0) as usize;
         Self {
             batch_size,
@@ -72,6 +79,7 @@ impl SimpleSequenceDataset {
             remaining_steps: AtomicU16::new(config.num_steps),
             key_set: Mutex::new(IndexedKeySet::new()),
             op_counter: AtomicI64::new(0),
+            storage,
         }
     }
 
@@ -96,11 +104,16 @@ impl Dataset for SimpleSequenceDataset {
     fn create(
         config: &DatasetConfig,
         mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
     ) -> anyhow::Result<Arc<dyn Dataset>>
     where
         Self: Sized + 'static,
     {
-        Ok(Arc::new(Self::new(config, mutations)))
+        Ok(Arc::new(Self::new(config, mutations, storage)))
+    }
+
+    fn storage(self: Arc<Self>) -> Arc<dyn DataStorage> {
+        Arc::clone(&self.storage)
     }
 
     fn primary_key(&self, _table: &str) -> Vec<String> {

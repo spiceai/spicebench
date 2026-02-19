@@ -294,7 +294,7 @@ pub(crate) async fn run(
     // --- Start the ETL pipeline (remaining batches) ---
     tracing::info!("Starting ETL pipeline (remaining batches)...");
     let mut etl_state_rx = etl_pipeline.state_watch();
-    etl_pipeline.start()?;
+    etl_pipeline.start().await?;
 
     let test_future = throughput_test.wait();
     tokio::pin!(test_future);

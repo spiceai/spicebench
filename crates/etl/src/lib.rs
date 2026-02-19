@@ -124,10 +124,13 @@ impl DatasetSource {
         &self,
         config: &GenerationDatasetConfig,
         mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
     ) -> anyhow::Result<Arc<dyn Dataset>> {
         match self {
-            DatasetSource::SimpleSequence => SimpleSequenceDataset::create(config, mutations),
-            DatasetSource::Tpch => TpchDataset::create(config, mutations),
+            DatasetSource::SimpleSequence => {
+                SimpleSequenceDataset::create(config, mutations, storage)
+            }
+            DatasetSource::Tpch => TpchDataset::create(config, mutations, storage),
         }
     }
 }
@@ -224,7 +227,7 @@ impl ETLPipeline {
         data_sink: Arc<dyn Sink>,
         mutations: &MutationConfig,
     ) -> anyhow::Result<Self> {
-        let dataset = dataset_source.create(config, mutations)?;
+        let dataset = dataset_source.create(config, mutations, Arc::clone(&data_storage))?;
         let (state_tx, state_rx) = watch::channel(PipelineState::NotStarted);
         Ok(Self {
             dataset_source,
@@ -399,7 +402,7 @@ impl ETLPipeline {
     /// processed, the [`CancellationToken`] is triggered, or an error occurs.
     ///
     /// Returns an error if the pipeline is not in the [`Initialized`] state.
-    pub fn start(&mut self) -> anyhow::Result<()> {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         let current_state = self.state_rx.borrow().clone();
         if current_state != PipelineState::Initialized {
             anyhow::bail!(
@@ -409,7 +412,7 @@ impl ETLPipeline {
         }
 
         self.batch_budget = None;
-        self.build_work_plan();
+        self.build_work_plan().await;
         self.spawn_run_task(None);
         Ok(())
     }
@@ -427,7 +430,7 @@ impl ETLPipeline {
     /// [`PipelineState::Stopped(StopReason::Completed)`].
     ///
     /// Returns an error if the pipeline is not in the [`Initialized`] state.
-    pub fn run(&mut self, step_count: usize) -> anyhow::Result<()> {
+    pub async fn run(&mut self, step_count: usize) -> anyhow::Result<()> {
         let current_state = self.state_rx.borrow().clone();
         if current_state != PipelineState::Initialized {
             anyhow::bail!(
@@ -437,7 +440,7 @@ impl ETLPipeline {
         }
 
         self.batch_budget = Some(step_count);
-        self.build_work_plan();
+        self.build_work_plan().await;
         self.spawn_run_task(Some(step_count));
         Ok(())
     }
@@ -473,13 +476,13 @@ impl ETLPipeline {
 
     /// Build the initial work plan from the dataset and store it in
     /// `self.work_state`.
-    fn build_work_plan(&self) {
+    async fn build_work_plan(&self) {
         let dataset = &self.dataset;
         let tables = dataset.tables();
         let mut steps: BTreeMap<u64, Vec<String>> = BTreeMap::new();
 
         for name in tables.keys() {
-            for id in dataset.batch_ids(name) {
+            for id in dataset.clone().batch_ids(name).await {
                 // Skip batch 0 — it was already processed during initialize().
                 if id == 0 {
                     continue;

@@ -29,6 +29,7 @@ use async_trait::async_trait;
 use crate::config::DatasetConfig;
 use crate::dataset::simple_sequence::SimpleSequenceDataset;
 use crate::dataset::tpch::TpchDataset;
+use crate::storage::DataStorage;
 
 /// Metadata about a table in a dataset.
 #[derive(Debug, Clone)]
@@ -169,17 +170,29 @@ pub trait Dataset: Send + Sync {
     fn create(
         config: &DatasetConfig,
         mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
     ) -> anyhow::Result<Arc<dyn Dataset>>
     where
         Self: Sized + 'static;
 
-    /// Returns the batch IDs that would be produced for a given table after a
-    /// successful generation run.
+    /// Returns the [`DataStorage`] configured for this dataset.
     ///
-    /// The default implementation returns `0..num_batches(table)`, but
-    /// implementations may override this to customise the ID scheme.
-    fn batch_ids(&self, table: &str) -> VecDeque<u64> {
-        (0..self.num_batches(table)).collect()
+    /// This is used by the default [`batch_ids`] implementation to read
+    /// batch IDs from the table-level metadata file stored in the backend.
+    fn storage(self: Arc<Self>) -> Arc<dyn DataStorage>;
+
+    /// Returns the batch IDs for a given table by reading the table-level
+    /// metadata from the configured [`DataStorage`].
+    ///
+    /// Falls back to `0..num_batches(table)` if the metadata file does not
+    /// exist or contains no batch entries.
+    async fn batch_ids(self: Arc<Self>, table: &str) -> VecDeque<u64> {
+        let num_batches = self.num_batches(table);
+        let storage = self.storage();
+        match storage.read_batch_ids(table).await {
+            Ok(ids) if !ids.is_empty() => ids,
+            _ => (0..num_batches).collect(),
+        }
     }
 
     /// Returns the total number of batches this dataset will produce for the
@@ -313,21 +326,26 @@ impl Dataset for Arc<dyn Dataset> {
     fn create(
         config: &DatasetConfig,
         mutations: &MutationConfig,
+        storage: Arc<dyn DataStorage>,
     ) -> anyhow::Result<Arc<dyn Dataset>>
     where
         Self: Sized + 'static,
     {
         match config.dataset_type.as_str() {
-            "tpch" => TpchDataset::create(config, mutations),
-            "simple_sequence" => SimpleSequenceDataset::create(config, mutations),
+            "tpch" => TpchDataset::create(config, mutations, storage),
+            "simple_sequence" => SimpleSequenceDataset::create(config, mutations, storage),
             other => {
                 anyhow::bail!("Unknown dataset type: {other}. Supported: tpch, simple_sequence")
             }
         }
     }
 
-    fn batch_ids(&self, table: &str) -> VecDeque<u64> {
-        (**self).batch_ids(table)
+    fn storage(self: Arc<Self>) -> Arc<dyn DataStorage> {
+        (*self).clone().storage()
+    }
+
+    async fn batch_ids(self: Arc<Self>, table: &str) -> VecDeque<u64> {
+        (*self).clone().batch_ids(table).await
     }
 
     fn num_batches(&self, table: &str) -> u64 {
