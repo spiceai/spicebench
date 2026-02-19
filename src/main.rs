@@ -159,8 +159,13 @@ async fn main() -> anyhow::Result<()> {
         cli.common.etl_endpoint.as_deref(),
     )?;
 
-    let manifest = checkpoint_store.download_manifest().await?;
-    if let Some(scenario_info) = manifest.scenarios.get(&scenario_name) {
+    let manifest = checkpoint_store.download_manifest().await.map_err(|e| {
+        tracing::warn!("Failed to download checkpoint manifest - results validation will not be enabled: {e}");
+        e
+    }).ok();
+    if let Some(manifest) = manifest
+        && let Some(scenario_info) = manifest.scenarios.get(&scenario_name)
+    {
         tracing::info!(
             scenario = %scenario_name,
             num_checkpoints = scenario_info.num_checkpoints,
