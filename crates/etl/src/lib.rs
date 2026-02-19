@@ -1020,10 +1020,7 @@ mod tests {
             })
         }
 
-        async fn write_version_metadata(
-            &self,
-            _metadata: &VersionMetadata,
-        ) -> anyhow::Result<()> {
+        async fn write_version_metadata(&self, _metadata: &VersionMetadata) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -1071,9 +1068,8 @@ mod tests {
         let storage: Arc<dyn DataStorage> = Arc::new(MockStorage);
         let sink: Arc<dyn Sink> = Arc::new(MockSink);
 
-        let pipeline =
-            ETLPipeline::new(DatasetSource::Tpch, &config, storage, sink, &mutations)
-                .expect("failed to create pipeline");
+        let pipeline = ETLPipeline::new(DatasetSource::Tpch, &config, storage, sink, &mutations)
+            .expect("failed to create pipeline");
 
         if with_created_at {
             pipeline.with_created_at(true)
