@@ -17,6 +17,7 @@ async-channel = "2.3"
 async-trait.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+clap = { workspace = true, features = ["derive"] }
 dashmap = "6.1.0"
 datafusion.workspace = true
 flight_client = { path = "../flight_client" }

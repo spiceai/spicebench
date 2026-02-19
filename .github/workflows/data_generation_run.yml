@@ -173,7 +173,8 @@ jobs:
           PREFIX="${PREFIX_BASE}"
           PREFIX="${PREFIX%/}/${SCENARIO}"
 
-          ARGS="--dataset ${SCENARIO}"
+          ARGS="--scenario ${SCENARIO}"
+          ARGS="${ARGS} --dataset ${SCENARIO}"
           ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
           ARGS="${ARGS} --bucket ${BUCKET}"
           ARGS="${ARGS} --source-prefix ${PREFIX}"

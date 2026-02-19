@@ -39,6 +39,9 @@ pub mod utils;
 
 use std::fmt::Display;
 
+use queries::QuerySet;
+use spicetest::datasets::EndCondition;
+
 pub use anyhow;
 pub use app;
 pub use arrow;
@@ -51,6 +54,35 @@ pub use rustls;
 pub use spicepod;
 pub use tokio_util;
 pub use yaml;
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum Scenario {
+    #[allow(clippy::upper_case_acronyms)]
+    TPCH,
+}
+
+impl Display for Scenario {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Scenario::TPCH => write!(f, "tpch"),
+        }
+    }
+}
+
+impl Scenario {
+    /// Load the query set corresponding to this scenario.
+    pub fn load_query_set(&self) -> anyhow::Result<QuerySet> {
+        match self {
+            Scenario::TPCH => Ok(QuerySet::Tpch),
+        }
+    }
+
+    pub fn end_condition(&self) -> EndCondition {
+        match self {
+            Scenario::TPCH => EndCondition::Unlimited,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum TestType {
