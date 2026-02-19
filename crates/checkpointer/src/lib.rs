@@ -112,10 +112,7 @@ impl CheckpointStore {
         self.object_path("checkpoints.json")
     }
 
-    fn checkpoint_parquet_path(
-        &self,
-        checkpoint_idx: usize,
-        query_idx: usize) -> ObjectPath {
+    fn checkpoint_parquet_path(&self, checkpoint_idx: usize, query_idx: usize) -> ObjectPath {
         self.object_path(&format!("checkpoints/{checkpoint_idx}/{query_idx}.parquet"))
     }
 
