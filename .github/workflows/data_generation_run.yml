@@ -173,11 +173,11 @@ jobs:
           PREFIX="${PREFIX_BASE}"
           PREFIX="${PREFIX%/}/${SCENARIO}"
 
-          # The data-generation binary appends the scale factor (formatted to
-          # one decimal place) to the prefix. Mirror that here so the
-          # checkpointer reads from the same S3 path.
-          SF_FORMATTED=$(printf '%.1f' "${SCALE_FACTOR}")
-          SOURCE_PREFIX="${PREFIX}/${SF_FORMATTED}"
+          # The data-generation binary appends the scale factor to the prefix
+          # using Rust's default float formatting (e.g. 0.01 → "0.01",
+          # 1 → "1.0"). Mirror that here so the checkpointer reads from the
+          # same S3 path.
+          SOURCE_PREFIX="${PREFIX}/${SCALE_FACTOR}"
 
           ARGS="--scenario ${SCENARIO}"
           ARGS="${ARGS} --dataset ${SCENARIO}"

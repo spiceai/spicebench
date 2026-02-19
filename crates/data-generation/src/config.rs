@@ -105,8 +105,7 @@ impl CommonArgs {
     pub fn target_config(&self) -> TargetConfig {
         TargetConfig {
             bucket: self.bucket.clone(),
-            // format scale factor like 1.0 to only single decimal place
-            prefix: format!("{}/{:.1}", self.prefix, self.scale_factor),
+            prefix: format!("{}/{}", self.prefix, format_scale_factor(self.scale_factor)),
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }
@@ -116,5 +115,19 @@ impl CommonArgs {
         IngestorConfig {
             max_concurrency: self.max_concurrency,
         }
+    }
+}
+
+/// Formats a scale factor for use in S3 key paths.
+///
+/// Uses Rust's default `Display` formatting which preserves all significant
+/// digits (e.g. `0.01` stays `"0.01"`), then appends `.0` for whole numbers
+/// so that `1` becomes `"1.0"` for readability.
+pub fn format_scale_factor(sf: f64) -> String {
+    let s = format!("{sf}");
+    if s.contains('.') {
+        s
+    } else {
+        format!("{s}.0")
     }
 }
