@@ -298,6 +298,45 @@ impl DuckDBSink {
         })
         .await?
     }
+
+    /// Returns the result schema of an arbitrary SQL query without requiring
+    /// any rows to be returned. This uses DuckDB's `query_arrow` +
+    /// `get_schema()` which provides the schema even for empty result sets.
+    pub async fn query_schema(&self, sql: &str) -> anyhow::Result<arrow::datatypes::SchemaRef> {
+        let conn = Arc::clone(&self.conn);
+        let sql = sql.to_string();
+        tokio::task::spawn_blocking(move || {
+            let guard = conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("DuckDB connection lock poisoned: {e}"))?;
+            let mut stmt = guard
+                .prepare(&sql)
+                .map_err(|e| anyhow::anyhow!("Failed to prepare DuckDB query: {e}"))?;
+            let result = stmt
+                .query_arrow([])
+                .map_err(|e| anyhow::anyhow!("Failed to execute DuckDB query: {e}"))?;
+            let duckdb_schema = result.get_schema();
+
+            // Convert from duckdb::arrow::Schema to arrow::datatypes::Schema
+            // via IPC serialization round-trip for crate compatibility.
+            let mut buf = Vec::new();
+            {
+                let mut writer = duckdb::arrow::ipc::writer::FileWriter::try_new(
+                    &mut buf,
+                    &duckdb_schema,
+                )
+                .map_err(|e| anyhow::anyhow!("IPC write init failed: {e}"))?;
+                writer
+                    .finish()
+                    .map_err(|e| anyhow::anyhow!("IPC finish failed: {e}"))?;
+            }
+            let reader =
+                arrow::ipc::reader::FileReader::try_new(std::io::Cursor::new(buf), None)
+                    .map_err(|e| anyhow::anyhow!("IPC read failed: {e}"))?;
+            Ok(reader.schema())
+        })
+        .await?
+    }
 }
 
 #[async_trait]
