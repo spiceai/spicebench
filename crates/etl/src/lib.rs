@@ -646,9 +646,15 @@ impl ETLPipeline {
         let last_created_at = Arc::clone(&self.last_created_at_us);
 
         let handle = tokio::spawn(async move {
-            let outcome =
-                run_pipeline(source, target, work_state, cancel, step_limit, last_created_at)
-                    .await;
+            let outcome = run_pipeline(
+                source,
+                target,
+                work_state,
+                cancel,
+                step_limit,
+                last_created_at,
+            )
+            .await;
             let _ = state_tx.send(outcome);
         });
 
