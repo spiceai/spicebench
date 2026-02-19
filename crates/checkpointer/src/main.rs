@@ -28,7 +28,6 @@ use etl::sink::duckdb::DuckDBSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use parquet::arrow::ArrowWriter;
 use test_framework::Scenario;
-use test_framework::queries::QueryOverrides;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
