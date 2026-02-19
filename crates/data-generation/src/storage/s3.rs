@@ -263,10 +263,7 @@ impl DataStorage for S3Storage {
             return Ok(VecDeque::new());
         };
 
-        let mut ids: Vec<u64> = ids_array
-            .iter()
-            .filter_map(|v| v.as_u64())
-            .collect();
+        let mut ids: Vec<u64> = ids_array.iter().filter_map(|v| v.as_u64()).collect();
         ids.sort_unstable();
         Ok(VecDeque::from(ids))
     }
