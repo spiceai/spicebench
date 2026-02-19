@@ -444,10 +444,20 @@ impl ETLPipeline {
             .tables()
             .into_iter()
             .map(|(name, table)| {
+                // Strip internal columns (_op, _op_index) from the schema, as
+                // these are removed before data is written to the sink.
+                let fields: Vec<_> = table
+                    .schema
+                    .fields()
+                    .iter()
+                    .filter(|f| !INTERNAL_COLUMNS.contains(&f.name().as_str()))
+                    .cloned()
+                    .collect();
+                let schema: SchemaRef = Arc::new(Schema::new(fields));
                 let schema = if with_created_at {
-                    schema_with_created_at(&table.schema)
+                    schema_with_created_at(&schema)
                 } else {
-                    table.schema.clone()
+                    schema
                 };
                 let config = ProtocolDatasetConfig { schema };
                 (name, config)
