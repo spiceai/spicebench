@@ -49,7 +49,7 @@ pub struct CommonArgs {
     ///
     /// Each client runs query-set iterations independently and dispatches its
     /// queries asynchronously.
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "2")]
     pub(crate) concurrency: usize,
 
     /// Executor instance type used for this run (for cross-run comparison and dashboarding).

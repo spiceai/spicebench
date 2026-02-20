@@ -54,7 +54,7 @@ on:
       num_query_clients:
         description: 'Number of query clients to run (maps to spicebench --concurrency)'
         required: false
-        default: '2'
+        default: '8'
         type: string
 
 jobs:
@@ -216,7 +216,7 @@ jobs:
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           EXECUTOR_INSTANCE_TYPE: ${{ github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
-          NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '2' }}
+          NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '8' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
           ETL_VERSION: ${{ github.event.inputs.etl_version }}
