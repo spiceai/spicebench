@@ -30,6 +30,8 @@ use chrono::{Duration, NaiveDate};
 use super::{InsertOp, Sink};
 
 const BULK_INGEST_CHUNK_ROWS: usize = 500_000;
+const TABLE_READY_MAX_WAIT_SECS: u64 = 45;
+const TABLE_READY_RETRY_MS: u64 = 750;
 
 /// Identifier quoting style for SQL dialects.
 #[derive(Debug, Clone, Copy, Default)]
@@ -106,6 +108,52 @@ impl AdbcSink {
         }
     }
 
+    fn is_table_not_found_error(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        message.contains("table does not exist")
+            || message.contains("table that does not exist")
+            || message.contains("tablenotfound")
+            || message.contains("tried to load a table that does not exist")
+    }
+
+    async fn wait_for_table_ready(&self, table_name: &str) -> anyhow::Result<()> {
+        let table_identifier = self.table_identifier(table_name);
+        let probe_sql = format!("SELECT 1 FROM {table_identifier} LIMIT 0");
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(TABLE_READY_MAX_WAIT_SECS);
+
+        loop {
+            let conn = Arc::clone(&self.conn);
+            let probe_sql = probe_sql.clone();
+
+            let probe_result = tokio::task::spawn_blocking(move || {
+                let mut guard = conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
+                guard
+                    .query(&probe_sql)
+                    .map_err(|e| anyhow::anyhow!("Table readiness probe failed: {e}"))?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await?;
+
+            match probe_result {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    if !Self::is_table_not_found_error(&err.to_string()) {
+                        return Err(err);
+                    }
+
+                    if std::time::Instant::now() >= deadline {
+                        return Err(err);
+                    }
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(TABLE_READY_RETRY_MS)).await;
+        }
+    }
+
     async fn execute_sql_batch(&self, statements: Vec<String>) -> anyhow::Result<()> {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
@@ -125,6 +173,8 @@ impl AdbcSink {
     async fn bulk_ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
         const MAX_RETRIES: u32 = 3;
         const INITIAL_BACKOFF_MS: u64 = 1000;
+
+        self.wait_for_table_ready(table_name).await?;
 
         let batch = normalize_utf8view_to_utf8(batch)?;
         let schema = batch.schema();
@@ -181,10 +231,14 @@ impl AdbcSink {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     let msg = e.to_string();
+                    let table_not_found = Self::is_table_not_found_error(&msg);
                     let is_retryable = msg.contains("does not exist")
                         || msg.contains("unavailable")
                         || msg.contains("Internal");
                     if is_retryable && attempt < MAX_RETRIES {
+                        if table_not_found {
+                            let _ = self.wait_for_table_ready(table_name).await;
+                        }
                         tracing::warn!(
                             table = %table_name,
                             attempt = attempt + 1,

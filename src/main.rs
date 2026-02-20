@@ -54,6 +54,14 @@ pub enum SystemAdapterExecutionMode {
     DirectQuery,
 }
 
+fn iceberg_target_prefix(common: &CommonArgs, scenario_name: &str, run_id: uuid::Uuid) -> String {
+    let mut target_prefix = common.etl_target_base_prefix.trim_matches('/').to_string();
+    if target_prefix.is_empty() {
+        target_prefix = "etl-iceberg-output".to_string();
+    }
+    format!("{target_prefix}/{scenario_name}/{run_id}")
+}
+
 async fn run_benchmark(
     common: &CommonArgs,
     system_adapter_client: &mut system_adapter_protocol::Client,
@@ -133,11 +141,7 @@ async fn run_benchmark(
             )
         }
         EtlSinkMode::IcebergObjectStore => {
-            let mut target_prefix = common.etl_target_base_prefix.trim_matches('/').to_string();
-            if target_prefix.is_empty() {
-                target_prefix = "etl-iceberg-output".to_string();
-            }
-            let iceberg_prefix = format!("{target_prefix}/{scenario_name}/{run_id}");
+            let iceberg_prefix = iceberg_target_prefix(common, &scenario_name, run_id);
             let sink = IcebergSink::new(IcebergObjectStoreConfig {
                 warehouse_uri: format!("s3://{}/{}", common.etl_bucket, iceberg_prefix),
                 namespace: vec!["spicebench".to_string(), "etl".to_string()],
@@ -268,21 +272,67 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let run_id = uuid::Uuid::new_v4();
+    let scenario_name = cli.common.scenario.to_string();
 
-    let setup_metadata = std::collections::HashMap::from([
-        (
-            "executor_instance_type".to_string(),
-            serde_json::Value::String(cli.common.executor_instance_type.clone()),
-        ),
-        (
-            "table_format".to_string(),
-            serde_json::Value::String(cli.common.table_format.to_string()),
-        ),
-        (
-            "etl_sink_mode".to_string(),
-            serde_json::Value::String(cli.common.etl_sink_mode.to_string()),
-        ),
-    ]);
+    let mut setup_metadata = std::collections::HashMap::new();
+    setup_metadata.insert(
+        "executor_instance_type".to_string(),
+        serde_json::Value::String(cli.common.executor_instance_type.clone()),
+    );
+    setup_metadata.insert(
+        "table_format".to_string(),
+        serde_json::Value::String(cli.common.table_format.to_string()),
+    );
+    setup_metadata.insert(
+        "etl_sink_mode".to_string(),
+        serde_json::Value::String(cli.common.etl_sink_mode.to_string()),
+    );
+    setup_metadata.insert(
+        "scenario".to_string(),
+        serde_json::Value::String(scenario_name.clone()),
+    );
+    setup_metadata.insert(
+        "etl_bucket".to_string(),
+        serde_json::Value::String(cli.common.etl_bucket.clone()),
+    );
+    setup_metadata.insert(
+        "etl_prefix".to_string(),
+        serde_json::Value::String(cli.common.etl_prefix.clone()),
+    );
+    setup_metadata.insert(
+        "etl_version".to_string(),
+        serde_json::Value::String(cli.common.etl_version.clone()),
+    );
+    setup_metadata.insert(
+        "etl_region".to_string(),
+        cli.common
+            .etl_region
+            .as_ref()
+            .map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.clone())),
+    );
+    setup_metadata.insert(
+        "etl_endpoint".to_string(),
+        cli.common
+            .etl_endpoint
+            .as_ref()
+            .map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.clone())),
+    );
+
+    if matches!(cli.common.etl_sink_mode, EtlSinkMode::IcebergObjectStore) {
+        let iceberg_prefix = iceberg_target_prefix(&cli.common, &scenario_name, run_id);
+        setup_metadata.insert(
+            "etl_iceberg_target_prefix".to_string(),
+            serde_json::Value::String(iceberg_prefix.clone()),
+        );
+        setup_metadata.insert(
+            "etl_iceberg_warehouse_uri".to_string(),
+            serde_json::Value::String(format!("s3://{}/{}", cli.common.etl_bucket, iceberg_prefix)),
+        );
+        setup_metadata.insert(
+            "etl_iceberg_namespace".to_string(),
+            serde_json::Value::String("spicebench.etl".to_string()),
+        );
+    }
 
     let adbc_driver = match system_adapter_client.setup(run_id, setup_metadata).await {
         Ok(response) => response,
