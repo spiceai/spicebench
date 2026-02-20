@@ -125,7 +125,7 @@ async fn run_benchmark(
         ingest_driver_name
     );
 
-    let quote_style = match adbc_driver.driver {
+    let quote_style = match setup_response.ingest_driver.driver {
         AdbcDriver::Databricks => QuoteStyle::Backtick,
         AdbcDriver::Flightsql => QuoteStyle::default(),
     };
