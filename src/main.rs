@@ -233,11 +233,9 @@ async fn main() -> anyhow::Result<()> {
         etl_prefix = %cli.common.etl_prefix,
         etl_version = %cli.common.etl_version,
         etl_region = ?cli.common.etl_region,
-        etl_sink_mode = %cli.common.etl_sink_mode,
         table_format = %cli.common.table_format,
         scenario = %scenario_name,
         concurrency = cli.common.concurrency,
-        with_created_at = cli.common.with_created_at,
         "ETL configuration"
     );
 
