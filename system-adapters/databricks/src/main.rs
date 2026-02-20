@@ -186,6 +186,7 @@ impl TableFormat {
 struct RunState {
     #[allow(dead_code)]
     table_format: TableFormat,
+    scenario_slug: String,
     created_tables: Vec<String>,
     cluster_id: Option<String>,
     cluster_created_by_adapter: bool,
@@ -378,7 +379,7 @@ impl DatabricksAdapter {
         format!("`{}`", identifier.replace('`', "``"))
     }
 
-    fn lakebase_table_full_name(&self, table_name: &str) -> String {
+    fn table_full_name(&self, table_name: &str) -> String {
         format!(
             "{}.{}.{}",
             Self::quoted_identifier(&self.config.catalog),
@@ -473,7 +474,7 @@ impl DatabricksAdapter {
 
         Ok(format!(
             "CREATE TABLE {} ({columns}) USING {}",
-            self.lakebase_table_full_name(table_name),
+            self.table_full_name(table_name),
             table_format.as_sql_using()
         ))
     }
@@ -491,7 +492,7 @@ impl DatabricksAdapter {
     fn create_table_ctas(&self, table_name: &str, location: &str) -> String {
         format!(
             "CREATE OR REPLACE TABLE {} AS SELECT * FROM parquet.`{location}`",
-            self.lakebase_table_full_name(table_name),
+            self.table_full_name(table_name),
         )
     }
 
@@ -968,6 +969,79 @@ print("OK")
         Ok(())
     }
 
+    async fn delete_job(&self, job_id: i64) -> Result<()> {
+        let url = format!("https://{}/api/2.1/jobs/delete", self.config.endpoint);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.token)
+            .json(&json!({ "job_id": job_id }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Databricks jobs/delete failed ({status}): {body}"));
+        }
+
+        eprintln!("[databricks-adapter] deleted job: job_id={job_id}");
+        Ok(())
+    }
+
+    async fn find_notebook(&self, notebook_path: &str) -> Result<bool> {
+        let url = format!(
+            "https://{}/api/2.0/workspace/get-status",
+            self.config.endpoint
+        );
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.config.token)
+            .query(&[("path", notebook_path)])
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Databricks workspace/get-status failed ({status}): {body}"
+            ));
+        }
+
+        Ok(true)
+    }
+
+    async fn delete_notebook(&self, notebook_path: &str) -> Result<()> {
+        let url = format!("https://{}/api/2.0/workspace/delete", self.config.endpoint);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.token)
+            .json(&json!({
+                "path": notebook_path,
+                "recursive": false
+            }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Databricks workspace/delete failed ({status}): {body}"
+            ));
+        }
+
+        eprintln!("[databricks-adapter] deleted notebook: path={notebook_path}");
+        Ok(())
+    }
+
     async fn find_job_id_by_name(&self, job_name: &str) -> Result<Option<i64>> {
         let url = format!("https://{}/api/2.1/jobs/list", self.config.endpoint);
 
@@ -1330,6 +1404,7 @@ impl Handler for DatabricksAdapter {
             run_id,
             RunState {
                 table_format,
+                scenario_slug: scenario_slug.clone(),
                 created_tables: Vec::new(),
                 cluster_id: cluster_id.clone(),
                 cluster_created_by_adapter,
@@ -1346,10 +1421,8 @@ impl Handler for DatabricksAdapter {
                         format!("Dataset '{table_name}' is missing required 'location' field")
                     })?;
 
-                    let drop_sql = format!(
-                        "DROP TABLE IF EXISTS {}",
-                        self.lakebase_table_full_name(table_name)
-                    );
+                    let drop_sql =
+                        format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
                     self.execute_sql_statement(&drop_sql).await.map_err(|e| {
                         format!(
                             "Failed to drop existing table '{table_name}' during create_tables: {e}"
@@ -1398,23 +1471,49 @@ impl Handler for DatabricksAdapter {
             return Ok(TeardownResponse { ok: true });
         };
 
+        // 1. Delete the sync job if it exists.
+        let job_name = Self::job_name_for_scenario(&state.scenario_slug);
+        match self.find_job_id_by_name(&job_name).await {
+            Ok(Some(job_id)) => {
+                self.delete_job(job_id).await.map_err(|e| {
+                    format!("Failed to delete sync job '{job_name}' (id={job_id}): {e}")
+                })?;
+            }
+            Ok(None) => {
+                eprintln!("[databricks-adapter] no sync job to delete: job_name={job_name}");
+            }
+            Err(e) => {
+                eprintln!(
+                    "[databricks-adapter] warning: failed to look up sync job '{job_name}': {e}"
+                );
+            }
+        }
+
+        // 2. Delete the notebook if it exists.
+        let notebook_path = Self::notebook_path_for_scenario(&state.scenario_slug);
+        match self.find_notebook(&notebook_path).await {
+            Ok(true) => {
+                self.delete_notebook(&notebook_path)
+                    .await
+                    .map_err(|e| format!("Failed to delete notebook '{notebook_path}': {e}"))?;
+            }
+            Ok(false) => {
+                eprintln!("[databricks-adapter] no notebook to delete: path={notebook_path}");
+            }
+            Err(e) => {
+                eprintln!(
+                    "[databricks-adapter] warning: failed to look up notebook '{notebook_path}': {e}"
+                );
+            }
+        }
+
+        // 3. Drop created tables.
         if self.config.drop_tables_on_teardown {
             for table_name in &state.created_tables {
                 match self.config.variant {
-                    DatabricksVariant::Databricks => {
-                        self.delete_uc_table_if_exists(table_name)
-                            .await
-                            .map_err(|e| {
-                                format!(
-                                    "Failed to drop Unity Catalog table '{table_name}' during teardown: {e}"
-                                )
-                            })?;
-                    }
-                    DatabricksVariant::Lakebase => {
-                        let sql = format!(
-                            "DROP TABLE IF EXISTS {}",
-                            self.lakebase_table_full_name(table_name)
-                        );
+                    DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
+                        let sql =
+                            format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
                         self.execute_sql_statement(&sql).await.map_err(|e| {
                             format!(
                                 "Failed to drop Lakebase table '{table_name}' during teardown: {e}"
