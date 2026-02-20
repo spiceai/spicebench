@@ -265,21 +265,24 @@ impl Sink for AdbcSink {
         batch: RecordBatch,
         op: InsertOp,
     ) -> anyhow::Result<()> {
+        let num_rows = batch.num_rows();
+        tracing::debug!(table = %table_name, rows = num_rows, op = ?op, "Writing batch");
+        let start = std::time::Instant::now();
         match op {
             InsertOp::Insert => {
-                if batch.num_rows() == 0 {
+                if num_rows == 0 {
                     return Ok(());
                 }
 
                 self.bulk_ingest_batch(table_name, batch).await?;
             }
             InsertOp::Update { ref key_columns } => {
-                if batch.num_rows() == 0 {
+                if num_rows == 0 {
                     return Ok(());
                 }
                 let key_indexes = key_column_indexes(&batch, key_columns)?;
                 let mut statements = Vec::new();
-                for row_idx in 0..batch.num_rows() {
+                for row_idx in 0..num_rows {
                     statements.push(self.update_sql_for_row(
                         table_name,
                         &batch,
@@ -290,12 +293,12 @@ impl Sink for AdbcSink {
                 self.execute_sql_batch(statements).await?;
             }
             InsertOp::Delete { ref key_columns } => {
-                if batch.num_rows() == 0 {
+                if num_rows == 0 {
                     return Ok(());
                 }
                 let key_indexes = key_column_indexes(&batch, key_columns)?;
                 let mut statements = Vec::new();
-                for row_idx in 0..batch.num_rows() {
+                for row_idx in 0..num_rows {
                     statements.push(self.delete_sql_for_row(
                         table_name,
                         &batch,
@@ -307,6 +310,7 @@ impl Sink for AdbcSink {
             }
         }
 
+        tracing::debug!(table = %table_name, rows = num_rows, elapsed_secs = format!("{:.2}", start.elapsed().as_secs_f64()), "Batch write complete");
         Ok(())
     }
 }
