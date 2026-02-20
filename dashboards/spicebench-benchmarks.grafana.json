@@ -407,12 +407,12 @@
                         "type": "influxdb",
                         "uid": "1eox324"
                     },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"p99_duration_ms\")\n  |> filter(fn: (r) => not exists r[\"query_name\"])\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"p99_duration_ms\")\n  |> filter(fn: (r) => exists r[\"query_name\"])\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\", \"_time\"])\n  |> sum(column: \"_value\")\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
                     "refId": "A"
                 }
             ],
             "title": "Query latency P99 — overall (ms)",
-            "description": "Overall P99 query latency aggregated across all queries.",
+            "description": "Sum of per-query P99 latencies across the full query set (for example Q1..Q22).",
             "type": "timeseries"
         },
         {
