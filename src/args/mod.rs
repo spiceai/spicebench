@@ -45,7 +45,10 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) scenario: Scenario,
 
-    /// The number of clients to run simultaneously. Each client will send a query, wait for a response, then send another query.
+    /// The number of clients to run simultaneously.
+    ///
+    /// Each client runs query-set iterations independently and dispatches its
+    /// queries asynchronously.
     #[arg(long, default_value = "1")]
     pub(crate) concurrency: usize,
 

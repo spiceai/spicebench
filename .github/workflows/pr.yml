@@ -8,6 +8,12 @@ on:
     branches:
       - trunk
   workflow_dispatch:
+    inputs:
+      num_query_clients:
+        description: Number of query clients to run (maps to spicebench --concurrency)
+        required: false
+        default: '1'
+        type: string
 
 env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
@@ -148,6 +154,7 @@ jobs:
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '1' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
@@ -155,7 +162,7 @@ jobs:
           RUST_LOG: info
         run: |
           ~/.spice/bin/spicebench \
-            --concurrency 1 \
+            --concurrency "${NUM_QUERY_CLIENTS}" \
             --scenario tpch \
             --etl-bucket spiceai-public-datasets \
             --etl-prefix pr-validation \
