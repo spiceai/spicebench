@@ -10,7 +10,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-indexmap = { version = "2", features = ["serde"] }
+indexmap = { workspace = true }
 serde = { workspace = true }
 yaml-rust2 = "0.11"
 

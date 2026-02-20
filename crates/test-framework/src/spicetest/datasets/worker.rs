@@ -367,6 +367,9 @@ impl SpiceTestQueryWorker {
                         }
 
                         while current_query_count < target_count {
+                            if self.shutdown_token.is_cancelled() {
+                                break;
+                            }
                             if self.progress_bar.is_none()
                                 && self.id == 0
                                 && (current_query_count % 10 == 0 || target_count <= 5)
@@ -437,6 +440,9 @@ impl SpiceTestQueryWorker {
         queries: &[Query],
     ) -> Result<bool> {
         for query in queries {
+            if self.shutdown_token.is_cancelled() {
+                return Ok(false);
+            }
             let QueryRunResult {
                 connection_failed,
                 query_failure,
@@ -544,6 +550,10 @@ impl SpiceTestQueryWorker {
         results_snapshot: bool,
         validate: bool,
     ) -> Result<()> {
+        if self.shutdown_token.is_cancelled() {
+            return Err(anyhow::anyhow!("Shutdown requested"));
+        }
+
         // Execute query using the configured executor
         let result = self.executor.execute(query).await?;
 
