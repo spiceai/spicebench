@@ -324,6 +324,29 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    if let Ok(system_under_test) = std::env::var("SYSTEM_UNDER_TEST") {
+        setup_metadata.insert(
+            "system_under_test".to_string(),
+            serde_json::Value::String(system_under_test.clone()),
+        );
+
+        if let Some((prefix, variant)) = system_under_test.split_once('-') {
+            setup_metadata.insert(
+                "system_adapter_prefix".to_string(),
+                serde_json::Value::String(prefix.to_string()),
+            );
+            setup_metadata.insert(
+                "system_adapter_variant".to_string(),
+                serde_json::Value::String(variant.to_string()),
+            );
+        } else {
+            setup_metadata.insert(
+                "system_adapter_prefix".to_string(),
+                serde_json::Value::String(system_under_test),
+            );
+        }
+    }
+
     let system_adapter_client = Arc::new(Mutex::new(system_adapter_client));
     let result = run_benchmark(
         &cli.common,

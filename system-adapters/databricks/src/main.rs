@@ -56,15 +56,6 @@ struct StdioArgs {
     #[arg(long, env = "DATABRICKS_HTTP_PATH")]
     databricks_http_path: String,
 
-    /// Databricks adapter variant.
-    #[arg(
-        long,
-        env = "DATABRICKS_VARIANT",
-        value_enum,
-        default_value = "databricks"
-    )]
-    databricks_variant: DatabricksVariant,
-
     /// Databricks compute mode for setup/teardown SQL operations.
     #[arg(
         long,
@@ -147,6 +138,16 @@ enum DatabricksVariant {
     Lakebase,
 }
 
+impl DatabricksVariant {
+    fn from_metadata_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "databricks" | "sql" | "databricks-sql" => Some(Self::Databricks),
+            "lakebase" | "databricks-lakebase" => Some(Self::Lakebase),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 enum ComputeMode {
@@ -186,6 +187,7 @@ impl TableFormat {
 struct RunState {
     #[allow(dead_code)]
     table_format: TableFormat,
+    variant: DatabricksVariant,
     created_tables: Vec<String>,
     cluster_id: Option<String>,
     cluster_created_by_adapter: bool,
@@ -202,7 +204,6 @@ struct AdapterConfig {
     endpoint: String,
     token: String,
     http_path: String,
-    variant: DatabricksVariant,
     table_format: TableFormat,
     warehouse_id: String,
     compute_target: ComputeTarget,
@@ -316,19 +317,10 @@ impl AdapterConfig {
             }
         };
 
-        if args.databricks_variant == DatabricksVariant::Lakebase
-            && !matches!(args.databricks_compute_mode, ComputeMode::SqlWarehouse)
-        {
-            return Err(anyhow!(
-                "Lakebase variant requires --databricks-compute-mode=sql-warehouse"
-            ));
-        }
-
         Ok(Self {
             endpoint: args.databricks_endpoint,
             token: args.databricks_token,
             http_path: args.databricks_http_path,
-            variant: args.databricks_variant,
             table_format: args.databricks_table_format,
             warehouse_id,
             compute_target,
@@ -497,10 +489,11 @@ impl DatabricksAdapter {
 
     fn table_format_from_setup_metadata(
         &self,
+        variant: DatabricksVariant,
         metadata: &HashMap<String, Value>,
     ) -> Result<TableFormat> {
         // Databricks managed tables only support Delta format.
-        if self.config.variant == DatabricksVariant::Databricks {
+        if variant == DatabricksVariant::Databricks {
             return Ok(TableFormat::Delta);
         }
 
@@ -513,6 +506,30 @@ impl DatabricksAdapter {
         }
 
         Ok(self.config.table_format)
+    }
+
+    fn variant_from_setup_metadata(metadata: &HashMap<String, Value>) -> Result<DatabricksVariant> {
+        if let Some(value) = metadata.get("system_adapter_variant")
+            && let Some(s) = value.as_str()
+        {
+            return DatabricksVariant::from_metadata_value(s).ok_or_else(|| {
+                anyhow!(
+                    "Unsupported system_adapter_variant '{s}'. Allowed values: databricks, sql, lakebase"
+                )
+            });
+        }
+
+        if let Some(value) = metadata.get("system_under_test")
+            && let Some(s) = value.as_str()
+        {
+            return DatabricksVariant::from_metadata_value(s).ok_or_else(|| {
+                anyhow!(
+                    "Unsupported system_under_test '{s}' for Databricks adapter. Expected databricks-sql or databricks-lakebase"
+                )
+            });
+        }
+
+        Ok(DatabricksVariant::Databricks)
     }
 
     async fn ensure_uc_schema_exists(&self) -> Result<()> {
@@ -1293,6 +1310,16 @@ impl Handler for DatabricksAdapter {
         eprintln!("[databricks-adapter] endpoint={}", self.config.endpoint);
 
         let scenario_slug = Self::scenario_slug(&metadata);
+        let variant = Self::variant_from_setup_metadata(&metadata)
+            .map_err(|e| format!("Invalid setup metadata: {e}"))?;
+
+        if variant == DatabricksVariant::Lakebase
+            && !matches!(self.config.compute_target, ComputeTarget::SqlWarehouse)
+        {
+            return Err(
+                "Lakebase variant requires --databricks-compute-mode=sql-warehouse".to_string(),
+            );
+        }
 
         let (cluster_id, cluster_created_by_adapter) = match &self.config.compute_target {
             ComputeTarget::SparkCluster(_) => {
@@ -1305,7 +1332,7 @@ impl Handler for DatabricksAdapter {
             ComputeTarget::SqlWarehouse => (None, false),
         };
 
-        match self.config.variant {
+        match variant {
             DatabricksVariant::Databricks => {
                 self.ensure_uc_schema_exists()
                     .await
@@ -1324,12 +1351,13 @@ impl Handler for DatabricksAdapter {
         }
 
         let table_format = self
-            .table_format_from_setup_metadata(&metadata)
+            .table_format_from_setup_metadata(variant, &metadata)
             .map_err(|e| format!("Invalid setup metadata: {e}"))?;
         self.runs.insert(
             run_id,
             RunState {
                 table_format,
+                variant,
                 created_tables: Vec::new(),
                 cluster_id: cluster_id.clone(),
                 cluster_created_by_adapter,
@@ -1339,35 +1367,31 @@ impl Handler for DatabricksAdapter {
         let mut created_tables = Vec::with_capacity(datasets.len());
         let mut table_locations: HashMap<String, String> = HashMap::with_capacity(datasets.len());
 
-        match self.config.variant {
-            DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
-                for (table_name, dataset_cfg) in &datasets {
-                    let location = dataset_cfg.location.as_deref().ok_or_else(|| {
-                        format!("Dataset '{table_name}' is missing required 'location' field")
-                    })?;
+        for (table_name, dataset_cfg) in &datasets {
+            let location = dataset_cfg.location.as_deref().ok_or_else(|| {
+                format!("Dataset '{table_name}' is missing required 'location' field")
+            })?;
 
-                    let drop_sql = format!(
-                        "DROP TABLE IF EXISTS {}",
-                        self.lakebase_table_full_name(table_name)
-                    );
-                    self.execute_sql_statement(&drop_sql).await.map_err(|e| {
-                        format!(
-                            "Failed to drop existing table '{table_name}' during create_tables: {e}"
-                        )
-                    })?;
+            let drop_sql = format!(
+                "DROP TABLE IF EXISTS {}",
+                self.lakebase_table_full_name(table_name)
+            );
+            self.execute_sql_statement(&drop_sql).await.map_err(|e| {
+                format!(
+                    "Failed to drop existing table '{table_name}' during create_tables: {e}"
+                )
+            })?;
 
-                    let create_sql = self.create_table_ctas(table_name, location);
+            let create_sql = self.create_table_ctas(table_name, location);
 
-                    eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+            eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
 
-                    self.execute_sql_statement(&create_sql)
-                        .await
-                        .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
+            self.execute_sql_statement(&create_sql)
+                .await
+                .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
 
-                    table_locations.insert(table_name.clone(), location.to_string());
-                    created_tables.push(table_name.clone());
-                }
-            }
+            table_locations.insert(table_name.clone(), location.to_string());
+            created_tables.push(table_name.clone());
         }
 
         if let Some(state) = self.runs.get_mut(&run_id) {
@@ -1400,7 +1424,7 @@ impl Handler for DatabricksAdapter {
 
         if self.config.drop_tables_on_teardown {
             for table_name in &state.created_tables {
-                match self.config.variant {
+                match state.variant {
                     DatabricksVariant::Databricks => {
                         self.delete_uc_table_if_exists(table_name)
                             .await

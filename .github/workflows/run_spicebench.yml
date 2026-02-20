@@ -1,5 +1,5 @@
 name: Run
-run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.system_under_test == 'databricks' && (github.event.inputs.databricks_variant || 'databricks') || 'na' }}
+run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
 
 on:
   workflow_dispatch:
@@ -10,21 +10,14 @@ on:
         default: 'tpch'
         type: string
       system_under_test:
-        description: 'System under test (spice_cloud via spidapter docker image or local databricks adapter)'
+        description: 'System under test (spice_cloud via spidapter docker image, or local databricks adapter modes)'
         required: true
         default: spice_cloud
         type: choice
         options:
           - spice_cloud
-          - databricks
-      databricks_variant:
-        description: 'Databricks adapter variant (databricks or lakebase)'
-        required: false
-        default: 'databricks'
-        type: choice
-        options:
-          - databricks
-          - lakebase
+          - databricks-sql
+          - databricks-lakebase
       etl_bucket:
         description: 'S3 bucket for ETL source and target data'
         required: true
@@ -97,7 +90,7 @@ jobs:
       - uses: ./.github/actions/build-spicebench
 
       - name: Restore databricks adapter cache
-        if: ${{ github.event.inputs.system_under_test == 'databricks' }}
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
         id: cache-databricks-adapter
         uses: actions/cache/restore@v4
         with:
@@ -107,7 +100,7 @@ jobs:
             databricks-system-adapter-${{ runner.os }}-
 
       - name: Build databricks adapter
-        if: ${{ github.event.inputs.system_under_test == 'databricks' && steps.cache-databricks-adapter.outputs.cache-hit != 'true' }}
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') && steps.cache-databricks-adapter.outputs.cache-hit != 'true' }}
         id: build-databricks-adapter
         run: |
           mkdir -p ~/.spice/bin
@@ -115,7 +108,7 @@ jobs:
           install -m 755 system-adapters/databricks/target/debug/databricks-system-adapter ~/.spice/bin/databricks-system-adapter
 
       - name: Save databricks adapter cache
-        if: ${{ github.event.inputs.system_under_test == 'databricks' && steps.build-databricks-adapter.outcome == 'success' }}
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') && steps.build-databricks-adapter.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
           path: ~/.spice/bin/databricks-system-adapter
@@ -133,17 +126,17 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-          DATABRICKS_VARIANT: ${{ github.event.inputs.databricks_variant || 'databricks' }}
           DATABRICKS_TABLE_FORMAT: ${{ github.event.inputs.table_format || 'parquet' }}
         run: |
           set -euo pipefail
+          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
 
           if [ -z "${SCENARIO}" ]; then
             echo "SCENARIO must not be empty"
             exit 1
           fi
 
-          case "${SYSTEM_UNDER_TEST}" in
+          case "${SYSTEM_UNDER_TEST_PREFIX}" in
             spice_cloud)
               if [ -z "${SPICEAI_API_KEY:-}" ]; then
                 echo "SPICEAI_API_KEY must be set for spice_cloud"
@@ -162,11 +155,6 @@ jobs:
               ;;
 
             databricks)
-              if [ "${DATABRICKS_VARIANT}" != "databricks" ] && [ "${DATABRICKS_VARIANT}" != "lakebase" ]; then
-                echo "DATABRICKS_VARIANT must be either 'databricks' or 'lakebase'"
-                exit 1
-              fi
-
               for required_var in DATABRICKS_ENDPOINT DATABRICKS_TOKEN DATABRICKS_HTTP_PATH DATABRICKS_SQL_WAREHOUSE_ID; do
                 if [ -z "${!required_var:-}" ]; then
                   echo "${required_var} must be set for databricks adapter mode"
@@ -205,8 +193,9 @@ jobs:
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
+          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
 
-          if [ "${SYSTEM_UNDER_TEST}" = "databricks" ]; then
+          if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
             dbc install databricks
           else
             dbc install flightsql
@@ -222,7 +211,6 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-          DATABRICKS_VARIANT: ${{ github.event.inputs.databricks_variant || 'databricks' }}
           DATABRICKS_TABLE_FORMAT: ${{ github.event.inputs.table_format || 'parquet' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
@@ -240,6 +228,7 @@ jobs:
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: 'info'
         run: |
+          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-version ${ETL_VERSION}"
           if [ -n "${ETL_PREFIX}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-prefix ${ETL_PREFIX}"
@@ -251,10 +240,10 @@ jobs:
             ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
           fi
 
-          if [ "${SYSTEM_UNDER_TEST}" = "databricks" ]; then
+          if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
-            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_VARIANT=${DATABRICKS_VARIANT} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
+            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
 
             if [ -n "${DATABRICKS_CATALOG}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"

@@ -331,13 +331,12 @@ spicebench \
     --system-adapter-env DATABRICKS_TOKEN=$DATABRICKS_TOKEN \
     --system-adapter-env DATABRICKS_HTTP_PATH=$DATABRICKS_HTTP_PATH \
     --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=$DATABRICKS_SQL_WAREHOUSE_ID \
-    --system-adapter-env DATABRICKS_VARIANT=databricks \
     --system-adapter-env DATABRICKS_TABLE_FORMAT=parquet \
     --system-adapter-env DATABRICKS_CATALOG=spiceai_sandbox \
     --system-adapter-env DATABRICKS_SCHEMA=tpch
 ```
 
-Set `DATABRICKS_VARIANT=lakebase` to enable Lakebase setup mode, which creates schema/table DDL during `setup()` and drops tables during `teardown()` when `DATABRICKS_DROP_TABLES_ON_TEARDOWN=true`.
+For GitHub Actions runs, select a `system_under_test` value prefixed with `databricks-` (for example `databricks-sql` or `databricks-lakebase`); the workflow routes to the Databricks adapter and passes the variant through setup metadata.
 
 ### Crate Overview
 
