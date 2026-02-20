@@ -29,6 +29,8 @@ use chrono::{Duration, NaiveDate};
 
 use super::{InsertOp, Sink};
 
+const BULK_INGEST_MAX_ROWS: usize = 65_536;
+
 /// ETL sink that writes transformed batches directly into the SUT via ADBC.
 ///
 /// For `Insert` operations this sink uses the ADBC bulk ingest API, which
@@ -80,10 +82,31 @@ impl AdbcSink {
     }
 
     async fn bulk_ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
+        let batch = normalize_utf8view_to_utf8(batch)?;
+        let num_rows = batch.num_rows();
+
+        if num_rows <= BULK_INGEST_MAX_ROWS {
+            return self.bulk_ingest_single(table_name, batch).await;
+        }
+
+        let mut offset = 0;
+        while offset < num_rows {
+            let length = std::cmp::min(BULK_INGEST_MAX_ROWS, num_rows - offset);
+            let chunk = batch.slice(offset, length);
+            self.bulk_ingest_single(table_name, chunk).await?;
+            offset += length;
+        }
+        Ok(())
+    }
+
+    async fn bulk_ingest_single(
+        &self,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
         let conn = Arc::clone(&self.conn);
         let target_table = table_name.to_string();
         let target_schema = self.schema_name.clone();
-        let batch = normalize_utf8view_to_utf8(batch)?;
         tokio::task::spawn_blocking(move || {
             let mut guard = conn
                 .lock()
