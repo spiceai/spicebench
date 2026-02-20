@@ -453,9 +453,11 @@ impl ETLPipeline {
     /// the rehydrated Arrow schema. This can be used to build a
     /// [`CreateTablesRequest`](system_adapter_protocol::CreateTablesRequest) for
     /// the system adapter.
-    pub fn create_tables_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
-        let with_created_at = self.with_created_at;
-        self.dataset
+    pub fn create_tables_request_datasets(
+        with_created_at: bool,
+        dataset: Arc<dyn Dataset>,
+    ) -> HashMap<String, ProtocolDatasetConfig> {
+        dataset
             .tables()
             .into_iter()
             .map(|(name, table)| {

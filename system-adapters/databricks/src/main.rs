@@ -24,8 +24,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use system_adapter_protocol::{
-    AdbcDriver, CreateTablesResponse, DatasetConfig, DriverConfig, Handler, Server, SetupResponse,
-    TeardownResponse,
+    AdbcDriver, DatasetConfig, Handler, Server, SetupResponse, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -1039,6 +1038,7 @@ impl Handler for DatabricksAdapter {
         &mut self,
         run_id: Uuid,
         metadata: HashMap<String, Value>,
+        datasets: HashMap<String, DatasetConfig>,
     ) -> std::result::Result<SetupResponse, String> {
         eprintln!("[databricks-adapter] setup: run_id={run_id}");
 
@@ -1083,24 +1083,7 @@ impl Handler for DatabricksAdapter {
                 cluster_created_by_adapter,
             },
         );
-        // The Databricks ADBC driver does not allow specifying both a URI and
-        // individual connection options (e.g. catalog, schema). All connection
-        // parameters must be encoded as query parameters in the URI.
-        let driver_config = DriverConfig {
-            driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([("uri".to_string(), Value::String(self.databricks_uri()))]),
-        };
-        Ok(SetupResponse {
-            ingest_driver: driver_config.clone(),
-            read_driver: driver_config,
-        })
-    }
 
-    async fn create_tables(
-        &mut self,
-        run_id: Uuid,
-        datasets: HashMap<String, DatasetConfig>,
-    ) -> std::result::Result<CreateTablesResponse, String> {
         let table_format = {
             let state = self
                 .runs
@@ -1145,7 +1128,13 @@ impl Handler for DatabricksAdapter {
             state.created_tables = created_tables;
         }
 
-        Ok(CreateTablesResponse { ok: true })
+        // The Databricks ADBC driver does not allow specifying both a URI and
+        // individual connection options (e.g. catalog, schema). All connection
+        // parameters must be encoded as query parameters in the URI.
+        Ok(SetupResponse {
+            driver: AdbcDriver::Databricks,
+            db_kwargs: HashMap::from([("uri".to_string(), Value::String(self.databricks_uri()))]),
+        })
     }
 
     async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String> {

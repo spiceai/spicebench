@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use adbc_client::AdbcConnection;
@@ -30,9 +31,9 @@ use etl::sink::iceberg::{IcebergObjectStoreConfig, IcebergSink};
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use system_adapter_protocol::AdbcDriver;
 use test_framework::{anyhow, rustls};
+use tokio::sync::Mutex;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-
 mod args;
 mod commands;
 mod metrics;
@@ -64,9 +65,9 @@ fn iceberg_target_prefix(common: &CommonArgs, scenario_name: &str, run_id: uuid:
 
 async fn run_benchmark(
     common: &CommonArgs,
-    system_adapter_client: &mut system_adapter_protocol::Client,
+    system_adapter_client: Arc<Mutex<system_adapter_protocol::Client>>,
     run_id: uuid::Uuid,
-    setup_response: system_adapter_protocol::SetupResponse,
+    setup_metadata: HashMap<String, serde_json::Value>,
     version_metadata: &VersionMetadata,
     source: Arc<S3Storage>,
 ) -> anyhow::Result<()> {
@@ -119,33 +120,42 @@ async fn run_benchmark(
         );
     }
 
-    let ingest_driver_name = setup_response.ingest_driver.driver.to_string();
-    let ingest_kwargs = setup_response.ingest_driver.db_kwargs;
-    let read_driver_name = setup_response.read_driver.driver.to_string();
-    let read_kwargs = setup_response.read_driver.db_kwargs;
-
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let generation_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
     let data_source: Arc<dyn DataStorage> = source.clone();
 
+    // --- Call setup with datasets to provision the SUT ---
+    let setup_response = system_adapter_client
+        .lock()
+        .await
+        .setup(
+            run_id,
+            setup_metadata,
+            ETLPipeline::create_tables_request_datasets(
+                false,
+                dataset_source.create(&generation_config, &mutations, Arc::clone(&data_source))?,
+            ),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
+
+    let driver_name = setup_response.driver.to_string();
+    let db_kwargs = setup_response.db_kwargs;
+    let quote_style = match setup_response.driver {
+        AdbcDriver::Databricks => QuoteStyle::Backtick,
+        AdbcDriver::Flightsql => QuoteStyle::default(),
+    };
+
     let target: Arc<dyn Sink> = match common.etl_sink_mode {
         EtlSinkMode::Adbc => {
-            let adbc_conn = AdbcConnection::create(&ingest_driver_name, ingest_kwargs.clone())
-                .map_err(|e| {
+            let adbc_conn =
+                AdbcConnection::create(&driver_name, db_kwargs.clone()).map_err(|e| {
                     anyhow::anyhow!(
-                        "Failed to create ADBC connection for driver {}: {e}",
-                        ingest_driver_name
+                        "Failed to create ADBC connection for driver {driver_name}: {e}"
                     )
                 })?;
-            println!(
-                "ADBC sink connection established (driver: {})",
-                ingest_driver_name
-            );
-            let quote_style = match setup_response.ingest_driver.driver {
-                AdbcDriver::Databricks => QuoteStyle::Backtick,
-                AdbcDriver::Flightsql => QuoteStyle::default(),
-            };
+            println!("ADBC sink connection established (driver: {driver_name})");
             Arc::new(
                 AdbcSink::new_without_table_creation(adbc_conn, None).with_quote_style(quote_style),
             )
@@ -176,68 +186,25 @@ async fn run_benchmark(
     )?
     .with_created_at(common.with_created_at);
 
-    let datasets = pipeline.create_tables_request_datasets();
-
-    if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
-        pipeline.cancel();
-        return Err(anyhow::anyhow!(
-            "Failed to create tables via system adapter: {e}"
-        ));
-    }
-
-    if matches!(common.etl_sink_mode, EtlSinkMode::Adbc) {
-        tracing::info!(
-            "Recreating ADBC sink connection after create_tables to refresh table visibility"
-        );
-
-        let adbc_conn =
-            AdbcConnection::create(&ingest_driver_name, ingest_kwargs).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to create refreshed ADBC connection for driver {}: {e}",
-                    ingest_driver_name
-                )
-            })?;
-
-        let quote_style = match setup_response.ingest_driver.driver {
-            AdbcDriver::Databricks => QuoteStyle::Backtick,
-            AdbcDriver::Flightsql => QuoteStyle::default(),
-        };
-
-        let refreshed_target: Arc<dyn Sink> = Arc::new(
-            AdbcSink::new_without_table_creation(adbc_conn, None).with_quote_style(quote_style),
-        );
-
-        pipeline = ETLPipeline::new(
-            DatasetSource::from_dataset_type(&version_metadata.dataset_type)?,
-            &generation_config,
-            Arc::clone(&data_source),
-            refreshed_target,
-            &mutations,
-        )?
-        .with_created_at(common.with_created_at);
-    }
-
     // --- Initialize: ETL the first batch so the target has data ---
     tracing::info!("Initializing ETL pipeline (first batch)...");
     pipeline.initialize().await?;
     tracing::info!("ETL pipeline initialized");
 
-    let load_conn = match AdbcConnection::create(&read_driver_name, read_kwargs) {
+    let load_conn = match AdbcConnection::create(&driver_name, db_kwargs) {
         Ok(conn) => conn,
         Err(e) => {
             pipeline.cancel();
             return Err(anyhow::anyhow!(
-                "Failed to create benchmark ADBC connection for driver {}: {e}",
-                read_driver_name
+                "Failed to create benchmark ADBC connection for driver {driver_name}: {e}"
             ));
         }
     };
-    tracing::info!(
-        "ADBC read connection established (driver: {})",
-        read_driver_name
-    );
+    tracing::info!("ADBC read connection established (driver: {driver_name})");
 
     commands::load::run(
+        system_adapter_client,
+        run_id,
         &common.scenario,
         common,
         load_conn,
@@ -307,7 +274,7 @@ async fn main() -> anyhow::Result<()> {
     })?;
 
     // --- Connect to the system adapter ---
-    let mut system_adapter_client = match connect_system_adapter(&cli.common).await {
+    let system_adapter_client = match connect_system_adapter(&cli.common).await {
         Ok(system_adapter_client) => system_adapter_client,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to connect to system adapter: {e}"));
@@ -317,53 +284,54 @@ async fn main() -> anyhow::Result<()> {
     let run_id = uuid::Uuid::new_v4();
     let scenario_name = cli.common.scenario.to_string();
 
-    let mut setup_metadata = std::collections::HashMap::new();
-    setup_metadata.insert(
-        "executor_instance_type".to_string(),
-        serde_json::Value::String(cli.common.executor_instance_type.clone()),
-    );
-    setup_metadata.insert(
-        "table_format".to_string(),
-        serde_json::Value::String(cli.common.table_format.to_string()),
-    );
-    setup_metadata.insert(
-        "etl_sink_mode".to_string(),
-        serde_json::Value::String(cli.common.etl_sink_mode.to_string()),
-    );
-    setup_metadata.insert(
-        "scenario".to_string(),
-        serde_json::Value::String(scenario_name.clone()),
-    );
-    setup_metadata.insert(
-        "etl_bucket".to_string(),
-        serde_json::Value::String(cli.common.etl_bucket.clone()),
-    );
-    setup_metadata.insert(
-        "etl_prefix".to_string(),
-        serde_json::Value::String(cli.common.etl_prefix.clone()),
-    );
-    setup_metadata.insert(
-        "etl_version".to_string(),
-        serde_json::Value::String(cli.common.etl_version.clone()),
-    );
-    setup_metadata.insert(
-        "etl_region".to_string(),
-        cli.common
-            .etl_region
-            .as_ref()
-            .map_or(serde_json::Value::Null, |v| {
-                serde_json::Value::String(v.clone())
-            }),
-    );
-    setup_metadata.insert(
-        "etl_endpoint".to_string(),
-        cli.common
-            .etl_endpoint
-            .as_ref()
-            .map_or(serde_json::Value::Null, |v| {
-                serde_json::Value::String(v.clone())
-            }),
-    );
+    let mut setup_metadata: std::collections::HashMap<String, serde_json::Value> = HashMap::from([
+        (
+            "executor_instance_type".to_string(),
+            serde_json::Value::String(cli.common.executor_instance_type.clone()),
+        ),
+        (
+            "table_format".to_string(),
+            serde_json::Value::String(cli.common.table_format.to_string()),
+        ),
+        (
+            "etl_sink_mode".to_string(),
+            serde_json::Value::String(cli.common.etl_sink_mode.to_string()),
+        ),
+        (
+            "scenario".to_string(),
+            serde_json::Value::String(scenario_name.clone()),
+        ),
+        (
+            "etl_bucket".to_string(),
+            serde_json::Value::String(cli.common.etl_bucket.clone()),
+        ),
+        (
+            "etl_prefix".to_string(),
+            serde_json::Value::String(cli.common.etl_prefix.clone()),
+        ),
+        (
+            "etl_version".to_string(),
+            serde_json::Value::String(cli.common.etl_version.clone()),
+        ),
+        (
+            "etl_region".to_string(),
+            cli.common
+                .etl_region
+                .as_ref()
+                .map_or(serde_json::Value::Null, |v| {
+                    serde_json::Value::String(v.clone())
+                }),
+        ),
+        (
+            "etl_endpoint".to_string(),
+            cli.common
+                .etl_endpoint
+                .as_ref()
+                .map_or(serde_json::Value::Null, |v| {
+                    serde_json::Value::String(v.clone())
+                }),
+        ),
+    ]);
 
     if matches!(cli.common.etl_sink_mode, EtlSinkMode::IcebergObjectStore) {
         let iceberg_prefix = iceberg_target_prefix(&cli.common, &scenario_name, run_id);
@@ -381,25 +349,19 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let setup_response = match system_adapter_client.setup(run_id, setup_metadata).await {
-        Ok(response) => response,
-        Err(e) => {
-            return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
-        }
-    };
-
+    let system_adapter_client = Arc::new(Mutex::new(system_adapter_client));
     let result = run_benchmark(
         &cli.common,
-        &mut system_adapter_client,
+        Arc::clone(&system_adapter_client),
         run_id,
-        setup_response,
+        setup_metadata,
         &version_metadata,
         source,
     )
     .await;
 
     // After successful setup, always teardown even if there are errors in between.
-    if let Err(e) = system_adapter_client.teardown(run_id).await {
+    if let Err(e) = system_adapter_client.lock().await.teardown(run_id).await {
         tracing::error!("Failed to teardown system adapter: {e}");
     }
 
