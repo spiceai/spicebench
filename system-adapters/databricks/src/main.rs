@@ -24,7 +24,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use system_adapter_protocol::{
-    AdbcDriver, CreateTablesResponse, DatasetConfig, Handler, Server, SetupResponse,
+    AdbcDriver, CreateTablesResponse, DatasetConfig, DriverConfig, Handler, Server, SetupResponse,
     TeardownResponse,
 };
 use uuid::Uuid;
@@ -1086,9 +1086,13 @@ impl Handler for DatabricksAdapter {
         // The Databricks ADBC driver does not allow specifying both a URI and
         // individual connection options (e.g. catalog, schema). All connection
         // parameters must be encoded as query parameters in the URI.
-        Ok(SetupResponse {
+        let driver_config = DriverConfig {
             driver: AdbcDriver::Databricks,
             db_kwargs: HashMap::from([("uri".to_string(), Value::String(self.databricks_uri()))]),
+        };
+        Ok(SetupResponse {
+            ingest_driver: driver_config.clone(),
+            read_driver: driver_config,
         })
     }
 

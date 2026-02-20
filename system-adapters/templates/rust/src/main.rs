@@ -64,7 +64,7 @@ fn method_setup(_params: &Value) -> Value {
         .map(|value| value.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    json!({
+    let driver_config = json!({
         "driver": "flightsql",
         "db_kwargs": {
             "uri": format!("grpc{}://{}:{}", if tls { "s" } else { "" }, host, port),
@@ -72,6 +72,11 @@ fn method_setup(_params: &Value) -> Value {
             "password": std::env::var("SUT_PASSWORD").unwrap_or_default(),
             "tls": tls,
         },
+    });
+
+    json!({
+        "ingest_driver": driver_config,
+        "read_driver": driver_config,
     })
 }
 

@@ -66,7 +66,7 @@ async fn run_benchmark(
     common: &CommonArgs,
     system_adapter_client: &mut system_adapter_protocol::Client,
     run_id: uuid::Uuid,
-    adbc_driver: system_adapter_protocol::SetupResponse,
+    setup_response: system_adapter_protocol::SetupResponse,
     version_metadata: &VersionMetadata,
     source: Arc<S3Storage>,
 ) -> anyhow::Result<()> {
@@ -119,9 +119,10 @@ async fn run_benchmark(
         );
     }
 
-    let driver_name = adbc_driver.driver.to_string();
-    let sink_kwargs = adbc_driver.db_kwargs.clone();
-    let load_kwargs = adbc_driver.db_kwargs;
+    let ingest_driver_name = setup_response.ingest_driver.driver.to_string();
+    let ingest_kwargs = setup_response.ingest_driver.db_kwargs;
+    let read_driver_name = setup_response.read_driver.driver.to_string();
+    let read_kwargs = setup_response.read_driver.db_kwargs;
 
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let generation_config = version_metadata.dataset_config();
@@ -130,15 +131,18 @@ async fn run_benchmark(
 
     let target: Arc<dyn Sink> = match common.etl_sink_mode {
         EtlSinkMode::Adbc => {
-            let adbc_conn =
-                AdbcConnection::create(&driver_name, sink_kwargs.clone()).map_err(|e| {
+            let adbc_conn = AdbcConnection::create(&ingest_driver_name, ingest_kwargs.clone())
+                .map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to create ADBC connection for driver {}: {e}",
-                        driver_name
+                        ingest_driver_name
                     )
                 })?;
-            println!("ADBC sink connection established (driver: {})", driver_name);
-            let quote_style = match adbc_driver.driver {
+            println!(
+                "ADBC sink connection established (driver: {})",
+                ingest_driver_name
+            );
+            let quote_style = match setup_response.ingest_driver.driver {
                 AdbcDriver::Databricks => QuoteStyle::Backtick,
                 AdbcDriver::Flightsql => QuoteStyle::default(),
             };
@@ -186,14 +190,15 @@ async fn run_benchmark(
             "Recreating ADBC sink connection after create_tables to refresh table visibility"
         );
 
-        let adbc_conn = AdbcConnection::create(&driver_name, sink_kwargs).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to create refreshed ADBC connection for driver {}: {e}",
-                driver_name
-            )
-        })?;
+        let adbc_conn =
+            AdbcConnection::create(&ingest_driver_name, ingest_kwargs).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to create refreshed ADBC connection for driver {}: {e}",
+                    ingest_driver_name
+                )
+            })?;
 
-        let quote_style = match adbc_driver.driver {
+        let quote_style = match setup_response.ingest_driver.driver {
             AdbcDriver::Databricks => QuoteStyle::Backtick,
             AdbcDriver::Flightsql => QuoteStyle::default(),
         };
@@ -217,16 +222,20 @@ async fn run_benchmark(
     pipeline.initialize().await?;
     tracing::info!("ETL pipeline initialized");
 
-    let load_conn = match AdbcConnection::create(&driver_name, load_kwargs) {
+    let load_conn = match AdbcConnection::create(&read_driver_name, read_kwargs) {
         Ok(conn) => conn,
         Err(e) => {
             pipeline.cancel();
             return Err(anyhow::anyhow!(
                 "Failed to create benchmark ADBC connection for driver {}: {e}",
-                driver_name
+                read_driver_name
             ));
         }
     };
+    tracing::info!(
+        "ADBC read connection established (driver: {})",
+        read_driver_name
+    );
 
     commands::load::run(
         &common.scenario,
@@ -372,7 +381,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let adbc_driver = match system_adapter_client.setup(run_id, setup_metadata).await {
+    let setup_response = match system_adapter_client.setup(run_id, setup_metadata).await {
         Ok(response) => response,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
@@ -383,7 +392,7 @@ async fn main() -> anyhow::Result<()> {
         &cli.common,
         &mut system_adapter_client,
         run_id,
-        adbc_driver,
+        setup_response,
         &version_metadata,
         source,
     )

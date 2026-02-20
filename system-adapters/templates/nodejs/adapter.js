@@ -40,7 +40,7 @@ function methodSetup(params) {
   const port = Number(process.env.SUT_PORT || '50051');
   const useTls = (process.env.SUT_TLS || 'false').toLowerCase() === 'true';
 
-  return {
+  const driverConfig = {
     driver: 'flightsql',
     db_kwargs: {
       uri: `grpc${useTls ? 's' : ''}://${host}:${port}`,
@@ -48,6 +48,11 @@ function methodSetup(params) {
       password: process.env.SUT_PASSWORD || '',
       tls: useTls,
     },
+  };
+
+  return {
+    ingest_driver: driverConfig,
+    read_driver: driverConfig,
   };
 }
 

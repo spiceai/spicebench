@@ -304,9 +304,13 @@ mod tests {
             _run_id: Uuid,
             _metadata: HashMap<String, serde_json::Value>,
         ) -> std::result::Result<SetupResponse, String> {
-            Ok(SetupResponse {
+            let driver_config = crate::DriverConfig {
                 driver: crate::AdbcDriver::Flightsql,
                 db_kwargs: HashMap::new(),
+            };
+            Ok(SetupResponse {
+                ingest_driver: driver_config.clone(),
+                read_driver: driver_config,
             })
         }
 
@@ -337,7 +341,8 @@ mod tests {
         let response = server.handle_request(request).await;
 
         assert!(response.get("result").is_some());
-        assert_eq!(response["result"]["driver"], "flightsql");
+        assert_eq!(response["result"]["ingest_driver"]["driver"], "flightsql");
+        assert_eq!(response["result"]["read_driver"]["driver"], "flightsql");
     }
 
     #[tokio::test]
