@@ -127,7 +127,7 @@ jobs:
             --dataset tpch \
             --scenario tpch \
             --version 0 \
-            --scale-factor 0.001 \
+            --scale-factor 0.0001 \
             --bucket spiceai-public-datasets \
             --prefix pr-validation \
             --max-concurrency 4 \
