@@ -219,12 +219,10 @@ pub static EFFICIENCY_QUERIES_PER_CORE: LazyLock<Gauge<f64>> = LazyLock::new(|| 
 
 // --- E2E Latency ---
 
-pub static E2E_LATENCY_P99_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+pub static E2E_LATENCY_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
     meter()
-        .f64_histogram("e2e_latency_p99_ms")
-        .with_description(
-            "P99 end-to-end latency from event creation to the event being queryable.",
-        )
+        .f64_histogram("e2e_latency_ms")
+        .with_description("End-to-end latency from event creation to the event being queryable.")
         .with_unit("ms")
         .build()
 });

@@ -679,30 +679,22 @@ pub(crate) async fn run(
         );
     }
 
-    // Stop freshness scraper and emit P99 metrics
+    // Stop freshness scraper and emit raw E2E latency samples.
+    // Percentile calculation is performed in dashboard queries.
     e2e_latency_token.cancel();
     if let Ok(samples_by_table) = e2e_latency_handle.await {
-        let mut all_samples: Vec<f64> = Vec::new();
+        let mut total_samples = 0usize;
         for (table_name, samples) in &samples_by_table {
             if !samples.is_empty() {
-                all_samples.extend(samples);
-                let mut sorted = samples.clone();
-                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                let idx = ((sorted.len() as f64 * 0.99) as usize).min(sorted.len() - 1);
-                let p99 = sorted[idx];
+                total_samples += samples.len();
                 let attrs = vec![KeyValue::new("table_name", table_name.clone())];
-                crate::metrics::E2E_LATENCY_P99_MS.record(p99, &attrs);
+                for sample in samples {
+                    crate::metrics::E2E_LATENCY_MS.record(*sample, &attrs);
+                }
             }
         }
-        if !all_samples.is_empty() {
-            all_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let idx = ((all_samples.len() as f64 * 0.99) as usize).min(all_samples.len() - 1);
-            let p99 = all_samples[idx];
-            crate::metrics::E2E_LATENCY_P99_MS.record(p99, &[KeyValue::new("table_name", "")]);
-            println!(
-                "Data freshness P99: {p99:.1}ms ({} samples)",
-                all_samples.len()
-            );
+        if total_samples > 0 {
+            println!("Recorded {total_samples} E2E latency samples");
         }
     }
 

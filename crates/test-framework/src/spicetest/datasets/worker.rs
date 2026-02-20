@@ -25,7 +25,7 @@ use anyhow::Result;
 use arrow::array::RecordBatch;
 use dashmap::DashMap;
 use futures::StreamExt;
-use futures::{TryStreamExt, stream::FuturesUnordered};
+use futures::{FutureExt, TryStreamExt, future::BoxFuture, stream::FuturesUnordered};
 use indicatif::ProgressBar;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -61,6 +61,14 @@ static QUERY_QUEUE_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
         .f64_histogram("query_queue_duration_ms")
         .with_description("Queue wait time before query execution starts within a client worker")
         .with_unit("ms")
+        .build()
+});
+
+static CHECKPOINT_IN_FLIGHT_QUERIES: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+    meter()
+        .u64_gauge("checkpoint_in_flight_queries")
+        .with_description("In-flight query count while checkpoint validation window is active")
+        .with_unit("queries")
         .build()
 });
 
@@ -310,6 +318,15 @@ impl SpiceTestQueryWorker {
         QUERY_QUEUE_DURATION_MS.record(queue_duration.as_secs_f64() * 1000.0, &attributes);
     }
 
+    fn record_checkpoint_in_flight_queries(&self, in_flight: usize) {
+        let attributes = vec![
+            KeyValue::new("client_id", self.id.to_string()),
+            KeyValue::new("mode", "checkpoint_validation"),
+        ];
+
+        CHECKPOINT_IN_FLIGHT_QUERIES.record(in_flight.try_into().unwrap_or(u64::MAX), &attributes);
+    }
+
     pub fn new(
         id: usize,
         query_set: Vec<Query>,
@@ -508,6 +525,10 @@ impl SpiceTestQueryWorker {
                             &query_sets[set_index]
                         };
 
+                        let checkpoint_validation_was_active = checkpoint_validation
+                            .as_ref()
+                            .is_some_and(|cv| cv.active);
+
                         if !self
                             .run_query_set(
                                 Arc::clone(&query_durations),
@@ -533,7 +554,9 @@ impl SpiceTestQueryWorker {
                         query_set_count += 1;
 
                         // Notify checkpoint validation that a full iteration completed.
-                        if let Some(ref mut cv) = checkpoint_validation {
+                        if !checkpoint_validation_was_active
+                            && let Some(ref mut cv) = checkpoint_validation
+                        {
                             cv.record_iteration_completed();
                         }
                     }
@@ -702,42 +725,73 @@ impl SpiceTestQueryWorker {
         checkpoint_validation: &mut Option<CheckpointValidationState>,
     ) -> Result<bool> {
         if checkpoint_validation.as_ref().is_some_and(|cv| cv.active) {
-            let mut in_flight = FuturesUnordered::new();
-            for query in queries {
+            let mut completion_counts: HashMap<Arc<str>, usize> = queries
+                .iter()
+                .map(|q| (Arc::clone(&q.name), 0usize))
+                .collect();
+            let mut completed_iterations = 0usize;
+
+            type CheckpointRunResult = (
+                usize,
+                Arc<str>,
+                QueryRunResult,
+                BTreeMap<Arc<str>, Vec<usize>>,
+            );
+
+            let mut in_flight: FuturesUnordered<BoxFuture<'_, Result<CheckpointRunResult>>> =
+                FuturesUnordered::new();
+            for (query_idx, query) in queries.iter().enumerate() {
                 if self.shutdown_token.is_cancelled() {
+                    self.record_checkpoint_in_flight_queries(0);
                     return Ok(false);
                 }
-
-                let query_name = Arc::clone(&query.name);
-                let query_durations = Arc::clone(&query_durations);
                 let queue_depth = in_flight.len();
                 let enqueued_at = Instant::now();
+                let query_durations_for_task = Arc::clone(&query_durations);
 
-                in_flight.push(async move {
-                    let mut local_row_counts = BTreeMap::new();
-                    let mut local_checkpoint_validation: Option<CheckpointValidationState> = None;
-                    let run_result = self
-                        .run_single_query(
-                            query,
-                            query_durations,
-                            &mut local_row_counts,
-                            false,
-                            false,
-                            true,
-                            queue_depth,
-                            enqueued_at,
-                            &mut local_checkpoint_validation,
-                        )
-                        .await?;
+                in_flight.push(
+                    async move {
+                        let query_name = Arc::clone(&query.name);
+                        let query_durations = query_durations_for_task;
+                        let mut local_row_counts = BTreeMap::new();
+                        let mut local_checkpoint_validation: Option<CheckpointValidationState> =
+                            None;
+                        let run_result = self
+                            .run_single_query(
+                                query,
+                                query_durations,
+                                &mut local_row_counts,
+                                false,
+                                false,
+                                true,
+                                queue_depth,
+                                enqueued_at,
+                                &mut local_checkpoint_validation,
+                            )
+                            .await?;
 
-                    Ok::<_, anyhow::Error>((query_name, run_result, local_row_counts))
-                });
+                        Ok::<_, anyhow::Error>((
+                            query_idx,
+                            query_name,
+                            run_result,
+                            local_row_counts,
+                        ))
+                    }
+                    .boxed(),
+                );
             }
 
+            self.record_checkpoint_in_flight_queries(in_flight.len());
+
             while let Some(result) = in_flight.next().await {
-                let (query_name, run_result, local_row_counts) = result?;
+                let (query_idx, query_name, run_result, local_row_counts) = result?;
+
+                if let Some(cv) = checkpoint_validation {
+                    cv.poll_commands();
+                }
 
                 if run_result.shutdown || run_result.connection_failed {
+                    self.record_checkpoint_in_flight_queries(0);
                     return Ok(false);
                 }
 
@@ -765,7 +819,74 @@ impl SpiceTestQueryWorker {
                         }
                     })
                     .or_insert(worker_status);
+
+                if let Some(count) = completion_counts.get_mut(&queries[query_idx].name) {
+                    *count += 1;
+                }
+
+                let min_completed = completion_counts.values().copied().min().unwrap_or(0);
+                if min_completed > completed_iterations {
+                    let delta = min_completed - completed_iterations;
+                    for _ in 0..delta {
+                        if let Some(cv) = checkpoint_validation {
+                            cv.record_iteration_completed();
+                        }
+                    }
+                    completed_iterations = min_completed;
+                }
+
+                if self.shutdown_token.is_cancelled() {
+                    self.record_checkpoint_in_flight_queries(0);
+                    return Ok(false);
+                }
+
+                if checkpoint_validation.as_ref().is_some_and(|cv| cv.active) {
+                    let query = &queries[query_idx];
+                    let queue_depth = in_flight.len();
+                    let enqueued_at = Instant::now();
+                    let query_durations_for_task = Arc::clone(&query_durations);
+
+                    in_flight.push(
+                        async move {
+                            let query_name = Arc::clone(&query.name);
+                            let query_durations = query_durations_for_task;
+                            let mut local_row_counts = BTreeMap::new();
+                            let mut local_checkpoint_validation: Option<
+                                CheckpointValidationState,
+                            > = None;
+                            let run_result = self
+                                .run_single_query(
+                                    query,
+                                    query_durations,
+                                    &mut local_row_counts,
+                                    false,
+                                    false,
+                                    true,
+                                    queue_depth,
+                                    enqueued_at,
+                                    &mut local_checkpoint_validation,
+                                )
+                                .await?;
+
+                            Ok::<_, anyhow::Error>((
+                                query_idx,
+                                query_name,
+                                run_result,
+                                local_row_counts,
+                            ))
+                        }
+                        .boxed(),
+                    );
+                }
+
+                self.record_checkpoint_in_flight_queries(in_flight.len());
+
+                if !checkpoint_validation.as_ref().is_some_and(|cv| cv.active) {
+                    break;
+                }
             }
+
+            self.record_checkpoint_in_flight_queries(0);
 
             return Ok(true);
         }
