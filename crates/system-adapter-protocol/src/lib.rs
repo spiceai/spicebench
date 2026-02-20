@@ -44,7 +44,8 @@ limitations under the License.
 //! let setup_response = client.setup(run_id, HashMap::new()).await?;
 //! let create_tables_response = client.create_tables(run_id, HashMap::new()).await?;
 //!
-//! println!("Driver: {:?}", setup_response.driver);
+//! println!("Ingest driver: {:?}", setup_response.ingest_driver);
+//! println!("Read driver: {:?}", setup_response.read_driver);
 //!
 //! // Teardown the run
 //! let teardown_response = client.teardown(run_id).await?;
@@ -58,8 +59,8 @@ limitations under the License.
 //! # #[cfg(feature = "server")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use system_adapter_protocol::{
-//!     AdbcDriver, CreateTablesResponse, DatasetConfig, Handler, Server, SetupResponse,
-//!     TeardownResponse,
+//!     AdbcDriver, CreateTablesResponse, DatasetConfig, DriverConfig, Handler, Server,
+//!     SetupResponse, TeardownResponse,
 //! };
 //! use async_trait::async_trait;
 //! use std::collections::HashMap;
@@ -76,9 +77,13 @@ limitations under the License.
 //!     ) -> Result<SetupResponse, String> {
 //!         // Your setup logic here
 //!         let _ = metadata;
-//!         Ok(SetupResponse {
+//!         let driver_config = DriverConfig {
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
+//!         };
+//!         Ok(SetupResponse {
+//!             ingest_driver: driver_config.clone(),
+//!             read_driver: driver_config,
 //!         })
 //!     }
 //!
@@ -159,13 +164,22 @@ pub struct SetupRequest {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-/// Response from setup request containing ADBC connection information
+/// ADBC driver type and connection parameters.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SetupResponse {
-    /// ADBC driver to use for database connections
+pub struct DriverConfig {
+    /// ADBC driver to use
     pub driver: AdbcDriver,
     /// Driver-specific connection parameters
     pub db_kwargs: HashMap<String, serde_json::Value>,
+}
+
+/// Response from setup request containing ADBC connection information
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetupResponse {
+    /// Driver configuration for ingesting data into the SUT
+    pub ingest_driver: DriverConfig,
+    /// Driver configuration for reading/querying data from the SUT
+    pub read_driver: DriverConfig,
 }
 
 /// Request to create benchmark tables in the system under test.

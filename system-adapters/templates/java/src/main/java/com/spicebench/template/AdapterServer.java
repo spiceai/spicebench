@@ -169,8 +169,8 @@ public final class AdapterServer {
     int port = getenvIntOr("SUT_PORT", 50051);
     boolean tls = "true".equalsIgnoreCase(getenvOr("SUT_TLS", "false"));
 
-    ObjectNode result = MAPPER.createObjectNode();
-    result.put("driver", "flightsql");
+    ObjectNode driverConfig = MAPPER.createObjectNode();
+    driverConfig.put("driver", "flightsql");
 
     ObjectNode dbKwargs = MAPPER.createObjectNode();
     dbKwargs.put("uri", String.format("grpc%s://%s:%d", tls ? "s" : "", host, port));
@@ -178,7 +178,11 @@ public final class AdapterServer {
     dbKwargs.put("password", getenvOr("SUT_PASSWORD", ""));
     dbKwargs.put("tls", tls);
 
-    result.set("db_kwargs", dbKwargs);
+    driverConfig.set("db_kwargs", dbKwargs);
+
+    ObjectNode result = MAPPER.createObjectNode();
+    result.set("ingest_driver", driverConfig);
+    result.set("read_driver", driverConfig.deepCopy());
     return result;
   }
 
