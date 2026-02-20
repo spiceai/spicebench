@@ -29,6 +29,8 @@ SpiceBench (OTel instruments)
 | 12  | **Resource Usage – IOPS**            | `sut_disk_read_iops` / `sut_disk_write_iops` (Gauge\<u64\>)                                               | SUT adapter `metrics` → `resource.disk_read_iops` / `disk_write_iops`                            | ✅ via `Telemetry.emit()` | ✅ Implemented   |
 | 13  | **E2E Latency**                      | `e2e_latency_ms` (Histogram\<f64\>)                                                                       | **Instrument defined; not yet recorded** — requires timestamped events + query-back verification | ⚠️ Instrument only        | 🔲 Not yet wired |
 | 14  | **E2E Duration**                     | `test_duration_ms` (Gauge\<u64\>)                                                                         | Wall-clock time of benchmark phase                                                               | ✅ via `Telemetry.emit()` | ✅ Implemented   |
+| 15  | **Query Queue Length**               | `query_queue_length` (Gauge\<u64\>)                                                                       | Query worker queue depth at query execution start (attributes: `query_name`, `client_id`)        | ✅ via `Telemetry.emit()` | ✅ Implemented   |
+| 16  | **Query Queue Duration**             | `query_queue_duration_ms` (Histogram\<f64\>)                                                              | Query worker queue wait time before execution (attributes: `query_name`, `client_id`)            | ✅ via `Telemetry.emit()` | ✅ Implemented   |
 
 ## Streaming Metrics (real-time, optional)
 
