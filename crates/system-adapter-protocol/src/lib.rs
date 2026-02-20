@@ -117,6 +117,8 @@ pub enum AdbcDriver {
     Flightsql,
     #[serde(rename = "databricks")]
     Databricks,
+    #[serde(rename = "postgresql")]
+    Postgresql,
 }
 
 impl std::fmt::Display for AdbcDriver {
@@ -124,6 +126,7 @@ impl std::fmt::Display for AdbcDriver {
         match self {
             Self::Flightsql => write!(f, "flightsql"),
             Self::Databricks => write!(f, "databricks"),
+            Self::Postgresql => write!(f, "postgresql"),
         }
     }
 }
@@ -133,6 +136,9 @@ impl std::fmt::Display for AdbcDriver {
 pub struct DatasetConfig {
     /// Arrow schema for the dataset
     pub schema: SchemaRef,
+    /// Primary key column names for the dataset
+    #[serde(default)]
+    pub primary_key_columns: Vec<String>,
     /// Dataset S3 location (e.g. "s3://my-bucket/path/to/data/")
     pub location: Option<String>,
     /// Optional column name to use as the ingestion time for metrics tracking
