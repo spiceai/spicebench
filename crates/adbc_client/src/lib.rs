@@ -134,6 +134,29 @@ impl AdbcConnection {
         mode: options::IngestMode,
         batch: RecordBatch,
     ) -> Result<Option<i64>> {
+        self.bulk_ingest_stream(
+            target_table,
+            target_db_schema,
+            mode,
+            Box::new(arrow_array::RecordBatchIterator::new(
+                std::iter::once(Ok(batch.clone())),
+                batch.schema(),
+            )),
+        )
+    }
+
+    /// Bulk-ingest a stream of [`RecordBatch`]es into a target table using a
+    /// single ADBC statement with `bind_stream`.
+    ///
+    /// This is more efficient than calling [`bulk_ingest`](Self::bulk_ingest)
+    /// per batch because it reuses the same statement and network connection.
+    pub fn bulk_ingest_stream(
+        &mut self,
+        target_table: &str,
+        target_db_schema: Option<&str>,
+        mode: options::IngestMode,
+        reader: Box<dyn arrow_array::RecordBatchReader + Send>,
+    ) -> Result<Option<i64>> {
         let mut stmt = self.conn.new_statement().map_err(|e| Error::ExecuteQuery {
             reason: e.to_string(),
         })?;
@@ -161,8 +184,8 @@ impl AdbcConnection {
                 reason: format!("Failed to set ingest mode: {e}"),
             })?;
 
-        stmt.bind(batch).map_err(|e| Error::ExecuteQuery {
-            reason: format!("Failed to bind batch for bulk ingest: {e}"),
+        stmt.bind_stream(reader).map_err(|e| Error::ExecuteQuery {
+            reason: format!("Failed to bind stream for bulk ingest: {e}"),
         })?;
 
         stmt.execute_update().map_err(|e| Error::ExecuteQuery {

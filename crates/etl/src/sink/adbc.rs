@@ -29,7 +29,7 @@ use chrono::{Duration, NaiveDate};
 
 use super::{InsertOp, Sink};
 
-const BULK_INGEST_MAX_ROWS: usize = 65_536;
+const BULK_INGEST_CHUNK_ROWS: usize = 500_000;
 
 /// ETL sink that writes transformed batches directly into the SUT via ADBC.
 ///
@@ -83,75 +83,46 @@ impl AdbcSink {
 
     async fn bulk_ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
         let batch = normalize_utf8view_to_utf8(batch)?;
+        let schema = batch.schema();
         let num_rows = batch.num_rows();
 
-        if num_rows <= BULK_INGEST_MAX_ROWS {
-            return self.bulk_ingest_single(table_name, batch).await;
-        }
-
-        let mut offset = 0;
-        while offset < num_rows {
-            let length = std::cmp::min(BULK_INGEST_MAX_ROWS, num_rows - offset);
-            let chunk = batch.slice(offset, length);
-            self.bulk_ingest_single(table_name, chunk).await?;
-            offset += length;
-        }
-        Ok(())
-    }
-
-    async fn bulk_ingest_single(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
-        const MAX_RETRIES: u32 = 3;
-        const INITIAL_BACKOFF_MS: u64 = 1000;
-
-        let mut last_err = None;
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                let backoff = INITIAL_BACKOFF_MS * 2u64.pow(attempt - 1);
-                tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+        // Build chunked iterator for efficient streaming via bind_stream.
+        let chunks: Vec<RecordBatch> = if num_rows <= BULK_INGEST_CHUNK_ROWS {
+            vec![batch]
+        } else {
+            let mut v = Vec::new();
+            let mut offset = 0;
+            while offset < num_rows {
+                let length = std::cmp::min(BULK_INGEST_CHUNK_ROWS, num_rows - offset);
+                v.push(batch.slice(offset, length));
+                offset += length;
             }
+            v
+        };
 
-            let conn = Arc::clone(&self.conn);
-            let target_table = table_name.to_string();
-            let target_schema = self.schema_name.clone();
-            let batch_clone = batch.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let mut guard = conn
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
-                guard
-                    .bulk_ingest(
-                        &target_table,
-                        target_schema.as_deref(),
-                        IngestMode::Append,
-                        batch_clone,
-                    )
-                    .map_err(|e| anyhow::anyhow!("ADBC bulk ingest failed: {e}"))?;
-                Ok::<_, anyhow::Error>(())
-            })
-            .await?;
+        let conn = Arc::clone(&self.conn);
+        let target_table = table_name.to_string();
+        let target_schema = self.schema_name.clone();
 
-            match result {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    let msg = e.to_string();
-                    let is_retryable = msg.contains("TableNotFound")
-                        || msg.contains("unavailable")
-                        || msg.contains("Internal");
-                    if is_retryable && attempt < MAX_RETRIES {
-                        tracing::warn!(
-                            table = %table_name,
-                            attempt = attempt + 1,
-                            error = %e,
-                            "Bulk ingest failed, retrying"
-                        );
-                        last_err = Some(e);
-                        continue;
-                    }
-                    return Err(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Bulk ingest failed after retries")))
+        tokio::task::spawn_blocking(move || {
+            let reader = Box::new(arrow::array::RecordBatchIterator::new(
+                chunks.into_iter().map(Ok),
+                schema,
+            ));
+            let mut guard = conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
+            guard
+                .bulk_ingest_stream(
+                    &target_table,
+                    target_schema.as_deref(),
+                    IngestMode::Append,
+                    reader,
+                )
+                .map_err(|e| anyhow::anyhow!("ADBC bulk ingest failed: {e}"))?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
     }
 }
 
