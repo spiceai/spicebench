@@ -262,6 +262,7 @@ impl Sink for AdbcSink {
         batch: RecordBatch,
         op: InsertOp,
     ) -> anyhow::Result<()> {
+        eprintln!("[adbc-sink] write {table_name}: {} rows, op={op:?}", batch.num_rows());
         match op {
             InsertOp::Insert => {
                 if batch.num_rows() == 0 {
