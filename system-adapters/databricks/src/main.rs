@@ -1108,23 +1108,6 @@ impl Handler for DatabricksAdapter {
         let mut created_tables = Vec::with_capacity(datasets.len());
 
         match self.config.variant {
-            // DatabricksVariant::Databricks => {
-            //     self.ensure_uc_schema_exists()
-            //         .await
-            //         .map_err(|e| format!("Failed to ensure Unity Catalog schema exists: {e}"))?;
-
-            //     for (table_name, dataset_cfg) in datasets {
-            //         let created = self
-            //             .create_uc_table_if_not_exists(&table_name, &dataset_cfg)
-            //             .await
-            //             .map_err(|e| {
-            //                 format!("Failed to create Unity Catalog table '{table_name}': {e}")
-            //             })?;
-            //         if created {
-            //             created_tables.push(table_name);
-            //         }
-            //     }
-            // }
             DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
                 for (table_name, dataset_cfg) in datasets {
                     let drop_sql = format!(
