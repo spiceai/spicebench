@@ -246,7 +246,6 @@ public final class AdapterServer {
     ObjectNode ingestion = MAPPER.createObjectNode();
     ingestion.put("rows_ingested", 0);
     ingestion.put("bytes_ingested", 0);
-    ingestion.put("rows_per_sec", 0.0);
     ingestion.put("active_connections", 0);
 
     ObjectNode result = MAPPER.createObjectNode();

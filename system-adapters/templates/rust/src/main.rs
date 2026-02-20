@@ -110,7 +110,6 @@ fn method_metrics(_params: &Value) -> Value {
         "ingestion": {
             "rows_ingested": 0,
             "bytes_ingested": 0,
-            "rows_per_sec": 0.0,
             "active_connections": 0,
         },
     })

@@ -16,7 +16,7 @@ SpiceBench (OTel instruments)
 | #   | Metric                               | OTel Instrument                                                                                           | Source                                                                                           | Emitted to telemetry     | Status          |
 | --- | ------------------------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------ | --------------- |
 | 1   | **Data Size** (total bytes ingested) | `ingestion_bytes_total` (Gauge\<u64\>)                                                                    | SUT adapter `metrics` → `ingestion.bytes_ingested`                                               | ✅ via `Telemetry.emit()` | ✅ Implemented   |
-| 2   | **Ingestion records/s**              | `ingestion_rows_per_sec` (Gauge\<f64\>)                                                                   | SUT adapter `metrics` → `ingestion.rows_per_sec`                                                 | ✅ via `Telemetry.emit()` | ✅ Implemented   |
+| 2   | **Ingestion records/s**              | `ingestion_rows_per_sec` (Gauge\<f64\>)                                                                   | Computed: `rows_ingested / elapsed_time` since ETL start                                         | ✅ via `Telemetry.emit()` | ✅ Implemented   |
 | 3   | **Ingestion rows total**             | `ingestion_rows_total` (Gauge\<u64\>)                                                                     | SUT adapter `metrics` → `ingestion.rows_ingested`                                                | ✅ via `Telemetry.emit()` | ✅ Implemented   |
 | 4   | **Connections / Clients**            | `active_connections` (Gauge\<u64\>)                                                                       | CLI `--concurrency` + SUT adapter `metrics` → `ingestion.active_connections`                     | ✅ via `Telemetry.emit()` | ✅ Implemented   |
 | 5   | **Queries/s, Requests/s**            | `queries_per_sec` (Gauge\<f64\>), `queries_total` (Counter\<u64\>)                                        | Computed from total iterations / test duration                                                   | ✅ via `Telemetry.emit()` | ✅ Implemented   |
@@ -74,7 +74,6 @@ The system adapter protocol now includes a `metrics` JSON-RPC method that SpiceB
     "ingestion": {
       "rows_ingested": 10000000,
       "bytes_ingested": 5368709120,
-      "rows_per_sec": 50000.0,
       "active_connections": 8
     }
   }

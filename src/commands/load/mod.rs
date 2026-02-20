@@ -20,8 +20,9 @@ use arrow::array::{Array, TimestampMicrosecondArray};
 use etl::{ETLPipeline, PipelineState, StopReason};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use system_adapter_protocol::MetricsResponse;
 use test_framework::{
     TestType, anyhow,
@@ -72,9 +73,6 @@ fn record_sut_metrics(response: &MetricsResponse, attributes: &[KeyValue]) {
     if let Some(v) = response.ingestion.bytes_ingested {
         crate::metrics::INGESTION_BYTES_TOTAL.record(v, attributes);
     }
-    if let Some(v) = response.ingestion.rows_per_sec {
-        crate::metrics::INGESTION_ROWS_PER_SEC.record(v, attributes);
-    }
     if let Some(v) = response.ingestion.active_connections {
         crate::metrics::ACTIVE_CONNECTIONS.record(v, attributes);
     }
@@ -90,6 +88,7 @@ fn spawn_sut_metrics_scraper(
     token: CancellationToken,
     interval: Duration,
     attributes: Vec<KeyValue>,
+    ingestion_start: Arc<OnceLock<Instant>>,
 ) -> tokio::task::JoinHandle<Option<MetricsResponse>> {
     tokio::spawn(async move {
         let mut last_response: Option<MetricsResponse> = None;
@@ -100,6 +99,7 @@ fn spawn_sut_metrics_scraper(
                     match adapter.lock().await.metrics(run_id).await {
                         Ok(resp) => {
                             record_sut_metrics(&resp, &attributes);
+                            record_ingestion_throughput(&resp, &attributes, &ingestion_start);
                             last_response = Some(resp);
                         }
                         Err(e) => {
@@ -111,6 +111,7 @@ fn spawn_sut_metrics_scraper(
                     // Final scrape before exiting
                     if let Ok(resp) = adapter.lock().await.metrics(run_id).await {
                         record_sut_metrics(&resp, &attributes);
+                        record_ingestion_throughput(&resp, &attributes, &ingestion_start);
                         last_response = Some(resp);
                     }
                     break;
@@ -119,6 +120,27 @@ fn spawn_sut_metrics_scraper(
         }
         last_response
     })
+}
+
+/// Compute and record ingestion throughput based on the SUT's reported
+/// `rows_ingested` and the elapsed time since ETL ingestion started.
+///
+/// Does nothing if ingestion has not started yet or if the SUT does not
+/// report `rows_ingested`.
+fn record_ingestion_throughput(
+    response: &MetricsResponse,
+    attributes: &[KeyValue],
+    ingestion_start: &OnceLock<Instant>,
+) {
+    if let Some(start) = ingestion_start.get() {
+        if let Some(rows) = response.ingestion.rows_ingested {
+            let elapsed_secs = start.elapsed().as_secs_f64();
+            if elapsed_secs > 0.0 {
+                crate::metrics::INGESTION_ROWS_PER_SEC
+                    .record(rows as f64 / elapsed_secs, attributes);
+            }
+        }
+    }
 }
 
 /// Spawn a task that periodically queries `SELECT MAX(__created_at)` for each
@@ -242,6 +264,10 @@ pub(crate) async fn run(
         .as_ref()
         .map(|endpoint| StreamingOtlpExporter::spawn(endpoint.clone()));
 
+    // Shared ingestion start time — set right before the ETL pipeline begins
+    // streaming so that throughput is computed from the actual ingestion start.
+    let ingestion_start: Arc<OnceLock<Instant>> = Arc::new(OnceLock::new());
+
     // Spawn SUT metrics scraper if --scrape-sut-metrics is enabled and a system adapter is configured
     let sut_scraper_token = CancellationToken::new();
     let sut_scraper_handle = if common_args.scrape_sut_metrics
@@ -257,6 +283,7 @@ pub(crate) async fn run(
             sut_scraper_token.clone(),
             Duration::from_secs(5),
             metric_attributes.clone(),
+            Arc::clone(&ingestion_start),
         ))
     } else {
         None
@@ -303,6 +330,10 @@ pub(crate) async fn run(
     // If checkpoint_steps is set, use `.run(steps)` so the pipeline pauses
     // at checkpoint boundaries. Otherwise fall back to `.start()` which runs
     // all remaining batches without pausing.
+    //
+    // Mark the ingestion start time just before the pipeline begins streaming
+    // so that throughput is computed from the actual ingestion start.
+    let _ = ingestion_start.set(Instant::now());
     tracing::info!("Starting ETL pipeline (remaining batches)...");
     let mut etl_state_rx = etl_pipeline.state_watch();
     if let Some(steps) = checkpoint_steps {

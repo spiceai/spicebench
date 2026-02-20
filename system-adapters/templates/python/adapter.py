@@ -102,7 +102,6 @@ def method_metrics(params: dict[str, Any]) -> dict[str, Any]:
         "ingestion": {
             "rows_ingested": 0,
             "bytes_ingested": 0,
-            "rows_per_sec": 0.0,
             "active_connections": 0,
         },
     }

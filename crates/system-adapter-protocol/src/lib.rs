@@ -244,9 +244,6 @@ pub struct IngestionMetrics {
     /// Total bytes ingested so far
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes_ingested: Option<u64>,
-    /// Current ingestion throughput in rows/sec
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rows_per_sec: Option<f64>,
     /// Number of active connections / clients
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_connections: Option<u64>,

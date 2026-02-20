@@ -171,7 +171,7 @@ Common CLI/workflow usage:
 | E2E Duration            | `test_duration_ms` (Gauge)                       | Total wall-clock time for the benchmark phase         | ✅ Implemented   |
 | Peak/Median Memory      | `peak_memory_usage_mb`, `median_memory_usage_mb` | Memory usage of the spiced process                    | ✅ Implemented   |
 | Ingestion Rows/Bytes    | `ingestion_rows_total`, `ingestion_bytes_total`  | Total data ingested (from SUT adapter)                | ✅ Implemented   |
-| Ingestion records/s     | `ingestion_rows_per_sec` (Gauge)                 | Sustained ingestion throughput (from SUT adapter)     | ✅ Implemented   |
+| Ingestion records/s     | `ingestion_rows_per_sec` (Gauge)                 | Sustained ingestion throughput (computed by SpiceBench) | ✅ Implemented   |
 | Queries/s               | `queries_per_sec` (Gauge)                        | Query throughput under load                           | ✅ Implemented   |
 | Total Queries           | `queries_total` (Counter)                        | Total queries executed during the run                 | ✅ Implemented   |
 | Active Connections      | `active_connections` (Gauge)                     | Number of concurrent connections/clients              | ✅ Implemented   |
