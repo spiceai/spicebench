@@ -13,7 +13,7 @@ on:
         type: string
       scale_factor:
         required: false
-        default: '1.0'
+        default: '0.01'
         type: string
       bucket:
         required: true
@@ -62,7 +62,7 @@ on:
       scale_factor:
         description: 'TPC-H scale factor'
         required: true
-        default: '1.0'
+        default: '0.01'
         type: string
       bucket:
         description: 'S3 bucket name'
@@ -124,7 +124,7 @@ jobs:
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
           VERSION: ${{ inputs.version || github.event.inputs.version }}
-          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '1.0' }}
+          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           MAX_CONCURRENCY: ${{ inputs.max_concurrency || github.event.inputs.max_concurrency || '8' }}
