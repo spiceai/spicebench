@@ -86,7 +86,7 @@ jobs:
           git push
 
   validation-run:
-    name: Validation run (Spice Cloud TPCH sf0.01)
+    name: Validation run (Spice Cloud TPCH sf0.001)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
@@ -127,7 +127,7 @@ jobs:
             --dataset tpch \
             --scenario tpch \
             --version 0 \
-            --scale-factor 0.01 \
+            --scale-factor 0.001 \
             --bucket spiceai-public-datasets \
             --prefix pr-validation \
             --max-concurrency 4 \
