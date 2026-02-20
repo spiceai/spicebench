@@ -16,7 +16,10 @@ limitations under the License.
 #![allow(dead_code)]
 
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
-use arrow::array::{Array, RecordBatch, TimestampMicrosecondArray};
+use arrow::{
+    array::{Array, RecordBatch, TimestampMicrosecondArray},
+    util::pretty::pretty_format_batches,
+};
 use etl::{ETLPipeline, PipelineState, StopReason};
 use std::collections::HashMap;
 use std::path::Path;
@@ -101,6 +104,7 @@ fn spawn_sut_metrics_scraper(
                 _ = ticker.tick() => {
                     match adapter.lock().await.metrics(run_id).await {
                         Ok(resp) => {
+                            eprintln!("[Spicebench] helllo, metrics={resp:?}");
                             record_sut_metrics(&resp, &attributes);
                             last_response = Some(resp);
                         }
@@ -169,6 +173,9 @@ fn spawn_e2e_latency_check(
                     let sql = format!("SELECT MAX(__created_at) FROM {table}");
                     match guard.query(&sql) {
                         Ok(batches) => {
+                            if let Ok(v) = pretty_format_batches(&batches) {
+                                eprintln!("[Spicebench] pretty formatted batches:\n{v}");
+                            };
                             let sample = batches.first().and_then(|batch| {
                                 let col = batch.column(0);
                                 let ts_array =
@@ -179,6 +186,10 @@ fn spawn_e2e_latency_check(
                                 let max_ts_us = ts_array.value(0);
                                 Some((last_written_us - max_ts_us) as f64 / 1000.0)
                             });
+                            eprintln!(
+                                "E2E latency checker: table={table}, freshness_ms={:?}",
+                                sample
+                            );
                             out.push((table.clone(), sample));
                         }
                         Err(e) => {
