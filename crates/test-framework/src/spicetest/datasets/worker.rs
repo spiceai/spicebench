@@ -194,11 +194,14 @@ impl CheckpointValidationState {
     /// This should be called once per iteration of the main query loop so
     /// the load runner can poll `completed_iterations` to decide when
     /// enough validation passes have been recorded.
+    ///
+    /// Iteration counts are always tracked and published regardless of
+    /// whether checkpoint validation is active, so the load runner can
+    /// wait for at least one completed iteration before shutting down
+    /// query workers.
     fn record_iteration_completed(&mut self) {
-        if self.active {
-            self.completed_iterations += 1;
-            self.publish_status();
-        }
+        self.completed_iterations += 1;
+        self.publish_status();
     }
 
     fn publish_status(&self) {
