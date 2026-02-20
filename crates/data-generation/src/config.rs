@@ -91,6 +91,7 @@ pub struct DatasetConfig {
     pub num_steps: u16,
 }
 
+#[derive(Clone)]
 pub struct TargetConfig {
     pub bucket: String,
     /// The fully-qualified prefix: `{prefix}/{scenario}/{version}`
