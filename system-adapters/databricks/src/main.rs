@@ -19,6 +19,7 @@ use std::{collections::HashMap, time::Duration};
 use anyhow::{Result, anyhow};
 use arrow_schema::DataType;
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose};
 use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -492,6 +493,43 @@ impl DatabricksAdapter {
         )
     }
 
+    fn scenario_slug(metadata: &HashMap<String, Value>) -> String {
+        let raw = metadata
+            .get("scenario")
+            .and_then(Value::as_str)
+            .or_else(|| metadata.get("scenario_name").and_then(Value::as_str))
+            .unwrap_or("default");
+
+        let mut slug = String::with_capacity(raw.len());
+        let mut last_was_separator = false;
+
+        for ch in raw.chars() {
+            let c = ch.to_ascii_lowercase();
+            if c.is_ascii_alphanumeric() {
+                slug.push(c);
+                last_was_separator = false;
+            } else if !last_was_separator {
+                slug.push('-');
+                last_was_separator = true;
+            }
+        }
+
+        let slug = slug.trim_matches('-').to_string();
+        if slug.is_empty() {
+            "default".to_string()
+        } else {
+            slug
+        }
+    }
+
+    fn notebook_path_for_scenario(scenario_slug: &str) -> String {
+        format!("/Shared/spicebench/sync_autoloader_{scenario_slug}")
+    }
+
+    fn job_name_for_scenario(scenario_slug: &str) -> String {
+        format!("spicebench_sync_tables_{scenario_slug}")
+    }
+
     #[allow(dead_code)]
     fn sql_type_for_arrow(data_type: &DataType) -> Result<String> {
         match data_type {
@@ -549,16 +587,16 @@ impl DatabricksAdapter {
     /// Build a CTAS statement that creates the table by reading parquet files
     /// from S3.
     ///
+    /// `location` is the full S3 URI for the table data, e.g.
+    /// `s3://bucket/etl-hive-output/tpch/<run-id>/lineitem/`.
+    ///
     /// ```sql
     /// CREATE OR REPLACE TABLE catalog.schema.table
-    ///   AS SELECT * FROM parquet.`s3://bucket/prefix/scenario/version/tables/table/`
+    ///   AS SELECT * FROM parquet.`s3://bucket/path/to/table/`
     /// ```
-    fn create_table_ctas(&self, table_name: &str) -> String {
-        let source_uri = format!(
-            "s3://spiceai-public-datasets/data-gen/tpch/4/tables/{table_name}/"
-        );
+    fn create_table_ctas(&self, table_name: &str, location: &str) -> String {
         format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM parquet.`{source_uri}`",
+            "CREATE OR REPLACE TABLE {} AS SELECT * FROM parquet.`{location}`",
             self.lakebase_table_full_name(table_name),
         )
     }
@@ -934,6 +972,190 @@ impl DatabricksAdapter {
                 "Databricks clusters/delete (terminate) failed ({status}): {body}"
             ));
         }
+
+        Ok(())
+    }
+
+    async fn ensure_notebook(&self, scenario_slug: &str, table_locations: &HashMap<String, String>) -> Result<()> {
+        let table_locations_json = serde_json::to_string(table_locations)?;
+        let notebook_source = format!(
+            r#"
+from pyspark.sql.functions import *
+import json
+
+catalog = "{catalog}"
+schema = "{schema}"
+
+table_locations = json.loads('{table_locations_json}')
+
+for table, source_path in table_locations.items():
+    target_table = f"{{catalog}}.{{schema}}.{{table}}"
+    checkpoint = f"/tmp/spicebench_{{schema}}_{{table}}_checkpoint"
+    schema_location = f"/tmp/spicebench_{{schema}}_{{table}}_schema"
+
+    (
+        spark.readStream
+            .format("cloudFiles")
+            .option("cloudFiles.format", "parquet")
+            .option("cloudFiles.includeExistingFiles", "true")
+            .option("cloudFiles.schemaLocation", schema_location)
+            .load(source_path)
+            .writeStream
+            .option("checkpointLocation", checkpoint)
+            .trigger(availableNow=True)
+            .toTable(target_table)
+            .awaitTermination()
+    )
+
+print("OK")
+"#,
+            catalog = self.config.catalog,
+            schema = self.config.schema,
+            table_locations_json = table_locations_json,
+        );
+
+        let encoded = general_purpose::STANDARD.encode(notebook_source);
+
+        let notebook_path = Self::notebook_path_for_scenario(scenario_slug);
+        let mkdirs_url = format!("https://{}/api/2.0/workspace/mkdirs", self.config.endpoint);
+        let mkdirs_response = self
+            .client
+            .post(mkdirs_url)
+            .bearer_auth(&self.config.token)
+            .json(&json!({
+                "path": "/Shared/spicebench"
+            }))
+            .send()
+            .await?;
+
+        if !mkdirs_response.status().is_success() {
+            let status = mkdirs_response.status();
+            let body = mkdirs_response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Databricks workspace/mkdirs failed ({status}): {body}"
+            ));
+        }
+
+        eprintln!(
+            "[databricks-adapter] uploading sync notebook: scenario={scenario_slug} tables_count={} path={notebook_path}",
+            table_locations.len()
+        );
+        let url = format!("https://{}/api/2.0/workspace/import", self.config.endpoint);
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(&self.config.token)
+            .json(&json!({
+            "path": notebook_path,
+                "language": "PYTHON",
+                "format": "SOURCE",
+                "content": encoded,
+                "overwrite": true
+            }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            eprintln!(
+                "[databricks-adapter] failed to upload sync notebook: scenario={scenario_slug} path={notebook_path} status={status} body={body}"
+            );
+            return Err(anyhow!(
+                "Databricks workspace/import failed ({status}): {body}"
+            ));
+        }
+
+        eprintln!(
+            "[databricks-adapter] sync notebook uploaded: scenario={scenario_slug} tables_count={} path={notebook_path}",
+            table_locations.len()
+        );
+
+        Ok(())
+    }
+
+    async fn find_job_id_by_name(&self, job_name: &str) -> Result<Option<i64>> {
+        let url = format!("https://{}/api/2.1/jobs/list", self.config.endpoint);
+
+        let resp: serde_json::Value = self
+            .client
+            .get(url)
+            .bearer_auth(&self.config.token)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if let Some(jobs) = resp["jobs"].as_array() {
+            for job in jobs {
+                if job["settings"]["name"].as_str() == Some(job_name) {
+                    return Ok(job["job_id"].as_i64());
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn ensure_notebook_sync_job(&self, scenario_slug: &str) -> Result<()> {
+        let notebook_path = Self::notebook_path_for_scenario(scenario_slug);
+        let job_name = Self::job_name_for_scenario(scenario_slug);
+
+        if let Some(existing_id) = self.find_job_id_by_name(&job_name).await? {
+            return Ok(());
+        }
+
+        eprintln!(
+            "[databricks-adapter] creating scheduled sync job: scenario={scenario_slug} job_name={job_name} path={notebook_path}"
+        );
+        let create_url = format!("https://{}/api/2.1/jobs/create", self.config.endpoint);
+        let response = self
+            .client
+            .post(create_url)
+            .bearer_auth(&self.config.token)
+            .json(&json!({
+                "name": job_name,
+                "max_concurrent_runs": 1,
+                "tasks": [
+                {
+                    "task_key": "sync_autoloader",
+                    "notebook_task": {
+                        "notebook_path": notebook_path
+                    },
+                    "environment_key": "serverless_env"
+                }
+                ],
+                "environments": [
+                {
+                    "environment_key": "serverless_env",
+                    "spec": {
+                        "client": "1"
+                    }
+                }
+                ],
+                "schedule": {
+                    "quartz_cron_expression": "0 0/1 * * * ?",
+                    "timezone_id": "UTC",
+                    "pause_status": "UNPAUSED"
+                }
+            }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            eprintln!(
+                "[databricks-adapter] failed to create scheduled sync job: scenario={scenario_slug} job_name={job_name} status={status} body={body}"
+            );
+            return Err(anyhow!(
+                "Databricks jobs/create failed ({status}): {body}"
+            ));
+        }
+
+        eprintln!(
+            "[databricks-adapter] scheduled sync job created: scenario={scenario_slug} job_name={job_name} path={notebook_path}"
+        );
 
         Ok(())
     }
@@ -1362,6 +1584,9 @@ impl Handler for DatabricksAdapter {
         datasets: HashMap<String, DatasetConfig>,
     ) -> std::result::Result<SetupResponse, String> {
         eprintln!("[databricks-adapter] setup: run_id={run_id}");
+        eprintln!("[databricks-adapter] endpoint={}", self.config.endpoint);
+
+        let scenario_slug = Self::scenario_slug(&metadata);
 
         let (cluster_id, cluster_created_by_adapter) = match &self.config.compute_target {
             ComputeTarget::SparkCluster(_) => {
@@ -1398,19 +1623,23 @@ impl Handler for DatabricksAdapter {
             RunState {
                 table_format,
                 created_tables: Vec::new(),
-                cluster_id,
+                cluster_id: cluster_id.clone(),
                 cluster_created_by_adapter,
             },
         );
 
         let mut created_tables = Vec::with_capacity(datasets.len());
+        let mut table_locations: HashMap<String, String> = HashMap::with_capacity(datasets.len());
 
         match self.config.variant {
             DatabricksVariant::Databricks => {
-                for (table_name, _dataset_cfg) in datasets {
+                for (table_name, dataset_cfg) in &datasets {
+                    let location = dataset_cfg.location.as_deref().ok_or_else(|| {
+                        format!("Dataset '{table_name}' is missing required 'location' field")
+                    })?;
                     let drop_sql = format!(
                         "DROP TABLE IF EXISTS {}",
-                        self.lakebase_table_full_name(&table_name)
+                        self.lakebase_table_full_name(table_name)
                     );
                     self.execute_sql_statement(&drop_sql).await.map_err(|e| {
                         format!(
@@ -1418,7 +1647,7 @@ impl Handler for DatabricksAdapter {
                         )
                     })?;
 
-                    let create_sql = self.create_table_ctas(&table_name);
+                    let create_sql = self.create_table_ctas(table_name, location);
 
                     eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
 
@@ -1426,32 +1655,45 @@ impl Handler for DatabricksAdapter {
                         format!("Failed to create table '{table_name}': {e}")
                     })?;
 
-                    created_tables.push(table_name);
+                    table_locations.insert(table_name.clone(), location.to_string());
+                    created_tables.push(table_name.clone());
+
+                    self.ensure_notebook(&scenario_slug, &table_locations)
+                        .await
+                        .map_err(|e| format!("Failed to upload sync notebook: {e}"))?;
+
+                    self.ensure_notebook_sync_job(&scenario_slug)
+                        .await
+                        .map_err(|e| format!("Failed to create scheduled notebook sync job: {e}"))?;
                 }
             }
             DatabricksVariant::Lakebase => {
                 // Phase 1: Create S3 External Tables
-                // for (table_name, _dataset_cfg) in datasets.clone() {
-                //     let drop_sql = format!(
-                //         "DROP TABLE IF EXISTS {}",
-                //         self.lakebase_table_full_name(&table_name)
-                //     );
-                //     self.execute_sql_statement(&drop_sql).await.map_err(|e| {
-                //         format!(
-                //             "Failed to drop existing table '{table_name}' during create_tables: {e}"
-                //         )
-                //     })?;
-                //
-                //     let create_sql = self.create_table_ctas(&table_name);
-                //
-                //     eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
-                //
-                //     self.execute_sql_statement(&create_sql).await.map_err(|e| {
-                //         format!("Failed to create table '{table_name}': {e}")
-                //     })?;
-                //
-                //     created_tables.push(table_name);
-                // }
+                for (table_name, dataset_cfg) in &datasets {
+                    let location = dataset_cfg.location.as_deref().ok_or_else(|| {
+                        format!("Dataset '{table_name}' is missing required 'location' field")
+                    })?;
+                    let drop_sql = format!(
+                        "DROP TABLE IF EXISTS {}",
+                        self.lakebase_table_full_name(table_name)
+                    );
+                    self.execute_sql_statement(&drop_sql).await.map_err(|e| {
+                        format!(
+                            "Failed to drop existing table '{table_name}' during create_tables: {e}"
+                        )
+                    })?;
+
+                    let create_sql = self.create_table_ctas(table_name, location);
+
+                    eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+
+                    self.execute_sql_statement(&create_sql).await.map_err(|e| {
+                        format!("Failed to create table '{table_name}': {e}")
+                    })?;
+
+                    table_locations.insert(table_name.clone(), location.to_string());
+                    created_tables.push(table_name.clone());
+                }
 
                 // Phase 2: Parallel synced table creation + wait for ONLINE
                 let this = &*self;

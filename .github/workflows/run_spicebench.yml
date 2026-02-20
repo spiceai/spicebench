@@ -35,10 +35,9 @@ on:
         required: false
         default: 'data-gen'
         type: string
-      scale_factor:
-        description: 'Scale factor used by data generation (included in derived ETL version key)'
-        required: false
-        default: '0.01'
+      etl_version:
+        description: 'Data generation version identifier (the {version} portion of {prefix}/{scenario}/{version}/)'
+        required: true
         type: string
       etl_region:
         description: 'AWS region for the ETL S3 bucket'
@@ -63,7 +62,7 @@ on:
 jobs:
   run-spicebench:
     name: Run spicebench
-    runs-on: spiceai-dev-runners
+    runs-on: ubuntu-latest
     timeout-minutes: 600
     concurrency:
       group: spicebench-run
@@ -226,7 +225,7 @@ jobs:
           EXECUTOR_INSTANCE_TYPE: ${{ github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
-          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '0.01' }}
+          ETL_VERSION: ${{ github.event.inputs.etl_version }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -235,18 +234,6 @@ jobs:
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: 'info'
         run: |
-          DATABRICKS_VARIANT_FOR_VERSION="na"
-          if [ "${SYSTEM_UNDER_TEST}" = "databricks" ]; then
-            DATABRICKS_VARIANT_FOR_VERSION="${DATABRICKS_VARIANT}"
-          fi
-
-          SCALE_FACTOR_TAG="$(printf '%s' "${SCALE_FACTOR}" | sed 's/\./p/g')"
-
-          ETL_VERSION="auto-${SCENARIO}-sf${SCALE_FACTOR_TAG}-${SYSTEM_UNDER_TEST}-s3-hive-${DATABRICKS_TABLE_FORMAT}-${DATABRICKS_VARIANT_FOR_VERSION}-createdat"
-          ETL_VERSION="$(printf '%s' "${ETL_VERSION}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-')"
-          ETL_VERSION="${ETL_VERSION%-}"
-          echo "Derived ETL_VERSION=${ETL_VERSION} from workflow inputs"
-
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-version ${ETL_VERSION}"
           if [ -n "${ETL_PREFIX}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-prefix ${ETL_PREFIX}"

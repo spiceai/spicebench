@@ -10,6 +10,7 @@ repository = "https://github.com/spiceai/spicebench"
 [dependencies]
 anyhow = "1.0.99"
 arrow-schema = "57.0.0"
+base64 = "0.22"
 async-trait = "0.1.89"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 futures = "0.3"
