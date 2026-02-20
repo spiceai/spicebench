@@ -278,8 +278,6 @@ enum LakebaseSyncTarget {
     Project { name: String, branch: String },
 }
 
-const SYNCED_SUFFIX: &str = "_synced_5";
-
 impl AdapterConfig {
     fn from_args(args: StdioArgs) -> Result<Self> {
         if args.databricks_endpoint.starts_with("http://")
@@ -472,10 +470,10 @@ impl DatabricksAdapter {
         )
     }
 
-    fn lakebase_synced_table_full_name(&self, table_name: &str) -> String {
+    fn lakebase_synced_table_full_name(&self, table_name: &str, lakebase_config: &LakebaseConfig) -> String {
         format!(
-            "{}.{}{}.{}",
-            self.config.catalog, self.config.schema, SYNCED_SUFFIX, table_name
+            "{}.{}.{}",
+            self.config.catalog, lakebase_config.schema, table_name
         )
     }
 
@@ -1055,7 +1053,8 @@ impl DatabricksAdapter {
             urlencoding::encode(&lakebase_config.token),
             lakebase_config.host,
             lakebase_config.db_name,
-            urlencoding::encode(&format!("{}{}", lakebase_config.schema, SYNCED_SUFFIX)),
+            // urlencoding::encode(&format!("{}{}", lakebase_config.schema, SYNCED_SUFFIX)),
+            urlencoding::encode(&lakebase_config.schema),
         ))
     }
 
@@ -1068,7 +1067,7 @@ impl DatabricksAdapter {
             ComputeTarget::Lakebase(cfg) => cfg,
             _ => return Err(anyhow!("create_synced_table called without Lakebase compute target")),
         };
-        let synced_table_name = self.lakebase_synced_table_full_name(table_name);
+        let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
         let source_table_name = self.uc_table_full_name(table_name);
         let url = format!(
             "https://{}/api/2.0/database/synced_tables",
@@ -1100,8 +1099,8 @@ impl DatabricksAdapter {
         }
 
         eprintln!(
-            "[databricks-adapter] create_synced_table '{}': POST {}",
-            table_name, url
+            "[databricks-adapter] create_synced_table: source_table_name={}, synced_table_name={}",
+            source_table_name, synced_table_name
         );
 
         let response = self
@@ -1124,11 +1123,11 @@ impl DatabricksAdapter {
             "[databricks-adapter] synced table '{}' created, waiting for ONLINE status",
             table_name
         );
-        self.wait_for_synced_table_online(table_name).await
+        self.wait_for_synced_table_online(table_name, lakebase_config).await
     }
 
-    async fn wait_for_synced_table_online(&self, table_name: &str) -> Result<()> {
-        let synced_table_name = self.lakebase_synced_table_full_name(table_name);
+    async fn wait_for_synced_table_online(&self, table_name: &str, lakebase_config: &LakebaseConfig) -> Result<()> {
+        let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
         let status_url = format!(
             "https://{}/api/2.0/database/synced_tables/{}",
             self.config.endpoint,
@@ -1194,7 +1193,11 @@ impl DatabricksAdapter {
     }
 
     async fn delete_synced_table(&self, table_name: &str) -> Result<()> {
-        let synced_table_name = self.lakebase_synced_table_full_name(table_name);
+        let lakebase_config = match &self.config.compute_target {
+            ComputeTarget::Lakebase(cfg) => cfg,
+            _ => return Err(anyhow!("delete_synced_table called without Lakebase compute target")),
+        };
+        let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
         let url = format!(
             "https://{}/api/2.0/database/synced_tables/{}",
             self.config.endpoint,
@@ -1418,37 +1421,36 @@ impl Handler for DatabricksAdapter {
             }
             DatabricksVariant::Lakebase => {
                 // Phase 1: Sequential — delete old synced tables, drop + create UC tables
-                for (table_name, dataset_cfg) in &datasets {
-                    self.delete_synced_table(table_name).await.map_err(|e| {
-                        format!(
-                            "Failed to delete existing synced table '{table_name}' during create_tables: {e}"
-                        )
-                    })?;
-
-                    let drop_sql = format!(
-                        "DROP TABLE IF EXISTS {}",
-                        self.lakebase_table_full_name(table_name)
-                    );
-                    self.execute_sql_statement(&drop_sql).await.map_err(|e| {
-                        format!(
-                            "Failed to drop existing table '{table_name}' during create_tables: {e}"
-                        )
-                    })?;
-
-                    let create_sql = self
-                        .create_table_ddl(table_name, dataset_cfg, table_format)
-                        .map_err(|e| {
-                            format!("Failed to build table DDL for '{table_name}': {e}")
-                        })?;
-
-                    eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
-
-                    self.execute_sql_statement(&create_sql).await.map_err(|e| {
-                        format!("Failed to create table '{table_name}': {e}")
-                    })?;
-
-                    created_tables.push(table_name.clone());
-                }
+                // for (table_name, dataset_cfg) in &datasets {
+                //     self.delete_synced_table(table_name).await.map_err(|e| {
+                //         format!(
+                //             "Failed to delete existing synced table '{table_name}' during create_tables: {e}"
+                //         )
+                //     })?;
+                //
+                //     let drop_sql = format!(
+                //         "DROP TABLE IF EXISTS {}",
+                //         self.lakebase_table_full_name(table_name)
+                //     );
+                //     self.execute_sql_statement(&drop_sql).await.map_err(|e| {
+                //         format!(
+                //             "Failed to drop existing table '{table_name}' during create_tables: {e}"
+                //         )
+                //     })?;
+                //
+                //     let create_sql = self
+                //         .create_table_ddl(table_name, dataset_cfg, table_format)
+                //         .map_err(|e| {
+                //             format!("Failed to build table DDL for '{table_name}': {e}")
+                //         })?;
+                //
+                //     eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+                //
+                //     self.execute_sql_statement(&create_sql).await.map_err(|e| {
+                //         format!("Failed to create table '{table_name}': {e}")
+                //     })?;
+                //
+                // }
 
                 // Phase 2: Parallel synced table creation + wait for ONLINE
                 let this = &*self;
@@ -1464,12 +1466,13 @@ impl Handler for DatabricksAdapter {
                                     format!(
                                         "Failed to create synced table for '{table_name}': {e}"
                                     )
-                                })
+                                })?;
+                            Ok::<_, String>(table_name)
                         }
                     })
                     .collect();
 
-                futures::future::try_join_all(sync_futs).await?;
+                created_tables = futures::future::try_join_all(sync_futs).await?;
             }
         }
 

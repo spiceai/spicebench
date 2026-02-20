@@ -139,6 +139,8 @@ pub struct DatasetConfig {
     /// Primary key column names for the dataset
     #[serde(default)]
     pub primary_key_columns: Vec<String>,
+    /// Dataset S3 location (e.g. "s3://my-bucket/path/to/data/")
+    pub location: Option<String>,
 }
 
 /// Request to setup a benchmark run.
