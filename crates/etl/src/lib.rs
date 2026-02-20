@@ -489,6 +489,8 @@ impl ETLPipeline {
                             prefix = config.prefix
                         )
                     }),
+                    time_column: Some(CREATED_AT_COLUMN.to_string()),
+                    partition_columns: self.dataset.partition_columns(&name),
                 };
 
                 (name.clone(), config)
