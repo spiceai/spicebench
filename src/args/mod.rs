@@ -127,7 +127,7 @@ pub struct CommonArgs {
 
     /// Version identifier for the data generation to read from.
     #[arg(long)]
-    pub(crate) etl_version: u64,
+    pub(crate) etl_version: String,
 
     /// Base S3 key prefix for the ETL target (rehydrated) data.
     /// A random suffix is appended automatically to create a unique destination per run.

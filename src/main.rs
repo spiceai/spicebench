@@ -65,7 +65,7 @@ async fn run_benchmark(
     let checkpoint_dir = tempfile::tempdir()?;
 
     let version_prefix =
-        build_version_prefix(&common.etl_prefix, &scenario_name, common.etl_version);
+        build_version_prefix(&common.etl_prefix, &scenario_name, &common.etl_version);
     let checkpoint_store = CheckpointStore::new(
         &common.etl_bucket,
         &version_prefix,
@@ -231,7 +231,7 @@ async fn main() -> anyhow::Result<()> {
         prefix: build_version_prefix(
             &cli.common.etl_prefix,
             &cli.common.scenario.to_string(),
-            cli.common.etl_version,
+            &cli.common.etl_version,
         ),
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),

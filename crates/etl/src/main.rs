@@ -46,7 +46,7 @@ struct Cli {
 
     /// Version identifier for the data generation to read from.
     #[arg(long)]
-    version: u64,
+    version: String,
 
     /// S3 bucket name (used for both source and target)
     #[arg(long)]
@@ -93,7 +93,7 @@ impl Cli {
     /// Builds the source config with the versioned prefix:
     /// `{prefix}/{scenario}/{version}`
     fn source_config(&self) -> TargetConfig {
-        let version_prefix = build_version_prefix(&self.prefix, &self.scenario, self.version);
+        let version_prefix = build_version_prefix(&self.prefix, &self.scenario, &self.version);
         TargetConfig {
             bucket: self.bucket.clone(),
             prefix: version_prefix,
@@ -170,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(
         scenario = %cli.scenario,
-        version = cli.version,
+        version = %cli.version,
         dataset = %version_metadata.dataset_type,
         bucket = %cli.bucket,
         prefix = %cli.prefix,
