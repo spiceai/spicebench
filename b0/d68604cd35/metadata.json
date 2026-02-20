@@ -3,7 +3,7 @@
   "checkpoint_id": "b0d68604cd35",
   "strategy": "manual-commit",
   "branch": "ci/parallel-check-test",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     ".github/workflows/pr.yml"
   ],
@@ -14,13 +14,20 @@
       "context": "/b0/d68604cd35/0/context.md",
       "content_hash": "/b0/d68604cd35/0/content_hash.txt",
       "prompt": "/b0/d68604cd35/0/prompt.txt"
+    },
+    {
+      "metadata": "/b0/d68604cd35/1/metadata.json",
+      "transcript": "/b0/d68604cd35/1/full.jsonl",
+      "context": "/b0/d68604cd35/1/context.md",
+      "content_hash": "/b0/d68604cd35/1/content_hash.txt",
+      "prompt": "/b0/d68604cd35/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 71,
-    "cache_creation_tokens": 107196,
-    "cache_read_tokens": 3434713,
-    "output_tokens": 1356,
-    "api_call_count": 65
+    "input_tokens": 80,
+    "cache_creation_tokens": 111954,
+    "cache_read_tokens": 3544596,
+    "output_tokens": 1556,
+    "api_call_count": 70
   }
 }

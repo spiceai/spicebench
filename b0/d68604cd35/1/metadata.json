@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "b0d68604cd35",
+  "session_id": "fcdfff1b-6108-4435-8fe6-9ded9e4239f6",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-20T16:47:28.513312Z",
+  "branch": "ci/parallel-check-test",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/pr.yml"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "9a126bb714b3",
+  "transcript_identifier_at_start": "97d0ec5c-6d12-4ecf-8573-4531cfc38974",
+  "token_usage": {
+    "input_tokens": 9,
+    "cache_creation_tokens": 4758,
+    "cache_read_tokens": 109883,
+    "output_tokens": 200,
+    "api_call_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-20T16:47:28.500957Z",
+    "agent_lines": 15,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 15,
+    "agent_percentage": 100
+  },
+  "transcript_path": ".claude/projects/-Users-jeadie-Github-spicebench-2/fcdfff1b-6108-4435-8fe6-9ded9e4239f6.jsonl"
+}

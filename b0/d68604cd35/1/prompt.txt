@@ -1,0 +1,13 @@
+cargo check and cargo test in .github/workflows/pr.yml  should be parallelisable?
+
+---
+
+make a PR
+
+---
+
+[Request interrupted by user]
+
+---
+
+make a PR, don't mention claude
