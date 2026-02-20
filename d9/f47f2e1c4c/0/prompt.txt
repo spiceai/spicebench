@@ -1,0 +1,24 @@
+Try and figur eout why im not seeing an eprintln of "[Spicebench] helllo"
+
+---
+
+where would adapter.lock().await be getting  blocked by
+
+---
+
+can you add eprintln!( statements to /Users/jeadie/Github/spicebench-2/src/commands/load/mod.rs to help debug this
+
+---
+
+not seeing anything, i even added some more
+
+---
+
+~/.spice/bin/spicebench \
+    --concurrency 1 \
+    --scenario tpch \
+    --executor-instance-type "local" \
+    --etl-bucket spiceai-public-datasets \
+    --etl-region us-east-1 --etl-prefix data-gen \
+    --system-adapter-stdio-cmd ~/.spice/bin/spidapter \
+    --system-adapter-stdio-args "stdio --verbose --channel nightly" --scrape-sut-metrics --etl-version 3

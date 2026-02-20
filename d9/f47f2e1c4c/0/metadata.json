@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "d9f47f2e1c4c",
+  "session_id": "ff1d02b6-0b94-49b9-b279-b6ff205abcf8",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-20T15:07:40.979623Z",
+  "branch": "trunk",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/commands/load/mod.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "d2743bad6c1b",
+  "transcript_identifier_at_start": "39736168-5c24-40a7-b719-dceacb7200b9",
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 24008,
+    "cache_read_tokens": 387885,
+    "output_tokens": 194,
+    "api_call_count": 16
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-20T15:07:40.922065Z",
+    "agent_lines": 0,
+    "human_added": 25,
+    "human_modified": 16,
+    "human_removed": 0,
+    "total_committed": 28,
+    "agent_percentage": 0
+  },
+  "transcript_path": ".claude/projects/-Users-jeadie-Github-spicebench-2/ff1d02b6-0b94-49b9-b279-b6ff205abcf8.jsonl"
+}
