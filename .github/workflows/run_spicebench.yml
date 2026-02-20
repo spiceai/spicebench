@@ -73,6 +73,8 @@ jobs:
     name: Run spicebench
     runs-on: spiceai-dev-runners
     timeout-minutes: 600
+    concurrency:
+      group: spicebench-run
     steps:
       - uses: actions/checkout@v6
 
