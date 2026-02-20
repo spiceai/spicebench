@@ -16,28 +16,17 @@ limitations under the License.
 
 use std::sync::Arc;
 
-use adbc_client::AdbcConnection;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
-use etl::sink::Sink;
-use etl::sink::adbc::AdbcSink;
-use etl::sink::iceberg::{IcebergObjectStoreConfig, IcebergSink};
+use etl::sink::s3_hive::S3HiveSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
-use serde_json::Value;
 use tracing_subscriber::EnvFilter;
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-#[value(rename_all = "kebab-case")]
-enum EtlSinkMode {
-    Adbc,
-    IcebergObjectStore,
-}
 
 #[derive(Parser)]
 #[command(
-    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to either ADBC or Iceberg object storage"
+    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to S3 as hive-partitioned Parquet"
 )]
 struct Cli {
     /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
@@ -64,29 +53,10 @@ struct Cli {
     #[arg(long)]
     endpoint: Option<String>,
 
-    /// Output sink mode for ETL writes.
-    #[arg(long, value_enum, default_value = "adbc")]
-    sink_mode: EtlSinkMode,
-
-    /// ADBC driver name (for example: databricks, flightsql)
-    #[arg(long)]
-    adbc_driver: Option<String>,
-
-    /// ADBC connection URI passed as db option `uri`
-    #[arg(long)]
-    adbc_uri: Option<String>,
-
-    /// Optional schema name to prefix destination table names
-    #[arg(long)]
-    adbc_schema: Option<String>,
-
-    /// Iceberg target base prefix in the object store bucket.
-    #[arg(long, default_value = "etl-iceberg-output")]
-    iceberg_target_prefix: String,
-
-    /// Append a `__created_at` timestamp column to every batch written to the sink.
-    #[arg(long, default_value_t = false)]
-    with_created_at: bool,
+    /// Base S3 key prefix for the ETL target (hive-partitioned output).
+    /// Defaults to the source prefix if not specified.
+    #[arg(long, default_value = "")]
+    target_prefix: String,
 }
 
 impl Cli {
@@ -126,46 +96,31 @@ async fn main() -> anyhow::Result<()> {
     let dataset_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
 
-    let target: Arc<dyn Sink> = match cli.sink_mode {
-        EtlSinkMode::Adbc => {
-            let adbc_driver = cli.adbc_driver.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("--adbc-driver is required when --sink-mode=adbc")
-            })?;
-            let adbc_uri = cli
-                .adbc_uri
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("--adbc-uri is required when --sink-mode=adbc"))?;
-            let adbc_conn = AdbcConnection::create(
-                adbc_driver,
-                std::collections::HashMap::from([(
-                    "uri".to_string(),
-                    Value::String(adbc_uri.clone()),
-                )]),
-            )?;
-            Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()))
-        }
-        EtlSinkMode::IcebergObjectStore => {
-            let iceberg_prefix = format!(
-                "{}/{}/{}/{}",
-                cli.iceberg_target_prefix.trim_matches('/'),
-                cli.scenario,
-                cli.version,
-                "adhoc"
-            );
-            let sink = IcebergSink::new(IcebergObjectStoreConfig {
-                warehouse_uri: format!("s3://{}/{}", cli.bucket, iceberg_prefix),
-                namespace: vec!["spicebench".to_string(), "etl".to_string()],
-                s3_region: cli.region.clone(),
-                s3_endpoint: cli.endpoint.clone(),
-            })
-            .await?;
-            Arc::new(sink)
-        }
+    let hive_prefix = if cli.target_prefix.is_empty() {
+        format!(
+            "{}/{}/{}",
+            cli.prefix.trim_matches('/'),
+            cli.scenario,
+            cli.version
+        )
+    } else {
+        format!(
+            "{}/{}/{}",
+            cli.target_prefix.trim_matches('/'),
+            cli.scenario,
+            cli.version
+        )
     };
+    let hive_config = TargetConfig {
+        bucket: cli.bucket.clone(),
+        prefix: hive_prefix.clone(),
+        region: cli.region.clone(),
+        endpoint: cli.endpoint.clone(),
+    };
+    let target = Arc::new(S3HiveSink::new(&hive_config)?);
 
     let mut pipeline =
-        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?
-            .with_created_at(cli.with_created_at);
+        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
 
     tracing::info!(
         scenario = %cli.scenario,
@@ -173,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
         dataset = %version_metadata.dataset_type,
         bucket = %cli.bucket,
         prefix = %cli.prefix,
-        sink_mode = ?cli.sink_mode,
+        target_prefix = %hive_prefix,
         scale_factor = version_metadata.scale_factor,
         num_steps = version_metadata.num_steps,
         "Starting ETL pipeline"
