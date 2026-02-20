@@ -1,0 +1,47 @@
+name: "Setup cc"
+description: "Ensures a working cc compiler is available on the runner."
+
+runs:
+  using: "composite"
+  steps:
+    - name: Ensure cc is available
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if command -v cc >/dev/null 2>&1; then
+          cc --version || true
+          exit 0
+        fi
+
+        echo "cc not found; attempting to provision compiler..."
+
+        if command -v clang >/dev/null 2>&1; then
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$(command -v clang)" "$HOME/.local/bin/cc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        elif [[ "${RUNNER_OS}" == "Linux" ]]; then
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential
+          elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y gcc gcc-c++ make
+          elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y gcc gcc-c++ make
+          elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache build-base
+          else
+            echo "Unsupported Linux package manager; cannot install cc automatically."
+            exit 1
+          fi
+        else
+          echo "Unable to automatically install cc on ${RUNNER_OS}."
+          exit 1
+        fi
+
+        if ! command -v cc >/dev/null 2>&1; then
+          echo "cc is still unavailable after setup."
+          exit 1
+        fi
+
+        cc --version || true
