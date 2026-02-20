@@ -30,7 +30,7 @@ use super::version::{MutationsMetadata, TableMetadata, VersionMetadata, arrow_sc
 /// Configuration for the version metadata that will be written at the end
 /// of a data generation run.
 pub struct VersionConfig {
-    pub version: u64,
+    pub version: String,
     pub scenario: String,
     pub scale_factor: f64,
     pub num_steps: u16,
@@ -259,7 +259,7 @@ impl DataGenerator {
         }
 
         let version_metadata = VersionMetadata {
-            version: self.version_config.version,
+            version: self.version_config.version.clone(),
             scenario: self.version_config.scenario.clone(),
             scale_factor: self.version_config.scale_factor,
             num_steps: self.version_config.num_steps,

@@ -84,10 +84,10 @@ pub trait DataStorage: Send + Sync + 'static {
     /// Returns `Ok(Vec::new())` if no key columns are defined (pure inserts)
     /// or if version metadata is not available.
     async fn read_key_columns(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
-        if let Some(metadata) = self.read_version_metadata().await? {
-            if let Some(table_meta) = metadata.tables.get(table_name) {
-                return Ok(table_meta.key_columns.clone());
-            }
+        if let Some(metadata) = self.read_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+        {
+            return Ok(table_meta.key_columns.clone());
         }
         Ok(Vec::new())
     }
@@ -97,12 +97,12 @@ pub trait DataStorage: Send + Sync + 'static {
     /// Returns the batch IDs in ascending order. If no version metadata exists
     /// or the table is not found, returns an empty `VecDeque`.
     async fn read_batch_ids(&self, table_name: &str) -> anyhow::Result<VecDeque<u64>> {
-        if let Some(metadata) = self.read_version_metadata().await? {
-            if let Some(table_meta) = metadata.tables.get(table_name) {
-                let mut ids = table_meta.batch_ids.clone();
-                ids.sort_unstable();
-                return Ok(VecDeque::from(ids));
-            }
+        if let Some(metadata) = self.read_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+        {
+            let mut ids = table_meta.batch_ids.clone();
+            ids.sort_unstable();
+            return Ok(VecDeque::from(ids));
         }
         Ok(VecDeque::new())
     }

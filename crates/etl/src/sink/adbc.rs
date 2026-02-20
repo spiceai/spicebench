@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use adbc_client::{AdbcConnection, IngestMode};
@@ -27,12 +26,12 @@ use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate};
-use tokio::sync::Mutex as TokioMutex;
 
 use super::{InsertOp, Sink};
 
-const DEFAULT_INSERT_ROWS_PER_STATEMENT: usize = 2048;
 const BULK_INGEST_CHUNK_ROWS: usize = 500_000;
+const TABLE_READY_MAX_WAIT_SECS: u64 = 45;
+const TABLE_READY_RETRY_MS: u64 = 750;
 
 /// Identifier quoting style for SQL dialects.
 #[derive(Debug, Clone, Copy, Default)]
@@ -53,7 +52,7 @@ impl QuoteStyle {
     }
 }
 
-/// ETL sink that writes transformed batches directly into the SUT via ADBC.
+/// ETL sink that writes transformed batches directly into the SUT via ADBC SQL.
 ///
 /// For `Insert` operations this sink uses the ADBC bulk ingest API, which
 /// binds Arrow `RecordBatch` data directly to a statement – avoiding the
@@ -66,10 +65,7 @@ impl QuoteStyle {
 /// the ADBC bulk ingest API only supports append semantics.
 pub struct AdbcSink {
     conn: Arc<Mutex<AdbcConnection>>,
-    created_tables: TokioMutex<HashSet<String>>,
     schema_name: Option<String>,
-    insert_rows_per_statement: usize,
-    auto_create_tables: bool,
     quote_style: QuoteStyle,
 }
 
@@ -78,10 +74,7 @@ impl AdbcSink {
     pub fn new(conn: AdbcConnection, schema_name: Option<String>) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
-            created_tables: TokioMutex::new(HashSet::new()),
             schema_name,
-            insert_rows_per_statement: DEFAULT_INSERT_ROWS_PER_STATEMENT,
-            auto_create_tables: true,
             quote_style: QuoteStyle::default(),
         }
     }
@@ -90,10 +83,7 @@ impl AdbcSink {
     pub fn new_without_table_creation(conn: AdbcConnection, schema_name: Option<String>) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
-            created_tables: TokioMutex::new(HashSet::new()),
             schema_name,
-            insert_rows_per_statement: DEFAULT_INSERT_ROWS_PER_STATEMENT,
-            auto_create_tables: false,
             quote_style: QuoteStyle::default(),
         }
     }
@@ -118,21 +108,50 @@ impl AdbcSink {
         }
     }
 
-    fn create_table_sql(&self, table_name: &str, schema: &Schema) -> anyhow::Result<String> {
-        let columns = schema
-            .fields()
-            .iter()
-            .map(|f| {
-                let col_type = sql_type_for_arrow(f.data_type())?;
-                Ok::<_, anyhow::Error>(format!("{} {col_type}", self.quote_identifier(f.name())))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?
-            .join(", ");
+    fn is_table_not_found_error(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        message.contains("table does not exist")
+            || message.contains("table that does not exist")
+            || message.contains("tablenotfound")
+            || message.contains("tried to load a table that does not exist")
+    }
 
-        Ok(format!(
-            "CREATE TABLE IF NOT EXISTS {} ({columns})",
-            self.table_identifier(table_name)
-        ))
+    async fn wait_for_table_ready(&self, table_name: &str) -> anyhow::Result<()> {
+        let table_identifier = self.table_identifier(table_name);
+        let probe_sql = format!("SELECT 1 FROM {table_identifier} LIMIT 0");
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(TABLE_READY_MAX_WAIT_SECS);
+
+        loop {
+            let conn = Arc::clone(&self.conn);
+            let probe_sql = probe_sql.clone();
+
+            let probe_result = tokio::task::spawn_blocking(move || {
+                let mut guard = conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
+                guard
+                    .query(&probe_sql)
+                    .map_err(|e| anyhow::anyhow!("Table readiness probe failed: {e}"))?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await?;
+
+            match probe_result {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    if !Self::is_table_not_found_error(&err.to_string()) {
+                        return Err(err);
+                    }
+
+                    if std::time::Instant::now() >= deadline {
+                        return Err(err);
+                    }
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(TABLE_READY_RETRY_MS)).await;
+        }
     }
 
     async fn execute_sql_batch(&self, statements: Vec<String>) -> anyhow::Result<()> {
@@ -154,6 +173,8 @@ impl AdbcSink {
     async fn bulk_ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
         const MAX_RETRIES: u32 = 3;
         const INITIAL_BACKOFF_MS: u64 = 1000;
+
+        self.wait_for_table_ready(table_name).await?;
 
         let batch = normalize_utf8view_to_utf8(batch)?;
         let schema = batch.schema();
@@ -210,10 +231,14 @@ impl AdbcSink {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     let msg = e.to_string();
+                    let table_not_found = Self::is_table_not_found_error(&msg);
                     let is_retryable = msg.contains("does not exist")
                         || msg.contains("unavailable")
                         || msg.contains("Internal");
                     if is_retryable && attempt < MAX_RETRIES {
+                        if table_not_found {
+                            let _ = self.wait_for_table_ready(table_name).await;
+                        }
                         tracing::warn!(
                             table = %table_name,
                             attempt = attempt + 1,
@@ -228,28 +253,6 @@ impl AdbcSink {
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Bulk ingest failed after retries")))
-    }
-
-    fn insert_sql_for_rows(
-        &self,
-        table_name: &str,
-        batch: &RecordBatch,
-        row_range: std::ops::Range<usize>,
-    ) -> anyhow::Result<String> {
-        let mut tuples = Vec::with_capacity(row_range.len());
-        for row_idx in row_range {
-            let mut values = Vec::with_capacity(batch.num_columns());
-            for (column, field) in batch.columns().iter().zip(batch.schema().fields()) {
-                values.push(sql_literal_for_value(column, field.data_type(), row_idx)?);
-            }
-            tuples.push(format!("({})", values.join(", ")));
-        }
-
-        Ok(format!(
-            "INSERT INTO {} VALUES {}",
-            self.table_identifier(table_name),
-            tuples.join(", ")
-        ))
     }
 }
 
@@ -439,26 +442,8 @@ fn normalize_utf8view_to_utf8(batch: RecordBatch) -> anyhow::Result<RecordBatch>
         anyhow::anyhow!("Failed to rebuild RecordBatch after Utf8View normalization: {e}")
     })
 }
-
 fn quote_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
-}
-
-fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {
-    match data_type {
-        DataType::Boolean => Ok("BOOLEAN".to_string()),
-        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::UInt8 | DataType::UInt16 => {
-            Ok("INT".to_string())
-        }
-        DataType::Int64 | DataType::UInt32 | DataType::UInt64 => Ok("BIGINT".to_string()),
-        DataType::Float32 => Ok("FLOAT".to_string()),
-        DataType::Float64 => Ok("DOUBLE".to_string()),
-        DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING".to_string()),
-        DataType::Date32 => Ok("DATE".to_string()),
-        DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
-        DataType::Decimal128(p, s) => Ok(format!("DECIMAL({p}, {s})")),
-        other => anyhow::bail!("Unsupported Arrow data type for ADBC sink: {other:?}"),
-    }
 }
 
 fn sql_literal_for_value(

@@ -24,6 +24,7 @@ use std::collections::HashMap;
 
 use arrow::datatypes::SchemaRef;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::config::DatasetConfig;
 use crate::dataset::MutationConfig;
@@ -59,7 +60,8 @@ pub fn arrow_schema_to_json(schema: &SchemaRef) -> serde_json::Value {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionMetadata {
     /// The version identifier.
-    pub version: u64,
+    #[serde(deserialize_with = "deserialize_version")]
+    pub version: String,
     /// The scenario name (e.g. "tpch").
     pub scenario: String,
     /// The scale factor used for data generation.
@@ -72,6 +74,19 @@ pub struct VersionMetadata {
     pub mutations: MutationsMetadata,
     /// Per-table metadata, keyed by table name.
     pub tables: HashMap<String, TableMetadata>,
+}
+
+fn deserialize_version<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::String(s) => Ok(s),
+        Value::Number(n) => Ok(n.to_string()),
+        other => Err(serde::de::Error::custom(format!(
+            "invalid version value: expected string or number, got {other}"
+        ))),
+    }
 }
 
 impl VersionMetadata {
