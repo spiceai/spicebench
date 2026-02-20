@@ -14,22 +14,36 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#[cfg(feature = "duckdb")]
 use std::fs;
+#[cfg(feature = "duckdb")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "duckdb")]
 use std::sync::Arc;
 
+#[cfg(feature = "duckdb")]
 use arrow::array::RecordBatch;
+#[cfg(feature = "duckdb")]
 use checkpointer::CheckpointStore;
+#[cfg(feature = "duckdb")]
 use clap::Parser;
+#[cfg(feature = "duckdb")]
 use data_generation::config::{TargetConfig, build_version_prefix};
+#[cfg(feature = "duckdb")]
 use data_generation::storage::DataStorage;
+#[cfg(feature = "duckdb")]
 use data_generation::storage::s3::S3Storage;
+#[cfg(feature = "duckdb")]
 use etl::sink::duckdb::DuckDBSink;
+#[cfg(feature = "duckdb")]
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
+#[cfg(feature = "duckdb")]
 use parquet::arrow::ArrowWriter;
+#[cfg(feature = "duckdb")]
 use test_framework::Scenario;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(feature = "duckdb")]
 #[derive(Parser)]
 #[command(
     about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC"
@@ -72,6 +86,7 @@ struct Cli {
     checkpoint_dir: PathBuf,
 }
 
+#[cfg(feature = "duckdb")]
 impl Cli {
     /// Builds the source config with the versioned prefix:
     /// `{prefix}/{scenario}/{version}`
@@ -89,6 +104,7 @@ impl Cli {
 
 /// Run all checkpoint queries against the DuckDB sink and write each result
 /// set to a parquet file at `<checkpoint_dir>/<checkpoint_idx>/<query_idx>.parquet`.
+#[cfg(feature = "duckdb")]
 async fn run_checkpoint_queries(
     sink: &DuckDBSink,
     checkpoint_queries: &[String],
@@ -136,6 +152,7 @@ async fn run_checkpoint_queries(
 ///
 /// If `batches` is empty (the query returned zero rows) an empty parquet file
 /// containing only the schema from `result_schema` is written.
+#[cfg(feature = "duckdb")]
 fn write_batches_to_parquet(
     batches: &[RecordBatch],
     path: &Path,
@@ -156,127 +173,136 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let cli = Cli::parse();
+    #[cfg(not(feature = "duckdb"))]
+    {
+        tracing::error!(
+            "The Checkpointer currently only supports DuckDB as a sink. Please re-run with the `duckdb` feature enabled."
+        );
+    }
 
-    let scenario_name = cli.scenario.to_string();
-    let query_set = cli.scenario.load_query_set()?;
-    let checkpoint_queries: Vec<String> = query_set
-        .get_queries(None, None, None)
-        .await?
-        .iter()
-        .map(|q| q.sql.to_string())
-        .collect();
+    #[cfg(feature = "duckdb")]
+    {
+        let cli = Cli::parse();
 
-    let source_config = cli.source_config();
-    let version_prefix = source_config.prefix.clone();
-    let source = Arc::new(S3Storage::new(&source_config)?);
+        let scenario_name = cli.scenario.to_string();
+        let query_set = cli.scenario.load_query_set()?;
+        let checkpoint_queries: Vec<String> = query_set
+            .get_queries(None, None, None)
+            .await?
+            .iter()
+            .map(|q| q.sql.to_string())
+            .collect();
 
-    // Read version metadata to derive dataset config and mutations.
-    let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
+        let source_config = cli.source_config();
+        let version_prefix = source_config.prefix.clone();
+        let source = Arc::new(S3Storage::new(&source_config)?);
+
+        // Read version metadata to derive dataset config and mutations.
+        let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
         anyhow::anyhow!(
             "No version.json found at {version_prefix}. Was data generation run for this version?"
         )
     })?;
 
-    let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
-    let dataset_config = version_metadata.dataset_config();
-    let mutations = version_metadata.mutation_config();
+        let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
+        let dataset_config = version_metadata.dataset_config();
+        let mutations = version_metadata.mutation_config();
+        let target = Arc::new(DuckDBSink::new(&cli.duckdb_path)?);
+        let target_sink: Arc<dyn etl::sink::Sink> = Arc::clone(&target) as Arc<dyn etl::sink::Sink>;
 
-    let target = Arc::new(DuckDBSink::new(&cli.duckdb_path)?);
-    let target_sink: Arc<dyn etl::sink::Sink> = Arc::clone(&target) as Arc<dyn etl::sink::Sink>;
+        let mut pipeline = ETLPipeline::new(
+            dataset_source,
+            &dataset_config,
+            source,
+            target_sink,
+            &mutations,
+        )?;
 
-    let mut pipeline = ETLPipeline::new(
-        dataset_source,
-        &dataset_config,
-        source,
-        target_sink,
-        &mutations,
-    )?;
+        tracing::info!(
+            scenario = %scenario_name,
+            version = %cli.version,
+            dataset = %version_metadata.dataset_type,
+            bucket = %cli.bucket,
+            prefix = %cli.prefix,
+            version_prefix = %version_prefix,
+            duckdb_path = %cli.duckdb_path.display(),
+            scale_factor = version_metadata.scale_factor,
+            num_steps = version_metadata.num_steps,
+            checkpoint_interval = cli.checkpoint_interval_steps,
+            checkpoint_dir = %cli.checkpoint_dir.display(),
+            "Starting Checkpointer"
+        );
 
-    tracing::info!(
-        scenario = %scenario_name,
-        version = %cli.version,
-        dataset = %version_metadata.dataset_type,
-        bucket = %cli.bucket,
-        prefix = %cli.prefix,
-        version_prefix = %version_prefix,
-        duckdb_path = %cli.duckdb_path.display(),
-        scale_factor = version_metadata.scale_factor,
-        num_steps = version_metadata.num_steps,
-        checkpoint_interval = cli.checkpoint_interval_steps,
-        checkpoint_dir = %cli.checkpoint_dir.display(),
-        "Starting Checkpointer"
-    );
+        pipeline.initialize().await?;
+        pipeline.run(cli.checkpoint_interval_steps as usize).await?;
 
-    pipeline.initialize().await?;
-    pipeline.run(cli.checkpoint_interval_steps as usize).await?;
+        let mut checkpoint_idx: usize = 0;
 
-    let mut checkpoint_idx: usize = 0;
+        loop {
+            let state = pipeline.wait().await;
 
-    loop {
-        let state = pipeline.wait().await;
-
-        match state {
-            PipelineState::Paused => {
-                // Pipeline paused after a batch of steps — take a checkpoint.
-                tracing::info!(
-                    checkpoint = checkpoint_idx,
-                    "Pipeline paused, running checkpoint queries"
-                );
-                run_checkpoint_queries(
-                    &target,
-                    &checkpoint_queries,
-                    &cli.checkpoint_dir,
-                    checkpoint_idx,
-                )
-                .await?;
-                checkpoint_idx += 1;
-
-                // Resume the pipeline for the next batch of steps.
-                pipeline.continue_pipeline()?;
-            }
-            PipelineState::Stopped(StopReason::Completed) => {
-                // Take a final checkpoint at completion.
-                tracing::info!(
-                    checkpoint = checkpoint_idx,
-                    "Pipeline completed, running final checkpoint queries"
-                );
-                run_checkpoint_queries(
-                    &target,
-                    &checkpoint_queries,
-                    &cli.checkpoint_dir,
-                    checkpoint_idx,
-                )
-                .await?;
-
-                // Upload all checkpoints to S3 under the version prefix.
-                let checkpoint_store = CheckpointStore::new(
-                    &cli.bucket,
-                    &version_prefix,
-                    cli.region.as_deref(),
-                    cli.endpoint.as_deref(),
-                )?;
-                checkpoint_store
-                    .upload_checkpoints(
-                        &scenario_name,
+            match state {
+                PipelineState::Paused => {
+                    // Pipeline paused after a batch of steps — take a checkpoint.
+                    tracing::info!(
+                        checkpoint = checkpoint_idx,
+                        "Pipeline paused, running checkpoint queries"
+                    );
+                    run_checkpoint_queries(
+                        &target,
+                        &checkpoint_queries,
                         &cli.checkpoint_dir,
-                        cli.checkpoint_interval_steps as usize,
+                        checkpoint_idx,
+                    )
+                    .await?;
+                    checkpoint_idx += 1;
+
+                    // Resume the pipeline for the next batch of steps.
+                    pipeline.continue_pipeline()?;
+                }
+                PipelineState::Stopped(StopReason::Completed) => {
+                    // Take a final checkpoint at completion.
+                    tracing::info!(
+                        checkpoint = checkpoint_idx,
+                        "Pipeline completed, running final checkpoint queries"
+                    );
+                    run_checkpoint_queries(
+                        &target,
+                        &checkpoint_queries,
+                        &cli.checkpoint_dir,
+                        checkpoint_idx,
                     )
                     .await?;
 
-                tracing::info!("Checkpointer completed successfully");
-                break;
-            }
-            PipelineState::Stopped(StopReason::Cancelled) => {
-                tracing::warn!("Checkpointer was cancelled");
-                break;
-            }
-            PipelineState::Stopped(StopReason::Error(e)) => {
-                tracing::error!(error = %e, "Checkpointer stopped with error");
-                anyhow::bail!("Checkpointer failed: {e}");
-            }
-            other => {
-                anyhow::bail!("Unexpected final pipeline state: {other:?}");
+                    // Upload all checkpoints to S3 under the version prefix.
+                    let checkpoint_store = CheckpointStore::new(
+                        &cli.bucket,
+                        &version_prefix,
+                        cli.region.as_deref(),
+                        cli.endpoint.as_deref(),
+                    )?;
+                    checkpoint_store
+                        .upload_checkpoints(
+                            &scenario_name,
+                            &cli.checkpoint_dir,
+                            cli.checkpoint_interval_steps as usize,
+                        )
+                        .await?;
+
+                    tracing::info!("Checkpointer completed successfully");
+                    break;
+                }
+                PipelineState::Stopped(StopReason::Cancelled) => {
+                    tracing::warn!("Checkpointer was cancelled");
+                    break;
+                }
+                PipelineState::Stopped(StopReason::Error(e)) => {
+                    tracing::error!(error = %e, "Checkpointer stopped with error");
+                    anyhow::bail!("Checkpointer failed: {e}");
+                }
+                other => {
+                    anyhow::bail!("Unexpected final pipeline state: {other:?}");
+                }
             }
         }
     }
