@@ -1444,11 +1444,12 @@ impl Handler for DatabricksAdapter {
         let mut table_locations: HashMap<String, String> = HashMap::with_capacity(datasets.len());
 
         for (table_name, dataset_cfg) in &datasets {
-            let location = dataset_cfg.location.as_deref().ok_or_else(|| {
+            let _ = dataset_cfg.location.as_deref().ok_or_else(|| {
                 format!("Dataset '{table_name}' is missing required 'location' field")
             })?;
+        }
 
-        match self.config.variant {
+        match variant {
             DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
                 for (table_name, dataset_cfg) in &datasets {
                     let location = dataset_cfg.location.as_deref().ok_or_else(|| {
@@ -1465,16 +1466,16 @@ impl Handler for DatabricksAdapter {
 
                     let create_sql = self.create_table_ctas(table_name, location);
 
-            let create_sql = self.create_table_ctas(table_name, location);
+                    eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
 
-            eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+                    self.execute_sql_statement(&create_sql)
+                        .await
+                        .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
 
-            self.execute_sql_statement(&create_sql)
-                .await
-                .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
-
-            table_locations.insert(table_name.clone(), location.to_string());
-            created_tables.push(table_name.clone());
+                    table_locations.insert(table_name.clone(), location.to_string());
+                    created_tables.push(table_name.clone());
+                }
+            }
         }
 
         if let Some(state) = self.runs.get_mut(&run_id) {
@@ -1545,7 +1546,7 @@ impl Handler for DatabricksAdapter {
         if self.config.drop_tables_on_teardown {
             let table_count = state.created_tables.len();
             for table_name in &state.created_tables {
-                match self.config.variant {
+                match state.variant {
                     DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
                         let sql =
                             format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
