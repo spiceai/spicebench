@@ -126,10 +126,14 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
+          ETL_VERSION_INPUTS="tpch|spice_cloud|n/a|parquet|adbc|spiceai-public-datasets|pr-validation|us-east-1|false"
+          ETL_VERSION="auto-$(printf '%s' "${ETL_VERSION_INPUTS}" | sha256sum | cut -c1-16)"
+          echo "ETL_VERSION=${ETL_VERSION}" >> "$GITHUB_ENV"
+
           ~/.spice/bin/data-generation run \
             --dataset tpch \
             --scenario tpch \
-            --version 0 \
+            --version "${ETL_VERSION}" \
             --scale-factor 0.0001 \
             --bucket spiceai-public-datasets \
             --prefix pr-validation \
@@ -156,7 +160,7 @@ jobs:
             --scenario tpch \
             --etl-bucket spiceai-public-datasets \
             --etl-prefix pr-validation \
-            --etl-version 0 \
+            --etl-version "${ETL_VERSION}" \
             --etl-region us-east-1 \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
