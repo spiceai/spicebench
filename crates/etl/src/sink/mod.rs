@@ -37,5 +37,6 @@ pub trait Sink: Send + Sync + 'static {
         batch_id: u64,
         batch: RecordBatch,
         op: InsertOp,
+        partition_columns: Vec<String>,
     ) -> anyhow::Result<()>;
 }

@@ -57,6 +57,12 @@ struct Cli {
     /// Defaults to the source prefix if not specified.
     #[arg(long, default_value = "")]
     target_prefix: String,
+
+    /// Ordered list of columns used for hive-style partitioning.
+    ///
+    /// Example: `--partition-by __created_at,product_type`
+    #[arg(long, value_delimiter = ',', default_value = "__created_at")]
+    partition_by: Vec<String>,
 }
 
 impl Cli {
@@ -69,6 +75,7 @@ impl Cli {
             prefix: version_prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
+            partition_columns: vec![],
         }
     }
 }
@@ -116,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
         prefix: hive_prefix.clone(),
         region: cli.region.clone(),
         endpoint: cli.endpoint.clone(),
+        partition_columns: cli.partition_by.clone(),
     };
     let target = Arc::new(S3HiveSink::new(&hive_config)?);
 

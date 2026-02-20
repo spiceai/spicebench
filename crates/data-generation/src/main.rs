@@ -103,19 +103,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Initialize(args) => {
+        Command::Run(args) => {
             let ingestor = build(&args)?;
-            let result = ingestor.initialize().await?;
-
-            if result.write_errors > 0 {
-                anyhow::bail!("Initialization failed with {} errors", result.write_errors);
-            }
-        }
-        Command::Run(run_args) => {
-            let ingestor = build(&run_args.common)?;
-            if run_args.skip_initial {
-                ingestor.skip_initial_batches().await?;
-            }
             let result = ingestor.run().await?;
 
             println!("\n=== Ingestion Summary ===");

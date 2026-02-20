@@ -18,7 +18,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::Semaphore;
+use arrow::array::RecordBatch;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use super::config::IngestorConfig;
@@ -43,7 +44,6 @@ pub struct DataGenerator {
     dataset: Arc<dyn Dataset>,
     target: Arc<dyn DataStorage>,
     metrics: Metrics,
-    semaphore: Arc<Semaphore>,
     version_config: VersionConfig,
 }
 
@@ -51,7 +51,7 @@ impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
         target: Arc<dyn DataStorage>,
-        config: &IngestorConfig,
+        _config: &IngestorConfig,
         metrics: Metrics,
         version_config: VersionConfig,
     ) -> Self {
@@ -59,163 +59,107 @@ impl DataGenerator {
             dataset,
             target,
             metrics,
-            semaphore: Arc::new(Semaphore::new(config.max_concurrency)),
             version_config,
         }
     }
 
-    /// Seed the target with initial data — writes at least one batch per table.
+    /// Ingest data from the dataset into the target.
     ///
-    /// Pulls one batch per table from the dataset using `next_batches()`, then writes
-    /// them sequentially so the data is guaranteed to be present when this returns.
-    pub async fn initialize(&self) -> anyhow::Result<IngestResult> {
-        let table_count = self.dataset.tables().len();
-
-        tracing::info!(
-            table_count,
-            "Initializing target with seed data for all tables"
-        );
-
-        match self.dataset.next_batches().await {
-            Ok(Some(batches)) => {
-                // Write all tables concurrently within this step.
-                let mut join_set = JoinSet::new();
-                for (table_name, batch) in batches {
-                    self.metrics.record_generation(&batch);
-
-                    let target = self.target.clone();
-                    let metrics = self.metrics.clone();
-                    join_set.spawn(async move {
-                        let start = Instant::now();
-                        let result = target.write(&table_name, 0, batch).await?;
-                        metrics.record_write(&result, start.elapsed());
-                        Ok::<_, anyhow::Error>(())
-                    });
-                }
-                while let Some(result) = join_set.join_next().await {
-                    result??;
-                }
-            }
-            Ok(None) => {
-                tracing::warn!("Dataset exhausted during initialization");
-            }
-            Err(e) => return Err(e),
-        }
-
-        let summary = self.metrics.summary();
-        tracing::info!(
-            rows = summary.rows_written,
-            batches = summary.batches_written,
-            "Initialization complete"
-        );
-
-        Ok(summary)
-    }
-
-    /// Skip the initial batches that `initialize()` would have written.
-    ///
-    /// Consumes one round of batches (one per table) from the dataset without writing
-    /// them to the target. This advances the dataset past the initialization records
-    /// so that `run()` only processes new data.
-    pub async fn skip_initial_batches(&self) -> anyhow::Result<()> {
-        let table_count = self.dataset.tables().len();
-
-        tracing::info!(table_count, "Skipping initial batches for all tables");
-
-        match self.dataset.next_batches().await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                tracing::warn!("Dataset exhausted before all tables were skipped");
-            }
-            Err(e) => return Err(e),
-        }
-
-        tracing::info!("Initial batches skipped");
-
-        Ok(())
-    }
-
-    /// Ingest the remaining data from the dataset into the target.
-    ///
-    /// Pulls batches sequentially from the dataset and dispatches writes concurrently,
-    /// bounded by the configured `max_concurrency`. This continues from wherever the
-    /// dataset was left after `initialize()`.
+    /// Spawns one background task per table. Each table task generates the next
+    /// batch, waits for it, uploads it, and waits for the upload to complete
+    /// before moving to the next batch. All table tasks run concurrently, and
+    /// any error from a table task is propagated immediately.
     pub async fn run(&self) -> anyhow::Result<IngestResult> {
-        let mut join_set = JoinSet::new();
-
-        // Spawn periodic metrics logger
+        // Spawn periodic metrics logger (every 1 second)
         let metrics_logger = self.metrics.clone();
         let logger_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 interval.tick().await;
                 metrics_logger.log_progress();
             }
         });
 
-        let mut batch_ids = HashMap::new();
-        for table in self.dataset.tables().keys() {
-            batch_ids.insert(table.clone(), self.dataset.clone().batch_ids(table).await);
-        }
-
         // Track which batch IDs were successfully written per table so we can
         // persist them in the table metadata at the end of the run.
         let written_batch_ids: Arc<std::sync::Mutex<HashMap<String, Vec<u64>>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
 
-        loop {
-            let source_batches = match self.dataset.next_batches().await {
-                Ok(Some(batches)) => batches,
-                Ok(None) => break,
-                Err(e) => {
-                    tracing::error!("Dataset error: {e}");
-                    break;
+        // For each table, spawn a generator task and an uploader task connected
+        // by a bounded channel (capacity 4). The generator blocks when the
+        // channel is full, providing backpressure. The uploader drains the
+        // channel completely before exiting.
+        let mut join_set = JoinSet::new();
+        for table_name in self.dataset.tables().keys().cloned() {
+            let (tx, mut rx) = mpsc::channel::<(u64, RecordBatch)>(4);
+
+            // --- Generator task ---
+            let dataset = Arc::clone(&self.dataset);
+            let metrics_gen = self.metrics.clone();
+            let table_gen = table_name.clone();
+            join_set.spawn(async move {
+                let mut batch_id: u64 = 0;
+                loop {
+                    let batch = match dataset.next_batch(&table_gen).await {
+                        Ok(Some(b)) => b,
+                        Ok(None) => break,
+                        Err(e) => {
+                            return Err(anyhow::anyhow!(
+                                "Dataset error for table {table_gen}: {e}"
+                            ));
+                        }
+                    };
+                    metrics_gen.record_generation(&batch);
+                    // Blocks here when the channel holds 4 unread batches.
+                    if tx.send((batch_id, batch)).await.is_err() {
+                        // Uploader dropped the receiver; stop generating.
+                        break;
+                    }
+                    batch_id += 1;
                 }
-            };
+                // Dropping `tx` closes the channel, signalling the uploader.
+                Ok::<(), anyhow::Error>(())
+            });
 
-            for (table_name, batch) in source_batches {
-                self.metrics.record_generation(&batch);
-
-                // Acquire semaphore permit — creates backpressure if all write slots are busy
-                let permit = Arc::clone(&self.semaphore).acquire_owned().await?;
-
-                let target = self.target.clone();
-                let metrics = self.metrics.clone();
-                let next_batch_id = batch_ids
-                    .get_mut(&table_name)
-                    .and_then(|ids| ids.pop_front())
-                    .unwrap_or_else(|| {
-                        tracing::warn!(table = %table_name, "No more batch IDs available for this table");
-                        0
-                    });
-
-                let written_ids = Arc::clone(&written_batch_ids);
-                join_set.spawn(async move {
+            // --- Uploader task ---
+            let target = self.target.clone();
+            let metrics_up = self.metrics.clone();
+            let written_ids = Arc::clone(&written_batch_ids);
+            join_set.spawn(async move {
+                while let Some((batch_id, batch)) = rx.recv().await {
                     let start = Instant::now();
-                    match target.write(&table_name, next_batch_id, batch).await {
+                    match target.write(&table_name, batch_id, batch).await {
                         Ok(result) => {
-                            metrics.record_write(&result, start.elapsed());
+                            metrics_up.record_write(&result, start.elapsed());
                             written_ids
                                 .lock()
                                 .expect("written_batch_ids lock poisoned")
-                                .entry(table_name)
+                                .entry(table_name.clone())
                                 .or_default()
-                                .push(next_batch_id);
+                                .push(batch_id);
                         }
                         Err(e) => {
-                            metrics.record_error();
-                            tracing::error!(batch_id = next_batch_id, "Write failed: {e}");
+                            metrics_up.record_error();
+                            tracing::error!(batch_id, table = %table_name, "Write failed: {e}");
                         }
                     }
-                    drop(permit);
-                });
-            }
+                }
+                Ok::<(), anyhow::Error>(())
+            });
         }
 
-        // Wait for all in-flight writes
+        // Wait for all generator and uploader tasks, propagating any errors.
         while let Some(result) = join_set.join_next().await {
-            if let Err(e) = result {
-                tracing::error!("Write task panicked: {e}");
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    logger_handle.abort();
+                    return Err(e);
+                }
+                Err(e) => {
+                    logger_handle.abort();
+                    return Err(anyhow::anyhow!("Task panicked: {e}"));
+                }
             }
         }
 
@@ -293,5 +237,246 @@ impl DataGenerator {
         );
 
         Ok(summary)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+
+    use arrow::array::{Int64Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use async_trait::async_trait;
+
+    use crate::config::DatasetConfig;
+    use crate::dataset::{Dataset, DatasetTable, MutationConfig};
+    use crate::storage::{ReadResult, WriteResult};
+
+    fn test_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("_op", DataType::Utf8, false),
+        ]))
+    }
+
+    fn test_batch(start: i64, len: usize) -> RecordBatch {
+        let ids = Int64Array::from_iter_values((start..start + len as i64).collect::<Vec<_>>());
+        let ops = StringArray::from(vec!["c"; len]);
+        RecordBatch::try_new(test_schema(), vec![Arc::new(ids), Arc::new(ops)])
+            .expect("test batch should be valid")
+    }
+
+    struct MockDataset {
+        tables: HashMap<String, DatasetTable>,
+        /// Per-table queue of batches. Each entry is the next batch to return
+        /// for that table; `None` is never stored — the queue simply becomes
+        /// empty when exhausted.
+        table_batches: HashMap<String, Mutex<Vec<RecordBatch>>>,
+    }
+
+    impl MockDataset {
+        fn new() -> Self {
+            let schema = test_schema();
+            let tables = HashMap::from([
+                (
+                    "a".to_string(),
+                    DatasetTable {
+                        name: "a".to_string(),
+                        schema: schema.clone(),
+                        time_column: "a_created_at".to_string(),
+                    },
+                ),
+                (
+                    "b".to_string(),
+                    DatasetTable {
+                        name: "b".to_string(),
+                        schema,
+                        time_column: "b_created_at".to_string(),
+                    },
+                ),
+            ]);
+
+            // Table "a": 3 batches; table "b": 2 batches.
+            let table_batches = HashMap::from([
+                (
+                    "a".to_string(),
+                    Mutex::new(vec![test_batch(0, 2), test_batch(10, 2), test_batch(20, 2)]),
+                ),
+                (
+                    "b".to_string(),
+                    Mutex::new(vec![test_batch(100, 3), test_batch(110, 3)]),
+                ),
+            ]);
+
+            Self {
+                tables,
+                table_batches,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Dataset for MockDataset {
+        fn create(
+            _config: &DatasetConfig,
+            _mutations: &MutationConfig,
+            _storage: Arc<dyn DataStorage>,
+        ) -> anyhow::Result<Arc<dyn Dataset>>
+        where
+            Self: Sized + 'static,
+        {
+            anyhow::bail!("not used in tests")
+        }
+
+        fn storage(self: Arc<Self>) -> Arc<dyn DataStorage> {
+            Arc::new(MockStorage::new())
+        }
+
+        fn primary_key(&self, _table: &str) -> Vec<String> {
+            vec![]
+        }
+
+        fn num_batches(&self, table: &str) -> u64 {
+            self.table_batches
+                .get(table)
+                .map_or(0, |q| q.lock().expect("queue lock poisoned").len() as u64)
+        }
+
+        async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
+            let batch = self.table_batches.get(table).and_then(|q| {
+                let mut queue = q.lock().expect("queue lock poisoned");
+                if queue.is_empty() {
+                    None
+                } else {
+                    Some(queue.remove(0))
+                }
+            });
+            Ok(batch)
+        }
+
+        fn tables(&self) -> HashMap<String, DatasetTable> {
+            self.tables.clone()
+        }
+    }
+
+    #[derive(Default)]
+    struct MockStorageState {
+        seen_ids: HashMap<String, HashSet<u64>>,
+        rows_written: u64,
+        table_batch_ids: HashMap<String, Vec<u64>>,
+        version_written: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct MockStorage {
+        state: Arc<Mutex<MockStorageState>>,
+    }
+
+    impl MockStorage {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn snapshot(&self) -> MockStorageState {
+            let s = self.state.lock().expect("state lock poisoned");
+            MockStorageState {
+                seen_ids: s.seen_ids.clone(),
+                rows_written: s.rows_written,
+                table_batch_ids: s.table_batch_ids.clone(),
+                version_written: s.version_written,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DataStorage for MockStorage {
+        async fn list_batches(&self, _table_name: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn read_batch(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+        ) -> anyhow::Result<Option<ReadResult>> {
+            Ok(None)
+        }
+
+        async fn write(
+            &self,
+            table_name: &str,
+            batch_id: u64,
+            batch: RecordBatch,
+        ) -> anyhow::Result<WriteResult> {
+            let mut state = self.state.lock().expect("state lock poisoned");
+            let inserted = state
+                .seen_ids
+                .entry(table_name.to_string())
+                .or_default()
+                .insert(batch_id);
+            if !inserted {
+                anyhow::bail!("duplicate batch id {batch_id} for table {table_name}");
+            }
+
+            state
+                .table_batch_ids
+                .entry(table_name.to_string())
+                .or_default()
+                .push(batch_id);
+            state.rows_written += batch.num_rows() as u64;
+
+            Ok(WriteResult {
+                rows_written: batch.num_rows() as u64,
+                bytes_written: 0,
+            })
+        }
+
+        async fn write_version_metadata(&self, _metadata: &VersionMetadata) -> anyhow::Result<()> {
+            let mut state = self.state.lock().expect("state lock poisoned");
+            state.version_written = true;
+            Ok(())
+        }
+
+        fn table_params(&self, _table_name: &str) -> HashMap<String, serde_json::Value> {
+            HashMap::new()
+        }
+
+        fn expected_files(&self, _table_name: &str, _batch_ids: &[u64]) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn run_writes_all_batches_with_unique_sequential_ids() {
+        let dataset: Arc<dyn Dataset> = Arc::new(MockDataset::new());
+        let storage = Arc::new(MockStorage::new());
+        let target: Arc<dyn DataStorage> = storage.clone();
+
+        let generator = DataGenerator::new(
+            dataset,
+            target,
+            &IngestorConfig { max_concurrency: 4 },
+            Metrics::new(),
+            VersionConfig {
+                version: "v1".to_string(),
+                scenario: "test".to_string(),
+                scale_factor: 1.0,
+                num_steps: 3,
+                dataset_type: "mock".to_string(),
+                update_ratio: 0.0,
+                delete_ratio: 0.0,
+            },
+        );
+
+        let result = generator.run().await.expect("run should succeed");
+        assert_eq!(result.write_errors, 0);
+
+        let snapshot = storage.snapshot();
+        assert_eq!(snapshot.rows_written, 12);
+        assert_eq!(snapshot.table_batch_ids.get("a"), Some(&vec![0, 1, 2]));
+        assert_eq!(snapshot.table_batch_ids.get("b"), Some(&vec![0, 1]));
+        assert!(snapshot.version_written);
     }
 }

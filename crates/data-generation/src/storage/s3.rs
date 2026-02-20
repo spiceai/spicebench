@@ -19,6 +19,7 @@ use std::sync::Arc;
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectPath;
+use object_store::{BackoffConfig, ClientOptions, RetryConfig};
 
 use crate::config::TargetConfig;
 use crate::storage::DataStorage;
@@ -33,6 +34,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
+use std::env;
+use std::time::{Duration, Instant};
 
 use super::{ReadResult, WriteResult};
 
@@ -60,7 +63,52 @@ pub struct S3Storage {
 
 impl S3Storage {
     pub fn new(config: &TargetConfig) -> anyhow::Result<Self> {
+        let request_timeout_secs = env::var("SPICEBENCH_S3_REQUEST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(180);
+        let connect_timeout_secs = env::var("SPICEBENCH_S3_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(10);
+        let max_retries = env::var("SPICEBENCH_S3_MAX_RETRIES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(15);
+        let retry_timeout_secs = env::var("SPICEBENCH_S3_RETRY_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(600);
+        let pool_max_idle_per_host = env::var("SPICEBENCH_S3_POOL_MAX_IDLE_PER_HOST")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(64);
+
+        let client_options = ClientOptions::new()
+            .with_timeout(Duration::from_secs(request_timeout_secs))
+            .with_connect_timeout(Duration::from_secs(connect_timeout_secs))
+            .with_pool_idle_timeout(Duration::from_secs(90))
+            .with_pool_max_idle_per_host(pool_max_idle_per_host);
+
+        let retry_config = RetryConfig {
+            backoff: BackoffConfig::default(),
+            max_retries,
+            retry_timeout: Duration::from_secs(retry_timeout_secs),
+        };
+
+        tracing::info!(
+            request_timeout_secs,
+            connect_timeout_secs,
+            max_retries,
+            retry_timeout_secs,
+            pool_max_idle_per_host,
+            "Configured S3 client timeout/retry settings"
+        );
+
         let mut builder = AmazonS3Builder::from_env().with_bucket_name(&config.bucket);
+        builder = builder
+            .with_client_options(client_options)
+            .with_retry(retry_config);
 
         if let Some(region) = &config.region {
             tracing::info!("S3 storage with region: {region}");
@@ -182,6 +230,7 @@ impl DataStorage for S3Storage {
     ) -> anyhow::Result<WriteResult> {
         let rows = batch.num_rows() as u64;
         let schema = batch.schema();
+        let start = Instant::now();
 
         // Serialize RecordBatch to Parquet bytes in memory
         let props = WriterProperties::builder()
@@ -192,6 +241,7 @@ impl DataStorage for S3Storage {
         let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props))?;
         writer.write(&batch)?;
         writer.close()?;
+        let serialize_elapsed = start.elapsed();
 
         let bytes_written = buf.len() as u64;
 
@@ -199,6 +249,40 @@ impl DataStorage for S3Storage {
         let path = self.batch_object_path(table_name, batch_id);
 
         self.store.put(&path, PutPayload::from(buf)).await?;
+        let total_elapsed = start.elapsed();
+        let upload_elapsed = total_elapsed.saturating_sub(serialize_elapsed);
+
+        if total_elapsed.as_secs() >= 5 {
+            tracing::warn!(
+                table = %table_name,
+                batch_id,
+                rows,
+                bytes = bytes_written,
+                serialize_ms = serialize_elapsed.as_millis(),
+                upload_ms = upload_elapsed.as_millis(),
+                total_ms = total_elapsed.as_millis(),
+                mb_per_sec = format!(
+                    "{:.2}",
+                    if total_elapsed.is_zero() {
+                        0.0
+                    } else {
+                        bytes_written as f64 / total_elapsed.as_secs_f64() / 1_048_576.0
+                    }
+                ),
+                "Slow S3 batch write"
+            );
+        } else {
+            tracing::debug!(
+                table = %table_name,
+                batch_id,
+                rows,
+                bytes = bytes_written,
+                serialize_ms = serialize_elapsed.as_millis(),
+                upload_ms = upload_elapsed.as_millis(),
+                total_ms = total_elapsed.as_millis(),
+                "S3 batch write"
+            );
+        }
 
         Ok(WriteResult {
             rows_written: rows,
