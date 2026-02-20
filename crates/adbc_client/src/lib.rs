@@ -17,10 +17,12 @@ limitations under the License.
 pub mod databricks;
 pub mod spiceai;
 
+pub use adbc_core::options::IngestMode;
+
 use std::collections::HashMap;
 
-use adbc_core::options::{AdbcVersion, OptionDatabase, OptionValue};
-use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Statement};
+use adbc_core::options::{self, AdbcVersion, OptionDatabase, OptionValue};
+use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Optionable, Statement};
 use adbc_driver_manager::ManagedDriver;
 use arrow_array::RecordBatch;
 use snafu::prelude::*;
@@ -117,5 +119,77 @@ impl AdbcConnection {
         reader
             .collect::<std::result::Result<Vec<_>, _>>()
             .context(ReadBatchSnafu)
+    }
+
+    /// Bulk-ingest a [`RecordBatch`] into a target table using the ADBC bulk
+    /// ingest API.
+    ///
+    /// This binds the batch directly to a statement configured with the
+    /// target table and ingest mode, avoiding the overhead of constructing
+    /// individual SQL INSERT statements.
+    pub fn bulk_ingest(
+        &mut self,
+        target_table: &str,
+        target_db_schema: Option<&str>,
+        mode: options::IngestMode,
+        batch: RecordBatch,
+    ) -> Result<Option<i64>> {
+        self.bulk_ingest_stream(
+            target_table,
+            target_db_schema,
+            mode,
+            Box::new(arrow_array::RecordBatchIterator::new(
+                std::iter::once(Ok(batch.clone())),
+                batch.schema(),
+            )),
+        )
+    }
+
+    /// Bulk-ingest a stream of [`RecordBatch`]es into a target table using a
+    /// single ADBC statement with `bind_stream`.
+    ///
+    /// This is more efficient than calling [`bulk_ingest`](Self::bulk_ingest)
+    /// per batch because it reuses the same statement and network connection.
+    pub fn bulk_ingest_stream(
+        &mut self,
+        target_table: &str,
+        target_db_schema: Option<&str>,
+        mode: options::IngestMode,
+        reader: Box<dyn arrow_array::RecordBatchReader + Send>,
+    ) -> Result<Option<i64>> {
+        let mut stmt = self.conn.new_statement().map_err(|e| Error::ExecuteQuery {
+            reason: e.to_string(),
+        })?;
+
+        stmt.set_option(
+            options::OptionStatement::TargetTable,
+            OptionValue::from(target_table),
+        )
+        .map_err(|e| Error::ExecuteQuery {
+            reason: format!("Failed to set target table: {e}"),
+        })?;
+
+        if let Some(schema) = target_db_schema {
+            stmt.set_option(
+                options::OptionStatement::TargetDbSchema,
+                OptionValue::from(schema),
+            )
+            .map_err(|e| Error::ExecuteQuery {
+                reason: format!("Failed to set target db schema: {e}"),
+            })?;
+        }
+
+        stmt.set_option(options::OptionStatement::IngestMode, mode.into())
+            .map_err(|e| Error::ExecuteQuery {
+                reason: format!("Failed to set ingest mode: {e}"),
+            })?;
+
+        stmt.bind_stream(reader).map_err(|e| Error::ExecuteQuery {
+            reason: format!("Failed to bind stream for bulk ingest: {e}"),
+        })?;
+
+        stmt.execute_update().map_err(|e| Error::ExecuteQuery {
+            reason: format!("Bulk ingest execution failed: {e}"),
+        })
     }
 }

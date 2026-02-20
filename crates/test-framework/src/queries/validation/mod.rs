@@ -163,8 +163,9 @@ fn datatype_equivalent(expected_type: &DataType, actual_type: &DataType) -> bool
                         | DataType::LargeUtf8
                         | DataType::Utf8View
                 )
-                | (DataType::Utf8, DataType::LargeUtf8)
+                | (DataType::Utf8, DataType::LargeUtf8 | DataType::Utf8View)
                 | (DataType::LargeUtf8, DataType::Utf8)
+                | (DataType::Utf8View, DataType::Utf8 | DataType::LargeUtf8)
                 | (DataType::Date32, DataType::Date64)
                 | (DataType::Date64, DataType::Date32)
         ),

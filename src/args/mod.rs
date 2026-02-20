@@ -27,6 +27,23 @@ pub enum TableFormat {
     Delta,
 }
 
+#[derive(Clone, Debug, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum EtlSinkMode {
+    Adbc,
+    IcebergObjectStore,
+}
+
+impl std::fmt::Display for EtlSinkMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Adbc => "adbc",
+            Self::IcebergObjectStore => "iceberg-object-store",
+        };
+        write!(f, "{value}")
+    }
+}
+
 impl std::fmt::Display for TableFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
@@ -110,7 +127,7 @@ pub struct CommonArgs {
 
     /// Version identifier for the data generation to read from.
     #[arg(long)]
-    pub(crate) etl_version: u64,
+    pub(crate) etl_version: String,
 
     /// Base S3 key prefix for the ETL target (rehydrated) data.
     /// A random suffix is appended automatically to create a unique destination per run.
@@ -124,6 +141,10 @@ pub struct CommonArgs {
     /// S3 endpoint URL for the ETL bucket (for MinIO/LocalStack)
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
+
+    /// ETL sink mode to use for writing transformed batches.
+    #[arg(long, value_enum, default_value = "adbc")]
+    pub(crate) etl_sink_mode: EtlSinkMode,
 
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]

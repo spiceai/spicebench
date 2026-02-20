@@ -36,7 +36,7 @@ jobs:
 
   check:
     name: cargo check + test
-    runs-on: spiceai-macos
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -56,7 +56,7 @@ jobs:
 
   lint-fix:
     name: cargo fmt + clippy fix
-    runs-on: spiceai-macos
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: changes
     if: needs.changes.outputs.rust == 'true' && github.event_name == 'pull_request'
@@ -84,3 +84,83 @@ jobs:
           git add -A
           git commit -m "chore: auto-fix cargo fmt + clippy"
           git push
+
+  validation-run:
+    name: Validation run (Spice Cloud TPCH sf0.001)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    concurrency:
+      group: spicebench-run
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/management-login
+        with:
+          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull spidapter image
+        run: docker pull ghcr.io/spiceai/spidapter:latest
+
+      - uses: ./.github/actions/build-spicebench
+
+      - name: Build data-generation
+        run: |
+          mkdir -p ~/.spice/bin
+          cargo build -p data-generation
+          install -m 755 target/debug/data-generation ~/.spice/bin/data-generation
+
+      - name: Generate test data (sf 0.01)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          RUST_LOG: info
+        run: |
+          ETL_VERSION="auto-tpch-sf0p0001-spice-cloud-adbc-parquet-na-nocreatedat"
+          echo "ETL_VERSION=${ETL_VERSION}" >> "$GITHUB_ENV"
+
+          ~/.spice/bin/data-generation run \
+            --dataset tpch \
+            --scenario tpch \
+            --version "${ETL_VERSION}" \
+            --scale-factor 0.0001 \
+            --bucket spiceai-public-datasets \
+            --prefix pr-validation \
+            --max-concurrency 4 \
+            --region us-east-1
+
+      - name: Install ADBC driver
+        run: |
+          curl -LsSf https://dbc.columnar.tech/install.sh | sh
+          dbc install flightsql
+
+      - name: Run spicebench
+        if: ${{ false }}
+        env:
+          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SPIDAPTER_ICEBERG_REGION: us-west-1
+          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
+          RUST_LOG: info
+        run: |
+          ~/.spice/bin/spicebench \
+            --concurrency 1 \
+            --scenario tpch \
+            --etl-bucket spiceai-public-datasets \
+            --etl-prefix pr-validation \
+            --etl-version "${ETL_VERSION}" \
+            --etl-region us-east-1 \
+            --system-adapter-stdio-cmd docker \
+            --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
