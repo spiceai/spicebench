@@ -184,6 +184,7 @@ dependencies = [
  "anyhow",
  "arrow-schema",
  "async-trait",
+ "base64",
  "clap",
  "reqwest",
  "serde",
