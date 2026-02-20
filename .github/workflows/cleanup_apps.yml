@@ -1,0 +1,22 @@
+name: cleanup apps
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-data-generation:
+    name: Run data generation
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - uses: ./.github/actions/management-login
+        if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
+        with:
+          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+      
+      - name: Install Spice
+        run: |
+          curl https://install.spiceai.org | /bin/bash
