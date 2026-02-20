@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "db39ae0389ea",
+  "session_id": "887afde8-1399-4886-9f9e-dd7fd6bd3594",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-20T16:26:42.927317Z",
+  "branch": "jeadie/26-02-20/metrics",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "system-adapters/databricks/src/main.rs"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "5744510b5f65",
+  "transcript_identifier_at_start": "c9a2a482-fee5-4014-912c-b9f7c69df404",
+  "token_usage": {
+    "input_tokens": 278,
+    "cache_creation_tokens": 10734,
+    "cache_read_tokens": 208153,
+    "output_tokens": 92,
+    "api_call_count": 8
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-20T16:26:42.850112Z",
+    "agent_lines": 3,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 3,
+    "agent_percentage": 100
+  },
+  "transcript_path": ".claude/projects/-Users-jeadie-Github-spicebench-2/887afde8-1399-4886-9f9e-dd7fd6bd3594.jsonl"
+}

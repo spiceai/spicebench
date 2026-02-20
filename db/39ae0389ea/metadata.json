@@ -3,7 +3,7 @@
   "checkpoint_id": "db39ae0389ea",
   "strategy": "manual-commit",
   "branch": "jeadie/26-02-20/metrics",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "system-adapters/databricks/src/main.rs"
   ],
@@ -14,13 +14,20 @@
       "context": "/db/39ae0389ea/0/context.md",
       "content_hash": "/db/39ae0389ea/0/content_hash.txt",
       "prompt": "/db/39ae0389ea/0/prompt.txt"
+    },
+    {
+      "metadata": "/db/39ae0389ea/1/metadata.json",
+      "transcript": "/db/39ae0389ea/1/full.jsonl",
+      "context": "/db/39ae0389ea/1/context.md",
+      "content_hash": "/db/39ae0389ea/1/content_hash.txt",
+      "prompt": "/db/39ae0389ea/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 22,
-    "cache_creation_tokens": 68389,
-    "cache_read_tokens": 1474150,
-    "output_tokens": 283,
-    "api_call_count": 20
+    "input_tokens": 300,
+    "cache_creation_tokens": 79123,
+    "cache_read_tokens": 1682303,
+    "output_tokens": 375,
+    "api_call_count": 28
   }
 }
