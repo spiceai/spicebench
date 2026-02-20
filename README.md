@@ -182,6 +182,23 @@ Common CLI/workflow usage:
 | Efficiency              | `efficiency_queries_per_core` (Gauge)            | Query throughput normalized by CPU cores              | ✅ Implemented   |
 | E2E Latency             | `e2e_latency_ms` (Histogram)                     | Time from event creation to the event being queryable | 🔲 Not yet wired |
 
+#### Grafana Dashboard
+
+A prebuilt Grafana dashboard for these benchmark metrics is available at:
+
+- `dashboards/spicebench-benchmarks.grafana.json`
+
+Included dashboard filters and sections:
+
+- Variables: `scenario`, `scale_factor`
+- Client Metrics panels: `Num Clients`, `P99 Queue Time`, `Query Queue Count`
+
+To use it in Grafana:
+
+1. Go to **Dashboards → New → Import**.
+2. Upload `dashboards/spicebench-benchmarks.grafana.json`.
+3. Select your InfluxDB datasource (the dashboard queries the `benchmarks-telemetry` bucket).
+
 #### Streaming Metrics (optional, `--otlp-endpoint`)
 
 | Metric                                     | Type             | Description                  |
