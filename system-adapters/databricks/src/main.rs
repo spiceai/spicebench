@@ -162,6 +162,7 @@ enum TableFormat {
 }
 
 impl TableFormat {
+    #[allow(dead_code)]
     fn as_sql_using(self) -> &'static str {
         match self {
             Self::Parquet => "PARQUET",
@@ -182,6 +183,7 @@ impl TableFormat {
 
 #[derive(Debug, Clone)]
 struct RunState {
+    #[allow(dead_code)]
     table_format: TableFormat,
     created_tables: Vec<String>,
     cluster_id: Option<String>,
@@ -384,6 +386,7 @@ impl DatabricksAdapter {
         )
     }
 
+    #[allow(dead_code)]
     fn sql_type_for_arrow(data_type: &DataType) -> Result<String> {
         match data_type {
             DataType::Boolean => Ok("BOOLEAN".to_string()),
@@ -408,6 +411,7 @@ impl DatabricksAdapter {
         }
     }
 
+    #[allow(dead_code)]
     fn create_table_ddl(
         &self,
         table_name: &str,
