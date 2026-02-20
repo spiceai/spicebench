@@ -122,21 +122,15 @@ async fn run_benchmark(
     let mutations = version_metadata.mutation_config();
     let data_source: Arc<dyn DataStorage> = source.clone();
 
-    let target: Arc<dyn Sink> = {
-        let hive_prefix = s3_hive_target_prefix(common, &scenario_name, run_id);
-        let hive_config = TargetConfig {
-            bucket: common.etl_bucket.clone(),
-            prefix: hive_prefix.clone(),
-            region: common.etl_region.clone(),
-            endpoint: common.etl_endpoint.clone(),
-        };
-        let sink = S3HiveSink::new(&hive_config)?;
-        println!(
-            "S3 hive sink initialized at s3://{}/{}",
-            common.etl_bucket, hive_prefix
-        );
-        Arc::new(sink)
+    let hive_prefix = s3_hive_target_prefix(common, &scenario_name, run_id);
+    let hive_config = TargetConfig {
+        bucket: common.etl_bucket.clone(),
+        prefix: hive_prefix.clone(),
+        region: common.etl_region.clone(),
+        endpoint: common.etl_endpoint.clone(),
     };
+
+    let target: Arc<dyn Sink> = Arc::new(S3HiveSink::new(&hive_config)?);
 
     let mut pipeline = ETLPipeline::new(
         dataset_source,
@@ -144,7 +138,8 @@ async fn run_benchmark(
         Arc::clone(&data_source),
         target,
         &mutations,
-    )?;
+    )?
+    .with_target_config(hive_config.clone());
 
     // --- Call setup with datasets to provision the SUT ---
     let setup_response = system_adapter_client

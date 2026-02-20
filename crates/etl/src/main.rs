@@ -120,7 +120,8 @@ async fn main() -> anyhow::Result<()> {
     let target = Arc::new(S3HiveSink::new(&hive_config)?);
 
     let mut pipeline =
-        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
+        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?
+            .with_target_config(hive_config.clone());
 
     tracing::info!(
         scenario = %cli.scenario,
