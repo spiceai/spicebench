@@ -319,10 +319,8 @@ impl SpiceTest<NotStarted> {
             .with_skip_row_count_validation(row_count_validation_skip_queries.clone());
 
             // Give checkpoint validation handles to worker 0 only.
-            if id == 0 {
-                if let Some(handles) = checkpoint_validation_handles.take() {
-                    worker = worker.with_validation_handles(handles);
-                }
+            if id == 0 && let Some(handles) = checkpoint_validation_handles.take() {
+                worker = worker.with_validation_handles(handles);
             }
 
             if let Some(multi) = &multi {
