@@ -183,7 +183,7 @@ jobs:
         if: steps.cache-checkpointer.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.spice/bin
-          cargo build --release -p checkpointer
+          cargo build --release --features duckdb -p checkpointer
           install -m 755 target/release/checkpointer ~/.spice/bin/checkpointer
 
       - name: Run checkpointer
