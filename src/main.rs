@@ -254,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
     ]);
 
     let adbc_driver = match system_adapter_client
-        .setup(run_id.clone(), setup_metadata)
+        .setup(run_id, setup_metadata)
         .await
     {
         Ok(response) => response,
@@ -267,7 +267,7 @@ async fn main() -> anyhow::Result<()> {
     let result = run_benchmark(
         &cli.common,
         Arc::clone(&system_adapter_client),
-        run_id.clone(),
+        run_id,
         adbc_driver,
         &version_metadata,
         source,
