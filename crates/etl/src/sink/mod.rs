@@ -18,6 +18,7 @@ use arrow::array::RecordBatch;
 use async_trait::async_trait;
 
 pub mod adbc;
+pub mod iceberg;
 
 #[cfg(feature = "duckdb")]
 pub mod duckdb;

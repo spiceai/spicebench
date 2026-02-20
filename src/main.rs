@@ -24,6 +24,8 @@ use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
 use etl::sink::adbc::AdbcSink;
+use etl::sink::iceberg::{IcebergObjectStoreConfig, IcebergSink};
+use etl::sink::Sink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tracing::Level;
@@ -34,7 +36,7 @@ mod commands;
 mod metrics;
 mod scenario;
 
-use crate::args::CommonArgs;
+use crate::args::{CommonArgs, EtlSinkMode};
 use crate::commands::connect_system_adapter;
 
 #[derive(Parser)]
@@ -111,15 +113,34 @@ async fn run_benchmark(
     let sink_kwargs = adbc_driver.db_kwargs.clone();
     let load_kwargs = adbc_driver.db_kwargs;
 
-    let adbc_conn = AdbcConnection::create(&driver_name, sink_kwargs).map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to create ADBC connection for driver {}: {e}",
-            driver_name
-        )
-    })?;
-    println!("ADBC connection established (driver: {})", driver_name);
-
-    let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
+    let target: Arc<dyn Sink> = match common.etl_sink_mode {
+        EtlSinkMode::Adbc => {
+            let adbc_conn = AdbcConnection::create(&driver_name, sink_kwargs).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to create ADBC connection for driver {}: {e}",
+                    driver_name
+                )
+            })?;
+            println!("ADBC sink connection established (driver: {})", driver_name);
+            Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None))
+        }
+        EtlSinkMode::IcebergObjectStore => {
+            let mut target_prefix = common.etl_target_base_prefix.trim_matches('/').to_string();
+            if target_prefix.is_empty() {
+                target_prefix = "etl-iceberg-output".to_string();
+            }
+            let iceberg_prefix = format!("{target_prefix}/{scenario_name}/{run_id}");
+            let sink = IcebergSink::new(IcebergObjectStoreConfig {
+                warehouse_uri: format!("s3://{}/{}", common.etl_bucket, iceberg_prefix),
+                namespace: vec!["spicebench".to_string(), "etl".to_string()],
+                s3_region: common.etl_region.clone(),
+                s3_endpoint: common.etl_endpoint.clone(),
+            })
+            .await?;
+            println!("Iceberg sink initialized at s3://{}/{}", common.etl_bucket, iceberg_prefix);
+            Arc::new(sink)
+        }
+    };
 
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let generation_config = version_metadata.dataset_config();
@@ -244,6 +265,10 @@ async fn main() -> anyhow::Result<()> {
         (
             "table_format".to_string(),
             serde_json::Value::String(cli.common.table_format.to_string()),
+        ),
+        (
+            "etl_sink_mode".to_string(),
+            serde_json::Value::String(cli.common.etl_sink_mode.to_string()),
         ),
     ]);
 

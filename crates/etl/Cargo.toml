@@ -25,6 +25,8 @@ chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
 duckdb = { workspace = true, optional = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
+iceberg = { version = "0.8.0", default-features = false, features = ["storage-s3"] }
+parquet.workspace = true
 serde_json.workspace = true
 system-adapter-protocol = { path = "../system-adapter-protocol" }
 tokio.workspace = true

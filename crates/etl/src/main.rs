@@ -17,18 +17,27 @@ limitations under the License.
 use std::sync::Arc;
 
 use adbc_client::AdbcConnection;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use etl::sink::adbc::AdbcSink;
+use etl::sink::iceberg::{IcebergObjectStoreConfig, IcebergSink};
+use etl::sink::Sink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum EtlSinkMode {
+    Adbc,
+    IcebergObjectStore,
+}
+
 #[derive(Parser)]
 #[command(
-    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC"
+    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to either ADBC or Iceberg object storage"
 )]
 struct Cli {
     /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
@@ -55,17 +64,25 @@ struct Cli {
     #[arg(long)]
     endpoint: Option<String>,
 
+    /// Output sink mode for ETL writes.
+    #[arg(long, value_enum, default_value = "adbc")]
+    sink_mode: EtlSinkMode,
+
     /// ADBC driver name (for example: databricks, flightsql)
     #[arg(long)]
-    adbc_driver: String,
+    adbc_driver: Option<String>,
 
     /// ADBC connection URI passed as db option `uri`
     #[arg(long)]
-    adbc_uri: String,
+    adbc_uri: Option<String>,
 
     /// Optional schema name to prefix destination table names
     #[arg(long)]
     adbc_schema: Option<String>,
+
+    /// Iceberg target base prefix in the object store bucket.
+    #[arg(long, default_value = "etl-iceberg-output")]
+    iceberg_target_prefix: String,
 
     /// Append a `__created_at` timestamp column to every batch written to the sink.
     #[arg(long, default_value_t = false)]
@@ -109,11 +126,43 @@ async fn main() -> anyhow::Result<()> {
     let dataset_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
 
-    let adbc_conn = AdbcConnection::create(
-        &cli.adbc_driver,
-        std::collections::HashMap::from([("uri".to_string(), Value::String(cli.adbc_uri.clone()))]),
-    )?;
-    let target = Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()));
+    let target: Arc<dyn Sink> = match cli.sink_mode {
+        EtlSinkMode::Adbc => {
+            let adbc_driver = cli
+                .adbc_driver
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("--adbc-driver is required when --sink-mode=adbc"))?;
+            let adbc_uri = cli
+                .adbc_uri
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("--adbc-uri is required when --sink-mode=adbc"))?;
+            let adbc_conn = AdbcConnection::create(
+                adbc_driver,
+                std::collections::HashMap::from([(
+                    "uri".to_string(),
+                    Value::String(adbc_uri.clone()),
+                )]),
+            )?;
+            Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()))
+        }
+        EtlSinkMode::IcebergObjectStore => {
+            let iceberg_prefix = format!(
+                "{}/{}/{}/{}",
+                cli.iceberg_target_prefix.trim_matches('/'),
+                cli.scenario,
+                cli.version,
+                "adhoc"
+            );
+            let sink = IcebergSink::new(IcebergObjectStoreConfig {
+                warehouse_uri: format!("s3://{}/{}", cli.bucket, iceberg_prefix),
+                namespace: vec!["spicebench".to_string(), "etl".to_string()],
+                s3_region: cli.region.clone(),
+                s3_endpoint: cli.endpoint.clone(),
+            })
+            .await?;
+            Arc::new(sink)
+        }
+    };
 
     let mut pipeline =
         ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?
@@ -125,8 +174,7 @@ async fn main() -> anyhow::Result<()> {
         dataset = %version_metadata.dataset_type,
         bucket = %cli.bucket,
         prefix = %cli.prefix,
-        adbc_driver = %cli.adbc_driver,
-        adbc_schema = ?cli.adbc_schema,
+        sink_mode = ?cli.sink_mode,
         scale_factor = version_metadata.scale_factor,
         num_steps = version_metadata.num_steps,
         "Starting ETL pipeline"
