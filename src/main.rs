@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use adbc_client::AdbcConnection;
@@ -27,9 +28,9 @@ use etl::sink::Sink;
 use etl::sink::s3_hive::S3HiveSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
+use tokio::sync::Mutex;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-
 mod args;
 mod commands;
 mod metrics;
@@ -61,9 +62,9 @@ fn s3_hive_target_prefix(common: &CommonArgs, scenario_name: &str, run_id: uuid:
 
 async fn run_benchmark(
     common: &CommonArgs,
-    system_adapter_client: &mut system_adapter_protocol::Client,
+    system_adapter_client: Arc<Mutex<system_adapter_protocol::Client>>,
     run_id: uuid::Uuid,
-    setup_response: system_adapter_protocol::SetupResponse,
+    setup_metadata: HashMap<String, serde_json::Value>,
     version_metadata: &VersionMetadata,
     source: Arc<S3Storage>,
 ) -> anyhow::Result<()> {
@@ -162,22 +163,20 @@ async fn run_benchmark(
     pipeline.initialize().await?;
     tracing::info!("ETL pipeline initialized");
 
-    let load_conn = match AdbcConnection::create(&read_driver_name, read_kwargs) {
+    let load_conn = match AdbcConnection::create(&driver_name, db_kwargs) {
         Ok(conn) => conn,
         Err(e) => {
             pipeline.cancel();
             return Err(anyhow::anyhow!(
-                "Failed to create benchmark ADBC connection for driver {}: {e}",
-                read_driver_name
+                "Failed to create benchmark ADBC connection for driver {driver_name}: {e}"
             ));
         }
     };
-    tracing::info!(
-        "ADBC read connection established (driver: {})",
-        read_driver_name
-    );
+    tracing::info!("ADBC read connection established (driver: {driver_name})");
 
     commands::load::run(
+        system_adapter_client,
+        run_id,
         &common.scenario,
         common,
         load_conn,
@@ -247,7 +246,7 @@ async fn main() -> anyhow::Result<()> {
     })?;
 
     // --- Connect to the system adapter ---
-    let mut system_adapter_client = match connect_system_adapter(&cli.common).await {
+    let system_adapter_client = match connect_system_adapter(&cli.common).await {
         Ok(system_adapter_client) => system_adapter_client,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to connect to system adapter: {e}"));
@@ -317,25 +316,19 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let setup_response = match system_adapter_client.setup(run_id, setup_metadata).await {
-        Ok(response) => response,
-        Err(e) => {
-            return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
-        }
-    };
-
+    let system_adapter_client = Arc::new(Mutex::new(system_adapter_client));
     let result = run_benchmark(
         &cli.common,
-        &mut system_adapter_client,
+        Arc::clone(&system_adapter_client),
         run_id,
-        setup_response,
+        setup_metadata,
         &version_metadata,
         source,
     )
     .await;
 
     // After successful setup, always teardown even if there are errors in between.
-    if let Err(e) = system_adapter_client.teardown(run_id).await {
+    if let Err(e) = system_adapter_client.lock().await.teardown(run_id).await {
         tracing::error!("Failed to teardown system adapter: {e}");
     }
 

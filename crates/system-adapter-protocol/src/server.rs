@@ -17,9 +17,8 @@ limitations under the License.
 //! Server implementations for system adapter JSON-RPC protocol.
 
 use crate::{
-    CreateTablesRequest, CreateTablesResponse, DatasetConfig, JsonRpcError, JsonRpcResponse,
-    MetricsRequest, MetricsResponse, SetupRequest, SetupResponse, TeardownRequest,
-    TeardownResponse, error_codes, methods,
+    DatasetConfig, JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse, SetupRequest,
+    SetupResponse, TeardownRequest, TeardownResponse, error_codes, methods,
 };
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -68,7 +67,7 @@ pub type Result<T> = std::result::Result<T, ServerError>;
 /// Handler trait for implementing system adapter logic
 ///
 /// Implement this trait to define how your system adapter handles
-/// setup, create_tables, and teardown requests.
+/// setup, teardown, and metrics requests.
 #[async_trait]
 pub trait Handler: Send + Sync {
     /// Setup a benchmark run
@@ -76,14 +75,8 @@ pub trait Handler: Send + Sync {
         &mut self,
         run_id: Uuid,
         metadata: HashMap<String, serde_json::Value>,
-    ) -> std::result::Result<SetupResponse, String>;
-
-    /// Create benchmark tables for a run
-    async fn create_tables(
-        &mut self,
-        run_id: Uuid,
         datasets: HashMap<String, DatasetConfig>,
-    ) -> std::result::Result<CreateTablesResponse, String>;
+    ) -> std::result::Result<SetupResponse, String>;
 
     /// Teardown a benchmark run
     async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String>;
@@ -104,7 +97,6 @@ pub trait Handler: Send + Sync {
     fn rpc_methods(&self) -> Vec<String> {
         vec![
             methods::SETUP.to_string(),
-            methods::CREATE_TABLES.to_string(),
             methods::TEARDOWN.to_string(),
             methods::METRICS.to_string(),
             methods::RPC_METHODS.to_string(),
@@ -181,7 +173,6 @@ impl<H: Handler> Server<H> {
         // Dispatch to appropriate handler
         let result = match method {
             methods::SETUP => self.handle_setup(&request, id.clone()).await,
-            methods::CREATE_TABLES => self.handle_create_tables(&request, id.clone()).await,
             methods::TEARDOWN => self.handle_teardown(&request, id.clone()).await,
             methods::METRICS => self.handle_metrics(&request, id.clone()).await,
             methods::RPC_METHODS => self.handle_rpc_methods(id.clone()).await,
@@ -242,20 +233,10 @@ impl<H: Handler> Server<H> {
             Ok(r) => r,
             Err(e) => return e,
         };
-        Self::handler_response(self.handler.setup(req.run_id, req.metadata).await, id)
-    }
-
-    async fn handle_create_tables(
-        &mut self,
-        request: &serde_json::Value,
-        id: serde_json::Value,
-    ) -> serde_json::Value {
-        let req: CreateTablesRequest = match Self::parse_params(request, &id) {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
         Self::handler_response(
-            self.handler.create_tables(req.run_id, req.datasets).await,
+            self.handler
+                .setup(req.run_id, req.metadata, req.datasets)
+                .await,
             id,
         )
     }
@@ -303,23 +284,12 @@ mod tests {
             &mut self,
             _run_id: Uuid,
             _metadata: HashMap<String, serde_json::Value>,
+            _datasets: HashMap<String, DatasetConfig>,
         ) -> std::result::Result<SetupResponse, String> {
-            let driver_config = crate::DriverConfig {
+            Ok(SetupResponse {
                 driver: crate::AdbcDriver::Flightsql,
                 db_kwargs: HashMap::new(),
-            };
-            Ok(SetupResponse {
-                ingest_driver: driver_config.clone(),
-                read_driver: driver_config,
             })
-        }
-
-        async fn create_tables(
-            &mut self,
-            _run_id: Uuid,
-            _datasets: HashMap<String, DatasetConfig>,
-        ) -> std::result::Result<CreateTablesResponse, String> {
-            Ok(CreateTablesResponse { ok: true })
         }
 
         async fn teardown(
@@ -337,12 +307,11 @@ mod tests {
     #[tokio::test]
     async fn test_server_setup() {
         let mut server = Server::new(TestHandler);
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","metadata":{}}}"#;
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","metadata":{},"datasets":{}}}"#;
         let response = server.handle_request(request).await;
 
         assert!(response.get("result").is_some());
-        assert_eq!(response["result"]["ingest_driver"]["driver"], "flightsql");
-        assert_eq!(response["result"]["read_driver"]["driver"], "flightsql");
+        assert_eq!(response["result"]["driver"], "flightsql");
     }
 
     #[tokio::test]
