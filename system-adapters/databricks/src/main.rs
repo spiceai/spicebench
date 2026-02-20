@@ -129,6 +129,40 @@ struct StdioArgs {
         default_value = "parquet"
     )]
     databricks_table_format: TableFormat,
+
+    /// Lakebase PostgreSQL endpoint host (required for lakebase compute mode).
+    #[arg(long, env = "LAKEBASE_PG_HOST")]
+    lakebase_pg_host: Option<String>,
+
+    /// Lakebase PostgreSQL username (required for lakebase compute mode).
+    #[arg(long, env = "LAKEBASE_PG_USER")]
+    lakebase_pg_user: Option<String>,
+
+    /// Lakebase PostgreSQL token/password (required for lakebase compute mode).
+    #[arg(long, env = "LAKEBASE_PG_TOKEN")]
+    lakebase_pg_token: Option<String>,
+
+    /// Lakebase PostgreSQL database name.
+    #[arg(long, env = "LAKEBASE_PG_DB_NAME", default_value = "spicebench")]
+    lakebase_pg_db_name: String,
+
+    /// Lakebase PostgreSQL schema for search_path (defaults to --databricks-schema).
+    #[arg(long, env = "LAKEBASE_PG_SCHEMA")]
+    lakebase_pg_schema: Option<String>,
+
+    /// Lakebase database instance name (for Provisioned synced table creation).
+    /// Mutually exclusive with --lakebase-project.
+    #[arg(long, env = "LAKEBASE_DATABASE_INSTANCE", conflicts_with = "lakebase_project")]
+    lakebase_database_instance: Option<String>,
+
+    /// Lakebase project name (for Autoscaling synced table creation).
+    /// Mutually exclusive with --lakebase-database-instance.
+    #[arg(long, env = "LAKEBASE_PROJECT", conflicts_with = "lakebase_database_instance", conflicts_with = "lakebase_pg_db_name")]
+    lakebase_project: Option<String>,
+
+    /// Lakebase branch name (used with --lakebase-project, defaults to "production").
+    #[arg(long, env = "LAKEBASE_BRANCH", default_value = "production")]
+    lakebase_branch: String,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -153,6 +187,7 @@ impl DatabricksVariant {
 enum ComputeMode {
     SqlWarehouse,
     SparkCluster,
+    Lakebase,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -217,6 +252,7 @@ struct AdapterConfig {
 enum ComputeTarget {
     SqlWarehouse,
     SparkCluster(ClusterConfig),
+    Lakebase(LakebaseConfig),
 }
 
 #[derive(Debug, Clone)]
@@ -227,6 +263,24 @@ struct ClusterConfig {
     node_type_id: String,
     num_workers: i32,
     autotermination_minutes: i32,
+}
+
+#[derive(Debug, Clone)]
+struct LakebaseConfig {
+    user: String,
+    token: String,
+    host: String,
+    db_name: String,
+    schema: String,
+    target: LakebaseSyncTarget,
+}
+
+#[derive(Debug, Clone)]
+enum LakebaseSyncTarget {
+    /// Provisioned Lakebase instance
+    Instance { name: String },
+    /// Autoscaling Lakebase project + branch
+    Project { name: String, branch: String },
 }
 
 impl AdapterConfig {
@@ -275,6 +329,48 @@ impl AdapterConfig {
                 }
 
                 ComputeTarget::SqlWarehouse
+            }
+            ComputeMode::Lakebase => {
+                if warehouse_id.is_empty() {
+                    return Err(anyhow!(
+                        "Missing Databricks warehouse ID. Set --databricks-sql-warehouse-id or provide it in --databricks-http-path"
+                    ));
+                }
+
+                let pg_host = args.lakebase_pg_host.ok_or_else(|| {
+                    anyhow!("--lakebase-pg-host is required for lakebase compute mode")
+                })?;
+                let pg_user = args.lakebase_pg_user.ok_or_else(|| {
+                    anyhow!("--lakebase-pg-user is required for lakebase compute mode")
+                })?;
+                let pg_token = args.lakebase_pg_token.ok_or_else(|| {
+                    anyhow!("--lakebase-pg-token is required for lakebase compute mode")
+                })?;
+                let pg_schema = args
+                    .lakebase_pg_schema
+                    .unwrap_or_else(|| args.databricks_schema.clone());
+
+                let sync_target = if let Some(instance) = args.lakebase_database_instance {
+                    LakebaseSyncTarget::Instance { name: instance }
+                } else if let Some(project) = args.lakebase_project {
+                    LakebaseSyncTarget::Project {
+                        name: project,
+                        branch: args.lakebase_branch.clone(),
+                    }
+                } else {
+                    return Err(anyhow!(
+                        "Either --lakebase-database-instance or --lakebase-project is required for lakebase compute mode"
+                    ));
+                };
+
+                ComputeTarget::Lakebase(LakebaseConfig {
+                    user: pg_user,
+                    token: pg_token,
+                    host: pg_host,
+                    db_name: args.lakebase_pg_db_name.clone(),
+                    schema: pg_schema,
+                    target: sync_target,
+                })
             }
             ComputeMode::SparkCluster => {
                 if args.databricks_cluster_name.trim().is_empty()
@@ -364,6 +460,13 @@ impl DatabricksAdapter {
         format!(
             "{}.{}.{}",
             self.config.catalog, self.config.schema, table_name
+        )
+    }
+
+    fn lakebase_synced_table_full_name(&self, table_name: &str, lakebase_config: &LakebaseConfig) -> String {
+        format!(
+            "{}.{}.{}",
+            self.config.catalog, lakebase_config.schema, table_name
         )
     }
 
@@ -650,6 +753,79 @@ impl DatabricksAdapter {
         }
     }
 
+    async fn delete_job(&self, job_id: i64) -> Result<()> {
+        let url = format!("https://{}/api/2.1/jobs/delete", self.config.endpoint);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.token)
+            .json(&json!({ "job_id": job_id }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Databricks jobs/delete failed ({status}): {body}"));
+        }
+
+        eprintln!("[databricks-adapter] deleted job: job_id={job_id}");
+        Ok(())
+    }
+
+    async fn find_notebook(&self, notebook_path: &str) -> Result<bool> {
+        let url = format!(
+            "https://{}/api/2.0/workspace/get-status",
+            self.config.endpoint
+        );
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.config.token)
+            .query(&[("path", notebook_path)])
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Databricks workspace/get-status failed ({status}): {body}"
+            ));
+        }
+
+        Ok(true)
+    }
+
+    async fn delete_notebook(&self, notebook_path: &str) -> Result<()> {
+        let url = format!("https://{}/api/2.0/workspace/delete", self.config.endpoint);
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.token)
+            .json(&json!({
+                "path": notebook_path,
+                "recursive": false
+            }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Databricks workspace/delete failed ({status}): {body}"
+            ));
+        }
+
+        eprintln!("[databricks-adapter] deleted notebook: path={notebook_path}");
+        Ok(())
+    }
+
     async fn wait_for_statement_completion(&self, statement_id: &str) -> Result<()> {
         let status_url = format!(
             "https://{}/api/2.0/sql/statements/{statement_id}",
@@ -704,6 +880,11 @@ impl DatabricksAdapter {
             ComputeTarget::SqlWarehouse => {
                 return Err(anyhow!(
                     "ensure_cluster_ready called in sql-warehouse compute mode"
+                ));
+            }
+            ComputeTarget::Lakebase(_) => {
+                return Err(anyhow!(
+                    "ensure_cluster_ready called in lakebase compute mode"
                 ));
             }
         };
@@ -987,79 +1168,6 @@ print("OK")
         Ok(())
     }
 
-    async fn delete_job(&self, job_id: i64) -> Result<()> {
-        let url = format!("https://{}/api/2.1/jobs/delete", self.config.endpoint);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.config.token)
-            .json(&json!({ "job_id": job_id }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Databricks jobs/delete failed ({status}): {body}"));
-        }
-
-        eprintln!("[databricks-adapter] deleted job: job_id={job_id}");
-        Ok(())
-    }
-
-    async fn find_notebook(&self, notebook_path: &str) -> Result<bool> {
-        let url = format!(
-            "https://{}/api/2.0/workspace/get-status",
-            self.config.endpoint
-        );
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.config.token)
-            .query(&[("path", notebook_path)])
-            .send()
-            .await?;
-
-        if response.status() == StatusCode::NOT_FOUND {
-            return Ok(false);
-        }
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Databricks workspace/get-status failed ({status}): {body}"
-            ));
-        }
-
-        Ok(true)
-    }
-
-    async fn delete_notebook(&self, notebook_path: &str) -> Result<()> {
-        let url = format!("https://{}/api/2.0/workspace/delete", self.config.endpoint);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.config.token)
-            .json(&json!({
-                "path": notebook_path,
-                "recursive": false
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Databricks workspace/delete failed ({status}): {body}"
-            ));
-        }
-
-        eprintln!("[databricks-adapter] deleted notebook: path={notebook_path}");
-        Ok(())
-    }
-
     async fn find_job_id_by_name(&self, job_name: &str) -> Result<Option<i64>> {
         let url = format!("https://{}/api/2.1/jobs/list", self.config.endpoint);
 
@@ -1150,27 +1258,28 @@ print("OK")
     #[allow(dead_code)]
     fn uc_column_type_for_arrow(data_type: &DataType) -> Result<UcColumnType> {
         match data_type {
-            DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN".to_string())),
+            DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN", "\"boolean\"")),
             DataType::Int8
             | DataType::Int16
             | DataType::Int32
             | DataType::UInt8
-            | DataType::UInt16 => Ok(UcColumnType::new("INT", "INT".to_string())),
+            | DataType::UInt16 => Ok(UcColumnType::new("INT", "INT", "\"integer\"")),
             DataType::Int64 | DataType::UInt32 | DataType::UInt64 => {
-                Ok(UcColumnType::new("LONG", "BIGINT".to_string()))
+                Ok(UcColumnType::new("LONG", "BIGINT", "\"long\""))
             }
-            DataType::Float32 => Ok(UcColumnType::new("FLOAT", "FLOAT".to_string())),
-            DataType::Float64 => Ok(UcColumnType::new("DOUBLE", "DOUBLE".to_string())),
+            DataType::Float32 => Ok(UcColumnType::new("FLOAT", "FLOAT", "\"float\"")),
+            DataType::Float64 => Ok(UcColumnType::new("DOUBLE", "DOUBLE", "\"double\"")),
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
-                Ok(UcColumnType::new("STRING", "STRING".to_string()))
+                Ok(UcColumnType::new("STRING", "STRING", "\"string\""))
             }
-            DataType::Date32 => Ok(UcColumnType::new("DATE", "DATE".to_string())),
+            DataType::Date32 => Ok(UcColumnType::new("DATE", "DATE", "\"date\"")),
             DataType::Timestamp(_, _) => {
-                Ok(UcColumnType::new("TIMESTAMP", "TIMESTAMP".to_string()))
+                Ok(UcColumnType::new("TIMESTAMP", "TIMESTAMP", "\"timestamp\""))
             }
             DataType::Decimal128(precision, scale) => Ok(UcColumnType::new(
                 "DECIMAL",
                 format!("DECIMAL({precision}, {scale})"),
+                format!("\"decimal({precision},{scale})\""),
             )),
             other => Err(anyhow!(
                 "Unsupported Arrow data type for Unity Catalog table creation: {other:?}"
@@ -1229,6 +1338,7 @@ print("OK")
                     name: field.name().clone(),
                     type_name: col_type.type_name,
                     type_text: col_type.type_text,
+                    type_json: col_type.type_json,
                     position,
                     nullable: field.is_nullable(),
                 })
@@ -1267,6 +1377,186 @@ print("OK")
         Err(anyhow!(
             "Databricks Unity Catalog tables/create failed ({status}) for '{}': {body}",
             self.uc_table_full_name(table_name)
+        ))
+    }
+
+    fn lakebase_pg_uri(&self) -> Result<String> {
+        let lakebase_config = match &self.config.compute_target {
+            ComputeTarget::Lakebase(cfg) => cfg,
+            _ => return Err(anyhow!("lakebase_pg_uri called without Lakebase compute target")),
+        };
+        Ok(format!(
+            "postgresql://{}:{}@{}/{}?sslmode=require&options=--search_path%3D{}",
+            urlencoding::encode(&lakebase_config.user),
+            urlencoding::encode(&lakebase_config.token),
+            lakebase_config.host,
+            lakebase_config.db_name,
+            // urlencoding::encode(&format!("{}{}", lakebase_config.schema, SYNCED_SUFFIX)),
+            urlencoding::encode(&lakebase_config.schema),
+        ))
+    }
+
+    async fn create_synced_table(
+        &self,
+        table_name: &str,
+        primary_key_columns: &[String],
+    ) -> Result<()> {
+        let lakebase_config = match &self.config.compute_target {
+            ComputeTarget::Lakebase(cfg) => cfg,
+            _ => return Err(anyhow!("create_synced_table called without Lakebase compute target")),
+        };
+        let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
+        let source_table_name = self.uc_table_full_name(table_name);
+        let url = format!(
+            "https://{}/api/2.0/database/synced_tables",
+            self.config.endpoint
+        );
+
+        let mut payload = json!({
+            "name": synced_table_name,
+            "logical_database_name": lakebase_config.db_name,
+            "spec": {
+                "source_table_full_name": source_table_name,
+                "primary_key_columns": primary_key_columns,
+                "scheduling_policy": "SNAPSHOT",
+            },
+            "new_pipeline_spec": {
+                "storage_catalog": self.config.catalog,
+                "storage_schema": self.config.schema,
+            }
+        });
+
+        match &lakebase_config.target {
+            LakebaseSyncTarget::Instance { name } => {
+                payload["database_instance_name"] = json!(name);
+            }
+            LakebaseSyncTarget::Project { name, branch } => {
+                payload["project_name"] = json!(name);
+                payload["branch_name"] = json!(branch);
+            }
+        }
+
+        eprintln!(
+            "[databricks-adapter] create_synced_table: source_table_name={}, synced_table_name={}",
+            source_table_name, synced_table_name
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.token)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Failed to create synced table '{synced_table_name}' ({status}): {body}"
+            ));
+        }
+
+        eprintln!(
+            "[databricks-adapter] synced table '{}' created, waiting for ONLINE status",
+            table_name
+        );
+        self.wait_for_synced_table_online(table_name, lakebase_config).await
+    }
+
+    async fn wait_for_synced_table_online(&self, table_name: &str, lakebase_config: &LakebaseConfig) -> Result<()> {
+        let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
+        let status_url = format!(
+            "https://{}/api/2.0/database/synced_tables/{}",
+            self.config.endpoint,
+            urlencoding::encode(&synced_table_name),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(anyhow!(
+                    "Timed out waiting for synced table '{synced_table_name}' to come ONLINE"
+                ));
+            }
+
+            let response = self
+                .client
+                .get(&status_url)
+                .bearer_auth(&self.config.token)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!(
+                    "Failed to get synced table status for '{synced_table_name}' ({status}): {body}"
+                ));
+            }
+
+            let body: Value = response.json().await?;
+
+            let detailed_state = body
+                .pointer("/data_synchronization_status/detailed_state")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+
+            match detailed_state {
+                "SYNCED_TABLE_ONLINE_NO_PENDING_UPDATE" => {
+                    eprintln!(
+                        "[databricks-adapter] synced table '{}' is ONLINE",
+                        table_name
+                    );
+                    return Ok(());
+                }
+                "SYNCED_TABLE_OFFLINE_FAILED" | "OFFLINE_FAILED" => {
+                    let message = body
+                        .pointer("/data_synchronization_status/message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown error");
+                    return Err(anyhow!(
+                        "Synced table '{synced_table_name}' failed: {message}"
+                    ));
+                }
+                _ => {
+                    eprintln!(
+                        "[databricks-adapter] `synced table` '{}' state: {}, waiting...",
+                        table_name, detailed_state
+                    );
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+
+    async fn delete_synced_table(&self, table_name: &str) -> Result<()> {
+        let lakebase_config = match &self.config.compute_target {
+            ComputeTarget::Lakebase(cfg) => cfg,
+            _ => return Err(anyhow!("delete_synced_table called without Lakebase compute target")),
+        };
+        let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
+        let url = format!(
+            "https://{}/api/2.0/database/synced_tables/{}",
+            self.config.endpoint,
+            urlencoding::encode(&synced_table_name),
+        );
+
+        let response = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.config.token)
+            .send()
+            .await?;
+
+        if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        Err(anyhow!(
+            "Failed to delete synced table '{synced_table_name}' ({status}): {body}"
         ))
     }
 }
@@ -1320,14 +1610,20 @@ struct UcSchemaCreateRequest {
 struct UcColumnType {
     type_name: String,
     type_text: String,
+    type_json: String,
 }
 
 #[allow(dead_code)]
 impl UcColumnType {
-    fn new(type_name: impl Into<String>, type_text: impl Into<String>) -> Self {
+    fn new(
+        type_name: impl Into<String>,
+        type_text: impl Into<String>,
+        type_json: impl Into<String>,
+    ) -> Self {
         Self {
             type_name: type_name.into(),
             type_text: type_text.into(),
+            type_json: type_json.into(),
         }
     }
 }
@@ -1338,6 +1634,7 @@ struct UcTableColumnCreateRequest {
     name: String,
     type_name: String,
     type_text: String,
+    type_json: String,
     position: usize,
     nullable: bool,
 }
@@ -1405,7 +1702,10 @@ impl Handler for DatabricksAdapter {
                 (Some(cluster_id), created)
             }
             ComputeTarget::SqlWarehouse => (None, false),
+            ComputeTarget::Lakebase(_) => (None, false),
         };
+
+        eprintln!("[databricks-adapter] setup: variant={variant:#?}");
 
         match variant {
             DatabricksVariant::Databricks => {
@@ -1414,14 +1714,9 @@ impl Handler for DatabricksAdapter {
                     .map_err(|e| format!("Failed to ensure Unity Catalog schema exists: {e}"))?;
             }
             DatabricksVariant::Lakebase => {
-                let schema_sql = format!(
-                    "CREATE SCHEMA IF NOT EXISTS {}.{}",
-                    Self::quoted_identifier(&self.config.catalog),
-                    Self::quoted_identifier(&self.config.schema),
-                );
-                self.execute_sql_statement(&schema_sql)
+                self.ensure_uc_schema_exists()
                     .await
-                    .map_err(|e| format!("Failed to ensure Lakebase schema exists: {e}"))?;
+                    .map_err(|e| format!("Failed to ensure Unity Catalog schema exists: {e}"))?;
             }
         }
 
@@ -1443,38 +1738,66 @@ impl Handler for DatabricksAdapter {
         let mut created_tables = Vec::with_capacity(datasets.len());
         let mut table_locations: HashMap<String, String> = HashMap::with_capacity(datasets.len());
 
+        // Create UC tables via CTAS (common to all variants).
         for (table_name, dataset_cfg) in &datasets {
-            let _ = dataset_cfg.location.as_deref().ok_or_else(|| {
+            let location = dataset_cfg.location.as_deref().ok_or_else(|| {
                 format!("Dataset '{table_name}' is missing required 'location' field")
             })?;
+            let drop_sql = format!(
+                "DROP TABLE IF EXISTS {}",
+                self.table_full_name(table_name)
+            );
+            self.execute_sql_statement(&drop_sql).await.map_err(|e| {
+                format!(
+                    "Failed to drop existing table '{table_name}' during create_tables: {e}"
+                )
+            })?;
+
+            let create_sql = self.create_table_ctas(table_name, location);
+
+            eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+
+            self.execute_sql_statement(&create_sql).await.map_err(|e| {
+                format!("Failed to create table '{table_name}': {e}")
+            })?;
+
+            table_locations.insert(table_name.clone(), location.to_string());
+            created_tables.push(table_name.clone());
         }
 
+        // Variant-specific post-processing.
         match variant {
-            DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
-                for (table_name, dataset_cfg) in &datasets {
-                    let location = dataset_cfg.location.as_deref().ok_or_else(|| {
-                        format!("Dataset '{table_name}' is missing required 'location' field")
-                    })?;
+            DatabricksVariant::Databricks => {
+                self.ensure_notebook(&scenario_slug, &table_locations)
+                    .await
+                    .map_err(|e| format!("Failed to upload sync notebook: {e}"))?;
 
-                    let drop_sql =
-                        format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
-                    self.execute_sql_statement(&drop_sql).await.map_err(|e| {
-                        format!(
-                            "Failed to drop existing table '{table_name}' during create_tables: {e}"
-                        )
-                    })?;
+                self.ensure_notebook_sync_job(&scenario_slug)
+                    .await
+                    .map_err(|e| format!("Failed to create scheduled notebook sync job: {e}"))?;
+            }
+            DatabricksVariant::Lakebase => {
+                // Parallel synced table creation + wait for ONLINE
+                let this = &*self;
+                let sync_futs: Vec<_> = datasets
+                    .iter()
+                    .map(|(table_name, dataset_cfg)| {
+                        let table_name = table_name.clone();
+                        let pks = dataset_cfg.primary_key_columns.clone();
+                        async move {
+                            this.create_synced_table(&table_name, &pks)
+                                .await
+                                .map_err(|e| {
+                                    format!(
+                                        "Failed to create synced table for '{table_name}': {e}"
+                                    )
+                                })?;
+                            Ok::<_, String>(table_name)
+                        }
+                    })
+                    .collect();
 
-                    let create_sql = self.create_table_ctas(table_name, location);
-
-                    eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
-
-                    self.execute_sql_statement(&create_sql)
-                        .await
-                        .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
-
-                    table_locations.insert(table_name.clone(), location.to_string());
-                    created_tables.push(table_name.clone());
-                }
+                created_tables = futures::future::try_join_all(sync_futs).await?;
             }
         }
 
@@ -1482,21 +1805,26 @@ impl Handler for DatabricksAdapter {
             state.created_tables = created_tables;
         }
 
-        self.ensure_notebook(&scenario_slug, &table_locations)
-            .await
-            .map_err(|e| format!("Failed to upload sync notebook: {e}"))?;
-
-        self.ensure_notebook_sync_job(&scenario_slug)
-            .await
-            .map_err(|e| format!("Failed to create scheduled notebook sync job: {e}"))?;
-
-        // The Databricks ADBC driver does not allow specifying both a URI and
-        // individual connection options (e.g. catalog, schema). All connection
-        // parameters must be encoded as query parameters in the URI.
-        Ok(SetupResponse {
-            driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([("uri".to_string(), Value::String(self.databricks_uri()))]),
-        })
+        // For Lakebase, return the PostgreSQL read driver.
+        // For other variants, return the Databricks ADBC driver.
+        match &self.config.compute_target {
+            ComputeTarget::Lakebase(_) => {
+                let pg_uri = self
+                    .lakebase_pg_uri()
+                    .map_err(|e| format!("Failed to build Lakebase PostgreSQL URI: {e}"))?;
+                Ok(SetupResponse {
+                    driver: AdbcDriver::Postgresql,
+                    db_kwargs: HashMap::from([("uri".to_string(), Value::String(pg_uri))]),
+                })
+            }
+            _ => Ok(SetupResponse {
+                driver: AdbcDriver::Databricks,
+                db_kwargs: HashMap::from([(
+                    "uri".to_string(),
+                    Value::String(self.databricks_uri()),
+                )]),
+            }),
+        }
     }
 
     async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String> {

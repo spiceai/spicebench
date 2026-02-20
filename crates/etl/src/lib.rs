@@ -478,8 +478,10 @@ impl ETLPipeline {
                     .collect();
                 let schema: SchemaRef = Arc::new(Schema::new(fields));
                 let schema = schema_with_created_at(&schema);
+                let primary_key_columns = self.dataset.primary_key(&name);
                 let config = ProtocolDatasetConfig {
                     schema,
+                    primary_key_columns,
                     location: self.target_config.as_ref().map(|config| {
                         format!(
                             "s3://{}/{prefix}/{name}/",
@@ -487,6 +489,8 @@ impl ETLPipeline {
                             prefix = config.prefix
                         )
                     }),
+                    time_column: Some(CREATED_AT_COLUMN.to_string()),
+                    partition_columns: self.dataset.partition_columns(&name),
                 };
 
                 (name.clone(), config)

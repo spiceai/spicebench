@@ -27,12 +27,23 @@ use object_store::path::Path as ObjectPath;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use super::{InsertOp, Sink};
 
 /// Default partitioning column used when no explicit scheme is configured.
 const DEFAULT_PARTITION_COLUMN: &str = "__created_at";
 const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
+
+/// Maximum number of partition encode+upload tasks that may run concurrently
+/// across all active `write()` calls on a single [`S3HiveSink`] instance.
+///
+/// This prevents unbounded fan-out (e.g. a TPC-H `lineitem` batch spanning
+/// hundreds of date partitions multiplied by several tables initialising in
+/// parallel) from exhausting the S3 connection pool or the blocking-thread
+/// pool on slow machines / networks.
+const MAX_CONCURRENT_UPLOADS: usize = 8;
 
 /// ETL sink that writes batches as hive-partitioned Parquet files in S3.
 ///
@@ -47,6 +58,8 @@ pub struct S3HiveSink {
     store: Arc<dyn ObjectStore>,
     prefix: String,
     partition_columns: Vec<String>,
+    /// Limits how many partition encode+upload tasks run at once.
+    upload_semaphore: Arc<Semaphore>,
 }
 
 impl S3HiveSink {
@@ -91,72 +104,87 @@ impl S3HiveSink {
             store,
             prefix: config.prefix.clone(),
             partition_columns,
+            upload_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
         })
     }
+}
 
-    /// Writes a single partition's batch to S3 as a Parquet file.
-    async fn write_partition(
-        &self,
-        table_name: &str,
-        batch_id: u64,
-        partition_path: &str,
-        batch: &RecordBatch,
-        effective_partition_columns: &[String],
-        partition_idx: usize,
-    ) -> anyhow::Result<()> {
-        // Strip partition columns from written data — they are encoded in the path.
-        let batch_without_partition = strip_columns(batch, effective_partition_columns)?;
+/// Writes a single partition batch to S3 as a Parquet file.
+///
+/// Parquet encoding (CPU-bound) is offloaded to `spawn_blocking` so that the
+/// async executor is not blocked during compression. The resulting bytes are
+/// then uploaded with a single `PUT`.
+async fn write_partition_task(
+    store: Arc<dyn ObjectStore>,
+    semaphore: Arc<Semaphore>,
+    prefix: String,
+    table_name: String,
+    batch_id: u64,
+    partition_path: String,
+    batch: RecordBatch,
+    effective_partition_columns: Vec<String>,
+    partition_idx: usize,
+) -> anyhow::Result<()> {
+    // Acquire a concurrency slot before doing any work. This bounds the number
+    // of simultaneous encode+upload operations sink-wide, preventing connection
+    // pool exhaustion on slow networks when many partitions fan out at once.
+    let _permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| anyhow::anyhow!("upload semaphore closed"))?;
 
-        if batch_without_partition.num_columns() == 0 {
-            anyhow::bail!(
-                "Cannot write table '{table_name}' with partition columns {:?}: no columns would remain in parquet output",
-                effective_partition_columns
-            );
-        }
+    // Strip partition columns — they are encoded in the path.
+    let batch_without_partition = strip_columns(&batch, &effective_partition_columns)?;
 
-        let path = if self.prefix.is_empty() {
-            if partition_path.is_empty() {
-                ObjectPath::from(format!(
-                    "{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet"
-                ))
-            } else {
-                ObjectPath::from(format!(
-                    "{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet"
-                ))
-            }
+    if batch_without_partition.num_columns() == 0 {
+        anyhow::bail!(
+            "Cannot write table '{table_name}' with partition columns {effective_partition_columns:?}: \
+             no columns would remain in parquet output"
+        );
+    }
+
+    let path = if prefix.is_empty() {
+        if partition_path.is_empty() {
+            ObjectPath::from(format!(
+                "{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet"
+            ))
         } else {
-            if partition_path.is_empty() {
-                ObjectPath::from(format!(
-                    "{}/{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet",
-                    self.prefix
-                ))
-            } else {
-                ObjectPath::from(format!(
-                    "{}/{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet",
-                    self.prefix
-                ))
-            }
-        };
+            ObjectPath::from(format!(
+                "{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet"
+            ))
+        }
+    } else if partition_path.is_empty() {
+        ObjectPath::from(format!(
+            "{prefix}/{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet",
+        ))
+    } else {
+        ObjectPath::from(format!(
+            "{prefix}/{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet",
+        ))
+    };
 
+    // Encode to Parquet + Snappy on a blocking thread so the async executor
+    // is not stalled during CPU-intensive compression.
+    let buf = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
         let props = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
             .build();
-
         let mut buf = Vec::new();
-        {
-            let mut writer =
-                ArrowWriter::try_new(&mut buf, batch_without_partition.schema(), Some(props))?;
-            writer.write(&batch_without_partition)?;
-            writer.close()?;
-        }
+        let mut writer =
+            ArrowWriter::try_new(&mut buf, batch_without_partition.schema(), Some(props))?;
+        writer.write(&batch_without_partition)?;
+        writer.close()?;
+        Ok(buf)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Parquet encoding task panicked: {e}"))??;
 
-        self.store
-            .put(&path, buf.into())
-            .await
-            .map_err(|e| anyhow::anyhow!("S3 PUT failed for {path}: {e}"))?;
+    store
+        .put(&path, buf.into())
+        .await
+        .map_err(|e| anyhow::anyhow!("S3 PUT failed for {path}: {e}"))?;
 
-        Ok(())
-    }
+    Ok(())
 }
 
 #[async_trait]
@@ -204,16 +232,28 @@ impl Sink for S3HiveSink {
         // Group rows by distinct partition tuples in configured column order.
         let partitions = partition_batch(&batch, &partition_columns_with_idx)?;
 
-        for (idx, (partition_path, partition_batch)) in partitions.iter().enumerate() {
-            self.write_partition(
-                table_name,
+        // Spawn all partition writes concurrently. Each task owns its data
+        // so there is no contention, and S3 PUTs for different paths are
+        // fully independent.
+        let mut join_set: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
+        for (idx, (partition_path, partition_batch)) in partitions.into_iter().enumerate() {
+            join_set.spawn(write_partition_task(
+                Arc::clone(&self.store),
+                Arc::clone(&self.upload_semaphore),
+                self.prefix.clone(),
+                table_name.to_string(),
                 batch_id,
                 partition_path,
                 partition_batch,
-                &effective_partition_columns,
+                effective_partition_columns.clone(),
                 idx,
-            )
-            .await?;
+            ));
+        }
+
+        // Collect results; propagate the first error encountered.
+        while let Some(result) = join_set.join_next().await {
+            result.map_err(|e| anyhow::anyhow!("Partition write task panicked: {e}"))??;
         }
 
         Ok(())

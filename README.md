@@ -160,27 +160,45 @@ Common CLI/workflow usage:
 
 ### Metrics
 
-| Metric                  | OTel Instrument                                  | Description                                           | Status          |
-| ----------------------- | ------------------------------------------------ | ----------------------------------------------------- | --------------- |
-| Iterations              | `iterations` (Gauge)                             | Number of query iterations per query                  | ✅ Implemented   |
-| Query Status            | `query_status` (Gauge)                           | Pass/fail status per query                            | ✅ Implemented   |
-| Query Latency (p50)     | `median_duration_ms` (Gauge)                     | Median duration per query                             | ✅ Implemented   |
-| Query Latency (min/max) | `min_duration_ms`, `max_duration_ms`             | Min and max duration per query                        | ✅ Implemented   |
-| Query Latency (p99)     | `p99_duration_ms` (Gauge)                        | 99th percentile duration per query                    | ✅ Implemented   |
-| Health Latency          | `health_latency_ms` (Histogram)                  | Latency of `/health` and `/v1/ready` probes           | ✅ Implemented   |
-| E2E Duration            | `test_duration_ms` (Gauge)                       | Total wall-clock time for the benchmark phase         | ✅ Implemented   |
-| Peak/Median Memory      | `peak_memory_usage_mb`, `median_memory_usage_mb` | Memory usage of the spiced process                    | ✅ Implemented   |
-| Ingestion Rows/Bytes    | `ingestion_rows_total`, `ingestion_bytes_total`  | Total data ingested (from SUT adapter)                | ✅ Implemented   |
-| Ingestion records/s     | `ingestion_rows_per_sec` (Gauge)                 | Sustained ingestion throughput (from SUT adapter)     | ✅ Implemented   |
-| Queries/s               | `queries_per_sec` (Gauge)                        | Query throughput under load                           | ✅ Implemented   |
-| Total Queries           | `queries_total` (Counter)                        | Total queries executed during the run                 | ✅ Implemented   |
-| Active Connections      | `active_connections` (Gauge)                     | Number of concurrent connections/clients              | ✅ Implemented   |
-| SUT CPU                 | `sut_cpu_usage_percent` (Gauge)                  | SUT CPU utilization (from adapter `metrics`)          | ✅ Implemented   |
-| SUT Memory              | `sut_memory_usage_bytes` (Gauge)                 | SUT memory usage (from adapter `metrics`)             | ✅ Implemented   |
-| SUT Disk I/O            | `sut_disk_{read,write}_bytes` (Gauge)            | SUT disk read/write bytes (from adapter `metrics`)    | ✅ Implemented   |
-| SUT Disk IOPS           | `sut_disk_{read,write}_iops` (Gauge)             | SUT disk IOPS (from adapter `metrics`)                | ✅ Implemented   |
-| Efficiency              | `efficiency_queries_per_core` (Gauge)            | Query throughput normalized by CPU cores              | ✅ Implemented   |
-| E2E Latency             | `e2e_latency_ms` (Histogram)                     | Time from event creation to the event being queryable | 🔲 Not yet wired |
+| Metric                  | OTel Instrument                                  | Description                                                                           | Status        |
+| ----------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------- | ------------- |
+| Iterations              | `iterations` (Gauge)                             | Number of query iterations per query                                                  | ✅ Implemented |
+| Query Status            | `query_status` (Gauge)                           | Pass/fail status per query                                                            | ✅ Implemented |
+| Query Latency (p50)     | `median_duration_ms` (Gauge)                     | Median duration per query                                                             | ✅ Implemented |
+| Query Latency (min/max) | `min_duration_ms`, `max_duration_ms`             | Min and max duration per query                                                        | ✅ Implemented |
+| Query Latency (p99)     | `p99_duration_ms` (Gauge)                        | 99th percentile duration per query                                                    | ✅ Implemented |
+| Health Latency          | `health_latency_ms` (Histogram)                  | Latency of `/health` and `/v1/ready` probes                                           | ✅ Implemented |
+| E2E Duration            | `test_duration_ms` (Gauge)                       | Total wall-clock time for the benchmark phase                                         | ✅ Implemented |
+| Peak/Median Memory      | `peak_memory_usage_mb`, `median_memory_usage_mb` | Memory usage of the spiced process                                                    | ✅ Implemented |
+| Ingestion Rows/Bytes    | `ingestion_rows_total`, `ingestion_bytes_total`  | Total data ingested (from SUT adapter)                                                | ✅ Implemented |
+| Ingestion records/s     | `ingestion_rows_per_sec` (Gauge)                 | Sustained ingestion throughput (from SUT adapter)                                     | ✅ Implemented |
+| Queries/s               | `queries_per_sec` (Gauge)                        | Query throughput under load                                                           | ✅ Implemented |
+| Total Queries           | `queries_total` (Counter)                        | Total queries executed during the run                                                 | ✅ Implemented |
+| Active Connections      | `active_connections` (Gauge)                     | Number of concurrent connections/clients                                              | ✅ Implemented |
+| SUT CPU                 | `sut_cpu_usage_percent` (Gauge)                  | SUT CPU utilization (from adapter `metrics`)                                          | ✅ Implemented |
+| SUT Memory              | `sut_memory_usage_bytes` (Gauge)                 | SUT memory usage (from adapter `metrics`)                                             | ✅ Implemented |
+| SUT Disk I/O            | `sut_disk_{read,write}_bytes` (Gauge)            | SUT disk read/write bytes (from adapter `metrics`)                                    | ✅ Implemented |
+| SUT Disk IOPS           | `sut_disk_{read,write}_iops` (Gauge)             | SUT disk IOPS (from adapter `metrics`)                                                | ✅ Implemented |
+| Efficiency              | `efficiency_queries_per_core` (Gauge)            | Query throughput normalized by CPU cores                                              | ✅ Implemented |
+| E2E Latency             | `e2e_latency_ms` (Histogram)                     | Raw event-to-queryable freshness samples; percentile is computed in dashboard queries | ✅ Implemented |
+| Checkpoint In-flight    | `checkpoint_in_flight_queries` (Gauge)           | In-flight query count during checkpoint validation                                    | ✅ Implemented |
+
+#### Grafana Dashboard
+
+A prebuilt Grafana dashboard for these benchmark metrics is available at:
+
+- `dashboards/spicebench-benchmarks.grafana.json`
+
+Included dashboard filters and sections:
+
+- Variables: `scenario`, `scale_factor`
+- Client Metrics panels: `Num Clients`, `P99 Queue Time`, `Query Queue Count`
+
+To use it in Grafana:
+
+1. Go to **Dashboards → New → Import**.
+2. Upload `dashboards/spicebench-benchmarks.grafana.json`.
+3. Select your InfluxDB datasource (the dashboard queries the `benchmarks-telemetry` bucket).
 
 #### Streaming Metrics (optional, `--otlp-endpoint`)
 
