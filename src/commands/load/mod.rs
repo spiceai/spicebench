@@ -650,6 +650,7 @@ pub(crate) async fn run(
     // Stop freshness scraper and emit P99 metrics
     e2e_latency_token.cancel();
     if let Ok(samples_by_table) = e2e_latency_handle.await {
+        println!("!!!! e2e samples_by_table: {:#?}", samples_by_table);
         let mut all_samples: Vec<f64> = Vec::new();
         for (table_name, samples) in &samples_by_table {
             if !samples.is_empty() {
@@ -672,6 +673,8 @@ pub(crate) async fn run(
                 all_samples.len()
             );
         }
+    } else {
+        println!("!!!!!! e2e empty");
     }
 
     println!("{}", vec!["-"; 30].join(""));

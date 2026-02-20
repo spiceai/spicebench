@@ -145,6 +145,7 @@ async fn run_benchmark(
     let quote_style = match setup_response.driver {
         AdbcDriver::Databricks => QuoteStyle::Backtick,
         AdbcDriver::Flightsql => QuoteStyle::default(),
+        AdbcDriver::Postgresql => QuoteStyle::default(),
     };
 
     let target: Arc<dyn Sink> = match common.etl_sink_mode {

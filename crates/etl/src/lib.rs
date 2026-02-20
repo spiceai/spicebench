@@ -476,7 +476,11 @@ impl ETLPipeline {
                 } else {
                     schema
                 };
-                let config = ProtocolDatasetConfig { schema };
+                let primary_key_columns = dataset.primary_key(&name);
+                let config = ProtocolDatasetConfig {
+                    schema,
+                    primary_key_columns,
+                };
                 (name, config)
             })
             .collect()

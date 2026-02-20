@@ -254,6 +254,21 @@ impl AdbcSink {
         }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Bulk ingest failed after retries")))
     }
+
+    /// Returns a (possibly sliced) batch capped at a hardcoded limit.
+    /// TODO: Remove this temporary debugging helper.
+    fn limit_rows(&self, batch: RecordBatch) -> RecordBatch {
+        const MAX_ROWS: usize = 10;
+        if batch.num_rows() > MAX_ROWS {
+            tracing::debug!(
+                original_rows = batch.num_rows(),
+                limited_to = MAX_ROWS,
+                "Limiting ingest batch rows"
+            );
+            return batch.slice(0, MAX_ROWS);
+        }
+        batch
+    }
 }
 
 #[async_trait]
@@ -270,11 +285,11 @@ impl Sink for AdbcSink {
         let start = std::time::Instant::now();
         match op {
             InsertOp::Insert => {
-                if num_rows == 0 {
+                let batch = self.limit_rows(batch);
+                if batch.num_rows() == 0 {
+
                     return Ok(());
                 }
-
-                self.bulk_ingest_batch(table_name, batch).await?;
             }
             InsertOp::Update { ref key_columns } => {
                 if num_rows == 0 {
