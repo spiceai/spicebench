@@ -132,15 +132,14 @@ fn record_ingestion_throughput(
     attributes: &[KeyValue],
     ingestion_start: &OnceLock<Instant>,
 ) {
-    if let Some(start) = ingestion_start.get() {
-        if let Some(rows) = response.ingestion.rows_ingested {
+    if let Some(start) = ingestion_start.get()
+        && let Some(rows) = response.ingestion.rows_ingested {
             let elapsed_secs = start.elapsed().as_secs_f64();
             if elapsed_secs > 0.0 {
                 crate::metrics::INGESTION_ROWS_PER_SEC
                     .record(rows as f64 / elapsed_secs, attributes);
             }
         }
-    }
 }
 
 /// Spawn a task that periodically queries `SELECT MAX(__created_at)` for each
