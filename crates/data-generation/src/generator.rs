@@ -104,7 +104,9 @@ impl DataGenerator {
                         Ok(Some(b)) => b,
                         Ok(None) => break,
                         Err(e) => {
-                            return Err(anyhow::anyhow!("Dataset error for table {table_gen}: {e}"));
+                            return Err(anyhow::anyhow!(
+                                "Dataset error for table {table_gen}: {e}"
+                            ));
                         }
                     };
                     metrics_gen.record_generation(&batch);
