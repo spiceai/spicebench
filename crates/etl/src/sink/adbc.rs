@@ -66,9 +66,12 @@ impl QuoteStyle {
 /// the ADBC bulk ingest API only supports append semantics.
 pub struct AdbcSink {
     conn: Arc<Mutex<AdbcConnection>>,
+    #[allow(dead_code)]
     created_tables: TokioMutex<HashSet<String>>,
     schema_name: Option<String>,
+    #[allow(dead_code)]
     insert_rows_per_statement: usize,
+    #[allow(dead_code)]
     auto_create_tables: bool,
     quote_style: QuoteStyle,
 }
@@ -118,6 +121,7 @@ impl AdbcSink {
         }
     }
 
+    #[allow(dead_code)]
     fn create_table_sql(&self, table_name: &str, schema: &Schema) -> anyhow::Result<String> {
         let columns = schema
             .fields()
@@ -230,6 +234,7 @@ impl AdbcSink {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Bulk ingest failed after retries")))
     }
 
+    #[allow(dead_code)]
     fn insert_sql_for_rows(
         &self,
         table_name: &str,
@@ -440,6 +445,7 @@ fn quote_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+#[allow(dead_code)]
 fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {
     match data_type {
         DataType::Boolean => Ok("BOOLEAN".to_string()),
