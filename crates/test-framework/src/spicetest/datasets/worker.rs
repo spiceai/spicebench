@@ -24,8 +24,8 @@ use std::{
 use anyhow::Result;
 use arrow::array::RecordBatch;
 use dashmap::DashMap;
-use futures::{TryStreamExt, stream::FuturesUnordered};
 use futures::StreamExt;
+use futures::{TryStreamExt, stream::FuturesUnordered};
 use indicatif::ProgressBar;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
