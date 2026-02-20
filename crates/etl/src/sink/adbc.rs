@@ -32,6 +32,25 @@ use super::{InsertOp, Sink};
 
 const DEFAULT_INSERT_ROWS_PER_STATEMENT: usize = 2048;
 
+/// Identifier quoting style for SQL dialects.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum QuoteStyle {
+    /// ANSI standard double-quote: `"identifier"`
+    #[default]
+    DoubleQuote,
+    /// Backtick quoting used by Databricks / MySQL: `` `identifier` ``
+    Backtick,
+}
+
+impl QuoteStyle {
+    fn quote(self, value: &str) -> String {
+        match self {
+            Self::DoubleQuote => format!("\"{}\"", value.replace('"', "\"\"")),
+            Self::Backtick => format!("`{}`", value.replace('`', "``")),
+        }
+    }
+}
+
 /// ETL sink that writes transformed batches directly into the SUT via ADBC SQL.
 ///
 /// This sink appends rows with batched `INSERT INTO ... VALUES` statements.
@@ -43,6 +62,7 @@ pub struct AdbcSink {
     schema_name: Option<String>,
     insert_rows_per_statement: usize,
     auto_create_tables: bool,
+    quote_style: QuoteStyle,
 }
 
 impl AdbcSink {
@@ -54,6 +74,7 @@ impl AdbcSink {
             schema_name,
             insert_rows_per_statement: DEFAULT_INSERT_ROWS_PER_STATEMENT,
             auto_create_tables: true,
+            quote_style: QuoteStyle::default(),
         }
     }
 
@@ -65,15 +86,27 @@ impl AdbcSink {
             schema_name,
             insert_rows_per_statement: DEFAULT_INSERT_ROWS_PER_STATEMENT,
             auto_create_tables: false,
+            quote_style: QuoteStyle::default(),
         }
+    }
+
+    /// Set the identifier quoting style for generated SQL.
+    #[must_use]
+    pub fn with_quote_style(mut self, quote_style: QuoteStyle) -> Self {
+        self.quote_style = quote_style;
+        self
+    }
+
+    fn quote_identifier(&self, value: &str) -> String {
+        self.quote_style.quote(value)
     }
 
     fn table_identifier(&self, table_name: &str) -> String {
         match &self.schema_name {
             Some(schema) if !schema.is_empty() => {
-                format!("{}.{table_name}", quote_identifier(schema))
+                format!("{}.{table_name}", self.quote_identifier(schema))
             }
-            _ => quote_identifier(table_name),
+            _ => self.quote_identifier(table_name),
         }
     }
 
@@ -83,7 +116,7 @@ impl AdbcSink {
             .iter()
             .map(|f| {
                 let col_type = sql_type_for_arrow(f.data_type())?;
-                Ok::<_, anyhow::Error>(format!("{} {col_type}", quote_identifier(f.name())))
+                Ok::<_, anyhow::Error>(format!("{} {col_type}", self.quote_identifier(f.name())))
             })
             .collect::<anyhow::Result<Vec<_>>>()?
             .join(", ");
@@ -260,14 +293,14 @@ impl AdbcSink {
             let field = &fields[col_idx];
             let value =
                 sql_literal_for_value(&batch.columns()[col_idx], field.data_type(), row_idx)?;
-            set_clauses.push(format!("{} = {value}", quote_identifier(field.name())));
+            set_clauses.push(format!("{} = {value}", self.quote_identifier(field.name())));
         }
 
         if set_clauses.is_empty() {
             anyhow::bail!("Update requires at least one non-key column in batch schema");
         }
 
-        let where_clause = where_clause_for_row(batch, row_idx, key_indexes)?;
+        let where_clause = where_clause_for_row(batch, row_idx, key_indexes, self.quote_style)?;
         Ok(format!(
             "UPDATE {} SET {} WHERE {where_clause}",
             self.table_identifier(table_name),
@@ -282,7 +315,7 @@ impl AdbcSink {
         row_idx: usize,
         key_indexes: &[usize],
     ) -> anyhow::Result<String> {
-        let where_clause = where_clause_for_row(batch, row_idx, key_indexes)?;
+        let where_clause = where_clause_for_row(batch, row_idx, key_indexes, self.quote_style)?;
         Ok(format!(
             "DELETE FROM {} WHERE {where_clause}",
             self.table_identifier(table_name)
@@ -294,6 +327,7 @@ fn where_clause_for_row(
     batch: &RecordBatch,
     row_idx: usize,
     key_indexes: &[usize],
+    quote_style: QuoteStyle,
 ) -> anyhow::Result<String> {
     let schema = batch.schema();
     let fields = schema.fields();
@@ -301,7 +335,7 @@ fn where_clause_for_row(
     for &col_idx in key_indexes {
         let field = &fields[col_idx];
         let column = &batch.columns()[col_idx];
-        let col_ident = quote_identifier(field.name());
+        let col_ident = quote_style.quote(field.name());
         if column.is_null(row_idx) {
             predicates.push(format!("{col_ident} IS NULL"));
         } else {
@@ -310,10 +344,6 @@ fn where_clause_for_row(
         }
     }
     Ok(predicates.join(" AND "))
-}
-
-fn quote_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn quote_string_literal(value: &str) -> String {

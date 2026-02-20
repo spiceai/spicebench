@@ -24,7 +24,9 @@ use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
 use etl::sink::adbc::AdbcSink;
+use etl::sink::QuoteStyle;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
+use system_adapter_protocol::AdbcDriver;
 use test_framework::{anyhow, rustls};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
@@ -119,7 +121,13 @@ async fn run_benchmark(
     })?;
     println!("ADBC connection established (driver: {})", driver_name);
 
-    let target = Arc::new(AdbcSink::new_without_table_creation(adbc_conn, None));
+    let quote_style = match adbc_driver.driver {
+        AdbcDriver::Databricks => QuoteStyle::Backtick,
+        AdbcDriver::Flightsql => QuoteStyle::default(),
+    };
+    let target = Arc::new(
+        AdbcSink::new_without_table_creation(adbc_conn, None).with_quote_style(quote_style),
+    );
 
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let generation_config = version_metadata.dataset_config();

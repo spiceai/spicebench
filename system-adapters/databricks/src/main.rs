@@ -396,7 +396,7 @@ impl DatabricksAdapter {
             DataType::Int64 | DataType::UInt32 | DataType::UInt64 => Ok("BIGINT".to_string()),
             DataType::Float16 | DataType::Float32 => Ok("FLOAT".to_string()),
             DataType::Float64 => Ok("DOUBLE".to_string()),
-            DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING".to_string()),
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok("STRING".to_string()),
             DataType::Date32 => Ok("DATE".to_string()),
             DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
             DataType::Decimal128(precision, scale) => {
@@ -409,7 +409,7 @@ impl DatabricksAdapter {
         }
     }
 
-    fn lakebase_table_ddl(
+    fn create_table_ddl(
         &self,
         table_name: &str,
         dataset_cfg: &DatasetConfig,
@@ -441,6 +441,11 @@ impl DatabricksAdapter {
         &self,
         metadata: &HashMap<String, Value>,
     ) -> Result<TableFormat> {
+        // Databricks managed tables only support Delta format.
+        if self.config.variant == DatabricksVariant::Databricks {
+            return Ok(TableFormat::Delta);
+        }
+
         if let Some(value) = metadata.get("table_format")
             && let Some(s) = value.as_str()
         {
@@ -802,6 +807,7 @@ impl DatabricksAdapter {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn uc_column_type_for_arrow(data_type: &DataType) -> Result<UcColumnType> {
         match data_type {
             DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN".to_string())),
@@ -832,6 +838,7 @@ impl DatabricksAdapter {
         }
     }
 
+    #[allow(dead_code)]
     async fn uc_table_exists(&self, table_name: &str) -> Result<bool> {
         let full_name = self.uc_table_full_name(table_name);
         let get_url = format!(
@@ -861,6 +868,7 @@ impl DatabricksAdapter {
         ))
     }
 
+    #[allow(dead_code)]
     async fn create_uc_table_if_not_exists(
         &self,
         table_name: &str,
@@ -967,12 +975,14 @@ struct UcSchemaCreateRequest {
     name: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct UcColumnType {
     type_name: String,
     type_text: String,
 }
 
+#[allow(dead_code)]
 impl UcColumnType {
     fn new(type_name: impl Into<String>, type_text: impl Into<String>) -> Self {
         Self {
@@ -982,6 +992,7 @@ impl UcColumnType {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct UcTableColumnCreateRequest {
     name: String,
@@ -991,6 +1002,7 @@ struct UcTableColumnCreateRequest {
     nullable: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct UcTableCreateRequest {
     name: String,
@@ -1076,10 +1088,7 @@ impl Handler for DatabricksAdapter {
         // parameters must be encoded as query parameters in the URI.
         Ok(SetupResponse {
             driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([(
-                "uri".to_string(),
-                Value::String(self.databricks_uri()),
-            )]),
+            db_kwargs: HashMap::from([("uri".to_string(), Value::String(self.databricks_uri()))]),
         })
     }
 
@@ -1099,24 +1108,24 @@ impl Handler for DatabricksAdapter {
         let mut created_tables = Vec::with_capacity(datasets.len());
 
         match self.config.variant {
-            DatabricksVariant::Databricks => {
-                self.ensure_uc_schema_exists()
-                    .await
-                    .map_err(|e| format!("Failed to ensure Unity Catalog schema exists: {e}"))?;
+            // DatabricksVariant::Databricks => {
+            //     self.ensure_uc_schema_exists()
+            //         .await
+            //         .map_err(|e| format!("Failed to ensure Unity Catalog schema exists: {e}"))?;
 
-                for (table_name, dataset_cfg) in datasets {
-                    let created = self
-                        .create_uc_table_if_not_exists(&table_name, &dataset_cfg)
-                        .await
-                        .map_err(|e| {
-                            format!("Failed to create Unity Catalog table '{table_name}': {e}")
-                        })?;
-                    if created {
-                        created_tables.push(table_name);
-                    }
-                }
-            }
-            DatabricksVariant::Lakebase => {
+            //     for (table_name, dataset_cfg) in datasets {
+            //         let created = self
+            //             .create_uc_table_if_not_exists(&table_name, &dataset_cfg)
+            //             .await
+            //             .map_err(|e| {
+            //                 format!("Failed to create Unity Catalog table '{table_name}': {e}")
+            //             })?;
+            //         if created {
+            //             created_tables.push(table_name);
+            //         }
+            //     }
+            // }
+            DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
                 for (table_name, dataset_cfg) in datasets {
                     let drop_sql = format!(
                         "DROP TABLE IF EXISTS {}",
@@ -1129,10 +1138,13 @@ impl Handler for DatabricksAdapter {
                     })?;
 
                     let create_sql = self
-                        .lakebase_table_ddl(&table_name, &dataset_cfg, table_format)
+                        .create_table_ddl(&table_name, &dataset_cfg, table_format)
                         .map_err(|e| {
                             format!("Failed to build Lakebase table DDL for '{table_name}': {e}")
                         })?;
+
+                    eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+
                     self.execute_sql_statement(&create_sql).await.map_err(|e| {
                         format!("Failed to create Lakebase table '{table_name}': {e}")
                     })?;
