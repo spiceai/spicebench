@@ -62,7 +62,7 @@ on:
 jobs:
   run-spicebench:
     name: Run spicebench
-    runs-on: spiceai-dev-runners
+    runs-on: ubuntu-latest
     timeout-minutes: 600
     concurrency:
       group: spicebench-run
