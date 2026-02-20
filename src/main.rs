@@ -130,12 +130,13 @@ async fn run_benchmark(
 
     let target: Arc<dyn Sink> = match common.etl_sink_mode {
         EtlSinkMode::Adbc => {
-            let adbc_conn = AdbcConnection::create(&driver_name, sink_kwargs.clone()).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to create ADBC connection for driver {}: {e}",
-                    driver_name
-                )
-            })?;
+            let adbc_conn =
+                AdbcConnection::create(&driver_name, sink_kwargs.clone()).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to create ADBC connection for driver {}: {e}",
+                        driver_name
+                    )
+                })?;
             println!("ADBC sink connection established (driver: {})", driver_name);
             let quote_style = match adbc_driver.driver {
                 AdbcDriver::Databricks => QuoteStyle::Backtick,
