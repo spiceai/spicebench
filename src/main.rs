@@ -141,6 +141,11 @@ async fn run_benchmark(
     )?
     .with_target_config(hive_config.clone());
 
+    // --- Initialize: ETL the first batch so the target has data ---
+    tracing::info!("Initializing ETL pipeline (first batch)...");
+    pipeline.initialize().await?;
+    tracing::info!("ETL pipeline initialized");
+
     // --- Call setup with datasets to provision the SUT ---
     let setup_response = system_adapter_client
         .lock()
@@ -155,11 +160,6 @@ async fn run_benchmark(
 
     let driver_name = setup_response.driver.to_string();
     let db_kwargs = setup_response.db_kwargs;
-
-    // --- Initialize: ETL the first batch so the target has data ---
-    tracing::info!("Initializing ETL pipeline (first batch)...");
-    pipeline.initialize().await?;
-    tracing::info!("ETL pipeline initialized");
 
     let load_conn = match AdbcConnection::create(&driver_name, db_kwargs) {
         Ok(conn) => conn,
