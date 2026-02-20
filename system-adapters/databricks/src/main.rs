@@ -481,16 +481,16 @@ impl DatabricksAdapter {
     /// Build a CTAS statement that creates the table by reading parquet files
     /// from S3.
     ///
+    /// `location` is the full S3 URI for the table data, e.g.
+    /// `s3://bucket/etl-hive-output/tpch/<run-id>/lineitem/`.
+    ///
     /// ```sql
     /// CREATE OR REPLACE TABLE catalog.schema.table
-    ///   AS SELECT * FROM parquet.`s3://bucket/prefix/scenario/version/tables/table/`
+    ///   AS SELECT * FROM parquet.`s3://bucket/path/to/table/`
     /// ```
-    fn create_table_ctas(&self, table_name: &str) -> String {
-        let source_uri = format!(
-            "s3://spiceai-public-datasets/data-gen/tpch/4/tables/{table_name}/"
-        );
+    fn create_table_ctas(&self, table_name: &str, location: &str) -> String {
         format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM parquet.`{source_uri}`",
+            "CREATE OR REPLACE TABLE {} AS SELECT * FROM parquet.`{location}`",
             self.lakebase_table_full_name(table_name),
         )
     }
@@ -865,20 +865,19 @@ impl DatabricksAdapter {
         Ok(())
     }
 
-    async fn ensure_notebook(&self, scenario_slug: &str, tables: &[String]) -> Result<()> {
-        let tables_json = serde_json::to_string(tables)?;
+    async fn ensure_notebook(&self, scenario_slug: &str, table_locations: &HashMap<String, String>) -> Result<()> {
+        let table_locations_json = serde_json::to_string(table_locations)?;
         let notebook_source = format!(
             r#"
 from pyspark.sql.functions import *
+import json
 
 catalog = "{catalog}"
 schema = "{schema}"
-s3_base = "s3://spiceai-public-datasets/data-gen/tpch/4/tables"
 
-tables = {tables_json}
+table_locations = json.loads('{table_locations_json}')
 
-for table in tables:
-    source_path = f"{{s3_base}}/{{table}}/"
+for table, source_path in table_locations.items():
     target_table = f"{{catalog}}.{{schema}}.{{table}}"
     checkpoint = f"/tmp/spicebench_{{schema}}_{{table}}_checkpoint"
     schema_location = f"/tmp/spicebench_{{schema}}_{{table}}_schema"
@@ -901,7 +900,7 @@ print("OK")
 "#,
             catalog = self.config.catalog,
             schema = self.config.schema,
-            tables_json = tables_json,
+            table_locations_json = table_locations_json,
         );
 
         let encoded = general_purpose::STANDARD.encode(notebook_source);
@@ -928,7 +927,7 @@ print("OK")
 
         eprintln!(
             "[databricks-adapter] uploading sync notebook: scenario={scenario_slug} tables_count={} path={notebook_path}",
-            tables.len()
+            table_locations.len()
         );
         let url = format!("https://{}/api/2.0/workspace/import", self.config.endpoint);
         let response = self
@@ -958,7 +957,7 @@ print("OK")
 
         eprintln!(
             "[databricks-adapter] sync notebook uploaded: scenario={scenario_slug} tables_count={} path={notebook_path}",
-            tables.len()
+            table_locations.len()
         );
 
         Ok(())
@@ -1332,13 +1331,18 @@ impl Handler for DatabricksAdapter {
         );
 
         let mut created_tables = Vec::with_capacity(datasets.len());
+        let mut table_locations: HashMap<String, String> = HashMap::with_capacity(datasets.len());
 
         match self.config.variant {
             DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
-                for (table_name, _dataset_cfg) in datasets {
+                for (table_name, dataset_cfg) in &datasets {
+                    let location = dataset_cfg.location.as_deref().ok_or_else(|| {
+                        format!("Dataset '{table_name}' is missing required 'location' field")
+                    })?;
+
                     let drop_sql = format!(
                         "DROP TABLE IF EXISTS {}",
-                        self.lakebase_table_full_name(&table_name)
+                        self.lakebase_table_full_name(table_name)
                     );
                     self.execute_sql_statement(&drop_sql).await.map_err(|e| {
                         format!(
@@ -1346,7 +1350,7 @@ impl Handler for DatabricksAdapter {
                         )
                     })?;
 
-                    let create_sql = self.create_table_ctas(&table_name);
+                    let create_sql = self.create_table_ctas(table_name, location);
 
                     eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
 
@@ -1354,7 +1358,8 @@ impl Handler for DatabricksAdapter {
                         format!("Failed to create Lakebase table '{table_name}': {e}")
                     })?;
 
-                    created_tables.push(table_name);
+                    table_locations.insert(table_name.clone(), location.to_string());
+                    created_tables.push(table_name.clone());
                 }
             }
         }
@@ -1363,13 +1368,7 @@ impl Handler for DatabricksAdapter {
             state.created_tables = created_tables;
         }
 
-        let tables = self
-            .runs
-            .get(&run_id)
-            .map(|state| state.created_tables.clone())
-            .unwrap_or_default();
-
-        self.ensure_notebook(&scenario_slug, &tables)
+        self.ensure_notebook(&scenario_slug, &table_locations)
             .await
             .map_err(|e| format!("Failed to upload sync notebook: {e}"))?;
 
