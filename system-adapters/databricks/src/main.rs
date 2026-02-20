@@ -568,6 +568,7 @@ impl DatabricksAdapter {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn delete_uc_table_if_exists(&self, table_name: &str) -> Result<()> {
         let full_name = self.uc_table_full_name(table_name);
         let delete_url = format!(
@@ -1509,6 +1510,7 @@ impl Handler for DatabricksAdapter {
 
         // 3. Drop created tables.
         if self.config.drop_tables_on_teardown {
+            let table_count = state.created_tables.len();
             for table_name in &state.created_tables {
                 match self.config.variant {
                     DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
@@ -1516,12 +1518,13 @@ impl Handler for DatabricksAdapter {
                             format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
                         self.execute_sql_statement(&sql).await.map_err(|e| {
                             format!(
-                                "Failed to drop Lakebase table '{table_name}' during teardown: {e}"
+                                "Failed to drop table '{table_name}' during teardown: {e}"
                             )
                         })?;
                     }
                 }
             }
+            eprintln!("[databricks-adapter] cleaned up {table_count} temporary table(s)");
         }
 
         if state.cluster_created_by_adapter
