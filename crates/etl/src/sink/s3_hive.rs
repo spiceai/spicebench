@@ -116,7 +116,9 @@ impl S3HiveSink {
 
         let path = if self.prefix.is_empty() {
             if partition_path.is_empty() {
-                ObjectPath::from(format!("{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet"))
+                ObjectPath::from(format!(
+                    "{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet"
+                ))
             } else {
                 ObjectPath::from(format!(
                     "{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet"
@@ -240,9 +242,7 @@ fn partition_batch(
             } else {
                 let string_repr = arrow::array::cast::as_string_array(
                     &compute::cast(col, &arrow::datatypes::DataType::Utf8).map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to cast partition column '{name}' to string: {e}"
-                        )
+                        anyhow::anyhow!("Failed to cast partition column '{name}' to string: {e}")
                     })?,
                 )
                 .clone();

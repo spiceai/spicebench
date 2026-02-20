@@ -104,9 +104,7 @@ impl DataGenerator {
                         Ok(Some(b)) => b,
                         Ok(None) => break,
                         Err(e) => {
-                            return Err(anyhow::anyhow!(
-                                "Dataset error for table {table_gen}: {e}"
-                            ))
+                            return Err(anyhow::anyhow!("Dataset error for table {table_gen}: {e}"));
                         }
                     };
                     metrics_gen.record_generation(&batch);
@@ -302,11 +300,7 @@ mod tests {
             let table_batches = HashMap::from([
                 (
                     "a".to_string(),
-                    Mutex::new(vec![
-                        test_batch(0, 2),
-                        test_batch(10, 2),
-                        test_batch(20, 2),
-                    ]),
+                    Mutex::new(vec![test_batch(0, 2), test_batch(10, 2), test_batch(20, 2)]),
                 ),
                 (
                     "b".to_string(),
