@@ -76,6 +76,7 @@ pub struct SpiceTestQueryWorkerResult {
 struct QueryRunResult {
     connection_failed: bool,
     query_failure: Option<String>,
+    shutdown: bool,
 }
 
 impl SpiceTestQueryWorkerResult {
@@ -287,6 +288,10 @@ impl SpiceTestQueryWorker {
                             )
                             .await?
                         {
+                            if self.shutdown_token.is_cancelled() {
+                                println!("Worker {} exiting due to shutdown", self.id);
+                                break;
+                            }
                             return Ok(SpiceTestQueryWorkerResult::new(
                                 &query_durations,
                                 query_iteration_durations,
@@ -322,7 +327,9 @@ impl SpiceTestQueryWorker {
                         // To discard the abnormal results caused by: establishing initial connection / spark cluster startup time
 
                         let QueryRunResult {
-                            connection_failed, ..
+                            connection_failed,
+                            shutdown,
+                            ..
                         } = self
                             .run_single_query(
                                 query,
@@ -332,6 +339,9 @@ impl SpiceTestQueryWorker {
                                 false,
                             )
                             .await?;
+                        if shutdown {
+                            break;
+                        }
                         if connection_failed {
                             return Ok(SpiceTestQueryWorkerResult::new(
                                 &query_durations,
@@ -387,6 +397,7 @@ impl SpiceTestQueryWorker {
                             let QueryRunResult {
                                 connection_failed,
                                 query_failure,
+                                shutdown,
                             } = self
                                 .run_single_query(
                                     query,
@@ -396,6 +407,10 @@ impl SpiceTestQueryWorker {
                                     self.validate,
                                 )
                                 .await?;
+
+                            if shutdown {
+                                break;
+                            }
 
                             if connection_failed {
                                 return Ok(SpiceTestQueryWorkerResult::new(
@@ -420,6 +435,8 @@ impl SpiceTestQueryWorker {
                     }
                 }
             }
+
+            println!("Worker {} exited", self.id);
 
             Ok(SpiceTestQueryWorkerResult::new(
                 &query_durations,
@@ -446,6 +463,7 @@ impl SpiceTestQueryWorker {
             let QueryRunResult {
                 connection_failed,
                 query_failure,
+                shutdown,
             } = self
                 .run_single_query(
                     query,
@@ -455,7 +473,7 @@ impl SpiceTestQueryWorker {
                     false,
                 )
                 .await?;
-            if connection_failed {
+            if shutdown || connection_failed {
                 return Ok(false);
             }
 
@@ -500,8 +518,18 @@ impl SpiceTestQueryWorker {
             Ok(()) => Ok(QueryRunResult {
                 connection_failed: false,
                 query_failure: None,
+                shutdown: false,
             }),
             Err(e) => {
+                // If shutdown was requested, exit quietly without logging errors
+                if self.shutdown_token.is_cancelled() {
+                    return Ok(QueryRunResult {
+                        connection_failed: false,
+                        query_failure: None,
+                        shutdown: true,
+                    });
+                }
+
                 // Check if this is a connection error using typed error checking
                 // This is more reliable than string matching
                 let is_connection_error =
@@ -522,6 +550,7 @@ impl SpiceTestQueryWorker {
                     Ok(QueryRunResult {
                         connection_failed: true,
                         query_failure: None,
+                        shutdown: false,
                     })
                 } else {
                     eprintln!(
@@ -536,6 +565,7 @@ impl SpiceTestQueryWorker {
                     Ok(QueryRunResult {
                         connection_failed: false,
                         query_failure: Some(format!("{e}")),
+                        shutdown: false,
                     })
                 }
             }
@@ -550,12 +580,15 @@ impl SpiceTestQueryWorker {
         results_snapshot: bool,
         validate: bool,
     ) -> Result<()> {
-        if self.shutdown_token.is_cancelled() {
-            return Err(anyhow::anyhow!("Shutdown requested"));
-        }
-
-        // Execute query using the configured executor
-        let result = self.executor.execute(query).await?;
+        // Race query execution against shutdown signal so in-flight queries
+        // are aborted immediately when shutdown is requested.
+        let result = tokio::select! {
+            biased;
+            () = self.shutdown_token.cancelled() => {
+                return Err(anyhow::anyhow!("Shutdown requested"));
+            }
+            result = self.executor.execute(query) => result?,
+        };
 
         // Handle validation if supported and requested
         if validate
