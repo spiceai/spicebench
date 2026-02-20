@@ -94,7 +94,6 @@ impl S3HiveSink {
             partition_columns,
         })
     }
-
 }
 
 /// Writes a single partition batch to S3 as a Parquet file.
