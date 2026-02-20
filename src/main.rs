@@ -26,9 +26,9 @@ use data_generation::version::VersionMetadata;
 use etl::sink::adbc::AdbcSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
+use tokio::sync::Mutex;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-
 mod args;
 mod commands;
 mod metrics;
@@ -52,7 +52,7 @@ pub enum SystemAdapterExecutionMode {
 
 async fn run_benchmark(
     common: &CommonArgs,
-    system_adapter_client: &mut system_adapter_protocol::Client,
+    system_adapter_client: Arc<Mutex<system_adapter_protocol::Client>>,
     run_id: uuid::Uuid,
     adbc_driver: system_adapter_protocol::SetupResponse,
     version_metadata: &VersionMetadata,
@@ -135,12 +135,15 @@ async fn run_benchmark(
 
     let datasets = pipeline.create_tables_request_datasets();
 
-    if let Err(e) = system_adapter_client.create_tables(run_id, datasets).await {
-        pipeline.cancel();
-        return Err(anyhow::anyhow!(
-            "Failed to create tables via system adapter: {e}"
-        ));
-    }
+    system_adapter_client
+        .lock()
+        .await
+        .create_tables(run_id, datasets)
+        .await
+        .map_err(|e| {
+            pipeline.cancel();
+            anyhow::anyhow!("Failed to create tables via system adapter: {e}")
+        })?;
 
     // --- Initialize: ETL the first batch so the target has data ---
     tracing::info!("Initializing ETL pipeline (first batch)...");
@@ -159,6 +162,8 @@ async fn run_benchmark(
     };
 
     commands::load::run(
+        system_adapter_client,
+        run_id,
         &common.scenario,
         common,
         load_conn,
@@ -248,17 +253,21 @@ async fn main() -> anyhow::Result<()> {
         ),
     ]);
 
-    let adbc_driver = match system_adapter_client.setup(run_id, setup_metadata).await {
+    let adbc_driver = match system_adapter_client
+        .setup(run_id.clone(), setup_metadata)
+        .await
+    {
         Ok(response) => response,
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to setup system adapter: {e}"));
         }
     };
 
+    let system_adapter_client = Arc::new(Mutex::new(system_adapter_client));
     let result = run_benchmark(
         &cli.common,
-        &mut system_adapter_client,
-        run_id,
+        Arc::clone(&system_adapter_client),
+        run_id.clone(),
         adbc_driver,
         &version_metadata,
         source,
@@ -266,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
     .await;
 
     // After successful setup, always teardown even if there are errors in between.
-    if let Err(e) = system_adapter_client.teardown(run_id).await {
+    if let Err(e) = system_adapter_client.lock().await.teardown(run_id).await {
         tracing::error!("Failed to teardown system adapter: {e}");
     }
 

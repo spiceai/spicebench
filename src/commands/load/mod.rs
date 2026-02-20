@@ -102,9 +102,10 @@ fn spawn_sut_metrics_scraper(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    match adapter.lock().await.metrics(run_id).await {
+                    let metrics_result = adapter.lock().await.metrics(run_id).await;
+                    match metrics_result {
                         Ok(resp) => {
-                            eprintln!("[Spicebench] helllo, metrics={resp:?}");
+                            println!("Metrics={:?}", resp);
                             record_sut_metrics(&resp, &attributes);
                             last_response = Some(resp);
                         }
@@ -139,6 +140,7 @@ fn spawn_e2e_latency_check(
     last_created_at_us: Arc<HashMap<String, AtomicI64>>,
 ) -> tokio::task::JoinHandle<HashMap<String, Vec<f64>>> {
     tokio::spawn(async move {
+        println!("[spawn_e2e_latency_check] Starting...");
         let mut samples_by_table: HashMap<String, Vec<f64>> = table_names
             .iter()
             .map(|t| (t.clone(), Vec::new()))
@@ -149,16 +151,18 @@ fn spawn_e2e_latency_check(
                 _ = ticker.tick() => {}
                 () = token.cancelled() => break,
             }
+            println!("[spawn_e2e_latency_check] after tick.");
 
             let conn = Arc::clone(&conn);
             let tables = table_names.clone();
             let timestamps = Arc::clone(&last_created_at_us);
             let results = tokio::task::spawn_blocking(move || {
+                println!("[spawn_e2e_latency_check] spawn_blocking.");
                 let mut out: Vec<(String, Option<f64>)> = Vec::new();
                 let mut guard = match conn.lock() {
                     Ok(g) => g,
                     Err(e) => {
-                        eprintln!("E2E latency scraper: lock poisoned: {e}");
+                        println!("E2E latency scraper: lock poisoned: {e}");
                         return out;
                     }
                 };
@@ -171,10 +175,13 @@ fn spawn_e2e_latency_check(
                         continue;
                     }
                     let sql = format!("SELECT MAX(__created_at) FROM {table}");
+                    println!("[spawn_e2e_latency_check] sql={sql}");
                     match guard.query(&sql) {
                         Ok(batches) => {
                             if let Ok(v) = pretty_format_batches(&batches) {
-                                eprintln!("[Spicebench] pretty formatted batches:\n{v}");
+                                println!("[Spicebench] pretty formatted batches:\n{v}");
+                            } else {
+                                println!("[Spicebench] failed to pretty format batches");
                             };
                             let sample = batches.first().and_then(|batch| {
                                 let col = batch.column(0);
@@ -186,7 +193,7 @@ fn spawn_e2e_latency_check(
                                 let max_ts_us = ts_array.value(0);
                                 Some((last_written_us - max_ts_us) as f64 / 1000.0)
                             });
-                            eprintln!(
+                            println!(
                                 "E2E latency checker: table={table}, freshness_ms={:?}",
                                 sample
                             );
@@ -274,6 +281,8 @@ fn load_checkpoint_results(
 
 #[expect(clippy::too_many_lines)]
 pub(crate) async fn run(
+    system_adapter_client: Arc<Mutex<system_adapter_protocol::Client>>,
+    run_id: uuid::Uuid,
     scenario: &Scenario,
     common_args: &CommonArgs,
     adbc_conn: adbc_client::AdbcConnection,
@@ -320,11 +329,9 @@ pub(crate) async fn run(
         && (common_args.system_adapter_stdio_cmd.is_some()
             || common_args.system_adapter_http_url.is_some())
     {
-        let adapter = super::connect_system_adapter(common_args).await?;
-        let run_id = uuid::Uuid::new_v4();
         println!("SUT metrics scraping enabled (run_id={run_id})");
         Some(spawn_sut_metrics_scraper(
-            Arc::new(Mutex::new(adapter)),
+            system_adapter_client,
             run_id,
             sut_scraper_token.clone(),
             Duration::from_secs(5),
