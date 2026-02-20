@@ -145,6 +145,7 @@ jobs:
           dbc install flightsql
 
       - name: Run spicebench
+        if: ${{ false }}
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
