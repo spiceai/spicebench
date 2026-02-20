@@ -368,16 +368,14 @@ pub(crate) async fn run(
         test_builder = test_builder.with_streaming_metrics(exporter.sender());
     }
 
-    // Create checkpoint validation channels when --validate-results is enabled
-    // and checkpoint data is available.
-    let validation_controller =
-        if common_args.validate_results && checkpoint_steps.is_some() && checkpoint_dir.is_some() {
-            let (controller, worker_handles) = create_validation_channels();
-            test_builder = test_builder.with_checkpoint_validation(worker_handles);
-            Some(controller)
-        } else {
-            None
-        };
+    // Always create validation channels so we can track query-set iteration
+    // completions. When --validate-results is enabled with checkpoint data,
+    // these channels are also used for checkpoint-based results validation.
+    let (validation_controller, validation_worker_handles) = create_validation_channels();
+    test_builder = test_builder.with_checkpoint_validation(validation_worker_handles);
+
+    let has_checkpoint_validation =
+        common_args.validate_results && checkpoint_steps.is_some() && checkpoint_dir.is_some();
 
     let (query_set, test_builder) =
         super::build_test_with_validation(scenario, test_builder).await?;
@@ -429,7 +427,7 @@ pub(crate) async fn run(
                         );
 
                         // --- Checkpoint validation window ---
-                        if let Some(ref validation_controller) = validation_controller
+                        if has_checkpoint_validation
                             && let Some(cp_dir) = checkpoint_dir
                         {
                             match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
@@ -458,9 +456,18 @@ pub(crate) async fn run(
                                     loop {
                                         let status =
                                             validation_controller.status_rx.borrow().clone();
-                                        if status.completed_iterations() >= TARGET_ITERATIONS {
-                                            break;
-                                        }
+                                        // Check both checkpoint_idx and iteration count to
+                                        // avoid acting on stale status from a previous window.
+                                        if let ValidationStatus::Active {
+                                            checkpoint_idx: idx,
+                                            completed_iterations,
+                                            ..
+                                        } = &status
+                                            && *idx == checkpoint_idx
+                                                && *completed_iterations >= TARGET_ITERATIONS
+                                            {
+                                                break;
+                                            }
                                         if wait_start.elapsed() >= MAX_WAIT {
                                             tracing::warn!(
                                                 checkpoint_idx,
@@ -539,7 +546,31 @@ pub(crate) async fn run(
                         tracing::info!("ETL pipeline resumed");
                     }
                     PipelineState::Stopped(StopReason::Completed) => {
-                        println!("ETL pipeline completed, stopping benchmark...");
+                        println!("ETL pipeline completed");
+                        if !has_checkpoint_validation {
+                            // When results validation is not enabled, wait for
+                            // at least 1 query set iteration to complete so we
+                            // collect meaningful query metrics before stopping.
+                            const POLL_INTERVAL: Duration = Duration::from_secs(1);
+                            const MAX_WAIT: Duration = Duration::from_secs(300);
+                            let wait_start = tokio::time::Instant::now();
+                            loop {
+                                let status =
+                                    validation_controller.status_rx.borrow().clone();
+                                if status.completed_iterations() >= 1 {
+                                    break;
+                                }
+                                if wait_start.elapsed() >= MAX_WAIT {
+                                    tracing::warn!(
+                                        completed = status.completed_iterations(),
+                                        "Timed out waiting for at least 1 query set iteration after ETL completion"
+                                    );
+                                    break;
+                                }
+                                tokio::time::sleep(POLL_INTERVAL).await;
+                            }
+                        }
+                        println!("Stopping benchmark...");
                         shutdown_token.cancel();
                         break None;
                     }
