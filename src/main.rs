@@ -133,18 +133,6 @@ async fn run_benchmark(
     )?
     .with_created_at(common.with_created_at);
 
-    let datasets = pipeline.create_tables_request_datasets();
-
-    system_adapter_client
-        .lock()
-        .await
-        .create_tables(run_id, datasets)
-        .await
-        .map_err(|e| {
-            pipeline.cancel();
-            anyhow::anyhow!("Failed to create tables via system adapter: {e}")
-        })?;
-
     // --- Initialize: ETL the first batch so the target has data ---
     tracing::info!("Initializing ETL pipeline (first batch)...");
     pipeline.initialize().await?;
@@ -254,7 +242,11 @@ async fn main() -> anyhow::Result<()> {
     ]);
 
     let adbc_driver = match system_adapter_client
-        .setup(run_id, setup_metadata)
+        .setup(
+            run_id.clone(),
+            setup_metadata,
+            std::collections::HashMap::new(),
+        )
         .await
     {
         Ok(response) => response,

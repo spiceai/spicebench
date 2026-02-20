@@ -1026,6 +1026,7 @@ impl Handler for DatabricksAdapter {
     async fn setup(
         &mut self,
         run_id: Uuid,
+        datasets: HashMap<String, DatasetConfig>,
         metadata: HashMap<String, Value>,
     ) -> std::result::Result<SetupResponse, String> {
         eprintln!("[databricks-adapter] setup: run_id={run_id}");
@@ -1071,23 +1072,7 @@ impl Handler for DatabricksAdapter {
                 cluster_created_by_adapter,
             },
         );
-        // The Databricks ADBC driver does not allow specifying both a URI and
-        // individual connection options (e.g. catalog, schema). All connection
-        // parameters must be encoded as query parameters in the URI.
-        Ok(SetupResponse {
-            driver: AdbcDriver::Databricks,
-            db_kwargs: HashMap::from([(
-                "uri".to_string(),
-                Value::String(self.databricks_uri()),
-            )]),
-        })
-    }
 
-    async fn create_tables(
-        &mut self,
-        run_id: Uuid,
-        datasets: HashMap<String, DatasetConfig>,
-    ) -> std::result::Result<CreateTablesResponse, String> {
         let table_format = {
             let state = self
                 .runs
@@ -1146,7 +1131,13 @@ impl Handler for DatabricksAdapter {
             state.created_tables = created_tables;
         }
 
-        Ok(CreateTablesResponse { ok: true })
+        // The Databricks ADBC driver does not allow specifying both a URI and
+        // individual connection options (e.g. catalog, schema). All connection
+        // parameters must be encoded as query parameters in the URI.
+        Ok(SetupResponse {
+            driver: AdbcDriver::Databricks,
+            db_kwargs: HashMap::from([("uri".to_string(), Value::String(self.databricks_uri()))]),
+        })
     }
 
     async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String> {
