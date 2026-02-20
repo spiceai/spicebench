@@ -1,5 +1,5 @@
 name: data-generation run
-run-name: data-generation run - ${{ github.event.inputs.scenario }} - v${{ github.event.inputs.version }} - sf${{ github.event.inputs.scale_factor }}
+run-name: data-generation run - ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }} - v${{ inputs.version || github.event.inputs.version }} - sf${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
 
 on:
   workflow_call:
@@ -13,7 +13,7 @@ on:
         type: string
       scale_factor:
         required: false
-        default: '1.0'
+        default: '0.01'
         type: string
       bucket:
         required: true
@@ -64,13 +64,13 @@ on:
         default: 'spiceai-macos'
         type: string
       version:
-        description: 'Version identifier for this generation (e.g. 1, 2, 3)'
+        description: 'Version identifier for this generation (e.g. 1, 2, 3, auto-tpch-sf0p01-spice-cloud-adbc-parquet-na-nocreatedat)'
         required: true
         type: string
       scale_factor:
         description: 'TPC-H scale factor'
         required: true
-        default: '1.0'
+        default: '0.01'
         type: string
       bucket:
         description: 'S3 bucket name'
@@ -142,7 +142,7 @@ jobs:
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
           VERSION: ${{ inputs.version || github.event.inputs.version }}
-          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '1.0' }}
+          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           MAX_CONCURRENCY: ${{ inputs.max_concurrency || github.event.inputs.max_concurrency || '8' }}

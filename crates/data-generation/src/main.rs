@@ -60,7 +60,7 @@ fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
         max_concurrency = ingestor_config.max_concurrency,
         bucket = target_config.bucket,
         prefix = target_config.prefix,
-        version = args.version,
+        version = %args.version,
         scenario = %args.scenario,
         "Configuration"
     );
@@ -75,7 +75,7 @@ fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
     let metrics = Metrics::new();
 
     let version_config = VersionConfig {
-        version: args.version,
+        version: args.version.clone(),
         scenario: args.scenario.clone(),
         scale_factor: args.scale_factor,
         num_steps: args.num_steps,

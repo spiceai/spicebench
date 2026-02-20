@@ -856,12 +856,12 @@ async fn run_pipeline(
 
     loop {
         // Check step budget.
-        if let Some(limit) = step_limit {
-            if steps_processed >= limit {
-                info!(steps_processed, "Step limit reached, pausing pipeline");
-                progress_logger.abort();
-                return PipelineState::Paused;
-            }
+        if let Some(limit) = step_limit
+            && steps_processed >= limit
+        {
+            info!(steps_processed, "Step limit reached, pausing pipeline");
+            progress_logger.abort();
+            return PipelineState::Paused;
         }
 
         if cancel.is_cancelled() {
@@ -905,7 +905,6 @@ async fn run_pipeline(
             let data_storage = Arc::clone(&data_storage);
             let data_sink = Arc::clone(&data_sink);
             let last_created_at = Arc::clone(&last_created_at_us);
-            let with_created_at = with_created_at;
 
             join_set.spawn(async move {
                 // 1. Read from source
