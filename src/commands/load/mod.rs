@@ -16,9 +16,10 @@ limitations under the License.
 #![allow(dead_code)]
 
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
-use arrow::array::{Array, TimestampMicrosecondArray};
+use arrow::array::{Array, RecordBatch, TimestampMicrosecondArray};
 use etl::{ETLPipeline, PipelineState, StopReason};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -29,6 +30,7 @@ use test_framework::{
     metrics::{MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, StatisticsCollector},
     opentelemetry::KeyValue,
     opentelemetry_sdk::Resource,
+    spicetest::datasets::{ValidationCommand, ValidationStatus, create_validation_channels},
     spicetest::{SpiceTest, datasets::NotStarted},
     telemetry::streaming::StreamingOtlpExporter,
 };
@@ -201,6 +203,64 @@ fn spawn_e2e_latency_check(
     })
 }
 
+/// Load checkpoint expected results from parquet files on disk for a given
+/// checkpoint index.
+///
+/// The checkpoints directory is laid out as:
+/// ```text
+/// {checkpoint_dir}/{checkpoint_idx}/{query_idx}.parquet
+/// ```
+///
+/// `query_names` provides the ordered mapping from `query_idx` to the query
+/// name used as keys in the returned map.
+///
+/// Returns a map of query name → expected `RecordBatch`es. Queries for which
+/// the parquet file does not exist are silently skipped.
+fn load_checkpoint_results(
+    checkpoint_dir: &Path,
+    checkpoint_idx: usize,
+    query_names: &[Arc<str>],
+) -> anyhow::Result<HashMap<Arc<str>, Vec<RecordBatch>>> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let idx_dir = checkpoint_dir.join(checkpoint_idx.to_string());
+    if !idx_dir.is_dir() {
+        anyhow::bail!("Checkpoint directory does not exist: {}", idx_dir.display());
+    }
+
+    let mut results: HashMap<Arc<str>, Vec<RecordBatch>> = HashMap::new();
+
+    for (query_idx, query_name) in query_names.iter().enumerate() {
+        let parquet_path = idx_dir.join(format!("{query_idx}.parquet"));
+        if !parquet_path.exists() {
+            tracing::debug!(
+                checkpoint = checkpoint_idx,
+                query = query_idx,
+                name = query_name.as_ref(),
+                "Checkpoint parquet not found, skipping"
+            );
+            continue;
+        }
+
+        let file = std::fs::File::open(&parquet_path)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+        let reader = builder.build()?;
+        let batches: Vec<RecordBatch> = reader.collect::<Result<_, _>>()?;
+
+        tracing::debug!(
+            checkpoint = checkpoint_idx,
+            query = query_idx,
+            name = query_name.as_ref(),
+            rows = batches.iter().map(|b| b.num_rows()).sum::<usize>(),
+            "Loaded checkpoint expected results"
+        );
+
+        results.insert(Arc::clone(query_name), batches);
+    }
+
+    Ok(results)
+}
+
 #[expect(clippy::too_many_lines)]
 pub(crate) async fn run(
     scenario: &Scenario,
@@ -208,6 +268,7 @@ pub(crate) async fn run(
     adbc_conn: adbc_client::AdbcConnection,
     etl_pipeline: &mut ETLPipeline,
     checkpoint_steps: Option<usize>,
+    checkpoint_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let metric_attributes = run_metric_attributes(common_args);
 
@@ -289,10 +350,23 @@ pub(crate) async fn run(
         test_builder = test_builder.with_streaming_metrics(exporter.sender());
     }
 
+    // Create checkpoint validation channels when --validate-results is enabled
+    // and checkpoint data is available.
+    let validation_controller =
+        if common_args.validate_results && checkpoint_steps.is_some() && checkpoint_dir.is_some() {
+            let (controller, worker_handles) = create_validation_channels();
+            test_builder = test_builder.with_checkpoint_validation(worker_handles);
+            Some(controller)
+        } else {
+            None
+        };
+
     let (query_set, test_builder) =
         super::build_test_with_validation(scenario, test_builder).await?;
 
-    let _queries = query_set.get_queries(None, None, None).await?;
+    // Build ordered query names for mapping checkpoint query_idx → query name.
+    let queries = query_set.get_queries(None, None, None).await?;
+    let query_names: Vec<Arc<str>> = queries.iter().map(|q| Arc::clone(&q.name)).collect();
 
     let throughput_test = SpiceTest::<NotStarted>::new(scenario.to_string(), test_builder)
         .with_progress_bars(false)
@@ -330,8 +404,115 @@ pub(crate) async fn run(
                 let state = etl_state_rx.borrow_and_update().clone();
                 match state {
                     PipelineState::Paused => {
-                        tracing::info!("ETL pipeline paused at checkpoint boundary");
-                        // TODO: run checkpoint-based query result validation here
+                        let checkpoint_idx = etl_pipeline.checkpoint_idx();
+                        tracing::info!(
+                            checkpoint_idx,
+                            "ETL pipeline paused at checkpoint boundary"
+                        );
+
+                        // --- Checkpoint validation window ---
+                        if let Some(ref validation_controller) = validation_controller
+                            && let Some(cp_dir) = checkpoint_dir
+                        {
+                            match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
+                                Ok(expected_results) if !expected_results.is_empty() => {
+                                    tracing::info!(
+                                        checkpoint_idx,
+                                        num_queries = expected_results.len(),
+                                        "Enabling checkpoint validation"
+                                    );
+
+                                    // Tell worker 0 to start validating.
+                                    let _ = validation_controller.command_tx.send(Some(
+                                        ValidationCommand::Enable {
+                                            checkpoint_idx,
+                                            expected_results,
+                                        },
+                                    ));
+
+                                    // Poll the validation status until at least
+                                    // `target_iterations` complete query-set iterations
+                                    // have finished, or a maximum timeout is reached.
+                                    const TARGET_ITERATIONS: usize = 2;
+                                    const POLL_INTERVAL: Duration = Duration::from_secs(5);
+                                    const MAX_WAIT: Duration = Duration::from_secs(600);
+                                    let wait_start = tokio::time::Instant::now();
+                                    loop {
+                                        let status =
+                                            validation_controller.status_rx.borrow().clone();
+                                        if status.completed_iterations() >= TARGET_ITERATIONS {
+                                            break;
+                                        }
+                                        if wait_start.elapsed() >= MAX_WAIT {
+                                            tracing::warn!(
+                                                checkpoint_idx,
+                                                completed = status.completed_iterations(),
+                                                target = TARGET_ITERATIONS,
+                                                "Validation window timed out before reaching target iterations"
+                                            );
+                                            break;
+                                        }
+                                        tokio::time::sleep(POLL_INTERVAL).await;
+                                    }
+
+                                    // Read the validation status before disabling.
+                                    let status = validation_controller.status_rx.borrow().clone();
+                                    match &status {
+                                        ValidationStatus::Active {
+                                            checkpoint_idx: idx,
+                                            outcomes,
+                                            completed_iterations: iters,
+                                        } => {
+                                            let total_pass: usize =
+                                                outcomes.iter().map(|o| o.pass_count).sum();
+                                            let total_fail: usize =
+                                                outcomes.iter().map(|o| o.fail_count).sum();
+                                            println!(
+                                                "Checkpoint {idx} validation ({iters} iterations): {} queries, {total_pass} pass, {total_fail} fail",
+                                                outcomes.len()
+                                            );
+                                            if total_fail > 0 {
+                                                for o in outcomes {
+                                                    if o.fail_count > 0 {
+                                                        eprintln!(
+                                                            "  FAIL - query '{}': {} pass, {} fail, last failure: {:?}",
+                                                            o.query_name,
+                                                            o.pass_count,
+                                                            o.fail_count,
+                                                            o.last_failure
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        ValidationStatus::Inactive => {
+                                            tracing::warn!(
+                                                "Validation status is unexpectedly Inactive"
+                                            );
+                                        }
+                                    }
+
+                                    // Disable validation before resuming ETL.
+                                    let _ = validation_controller
+                                        .command_tx
+                                        .send(Some(ValidationCommand::Disable));
+                                }
+                                Ok(_) => {
+                                    tracing::info!(
+                                        checkpoint_idx,
+                                        "No checkpoint results found, skipping validation"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        checkpoint_idx,
+                                        error = %e,
+                                        "Failed to load checkpoint results, skipping validation"
+                                    );
+                                }
+                            }
+                        }
+
                         if let Err(e) = etl_pipeline.continue_pipeline() {
                             eprintln!("Failed to continue ETL pipeline after pause: {e}");
                             shutdown_token.cancel();

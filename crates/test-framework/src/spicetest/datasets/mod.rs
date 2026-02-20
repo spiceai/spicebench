@@ -36,7 +36,12 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::{SpiceTest, TestCompleted, TestNotStarted, TestState};
+
+pub mod checkpoint_validation;
 mod worker;
+pub use checkpoint_validation::{
+    ValidationCommand, ValidationController, ValidationStatus, create_validation_channels,
+};
 pub(crate) use worker::{SpiceTestQueryWorker, SpiceTestQueryWorkerResult};
 
 #[derive(Debug, Clone, Copy)]
@@ -77,6 +82,8 @@ pub struct NotStarted {
     query_duration_threshold: Option<Duration>,
     query_set_type: Option<QuerySet>,
     query_overrides: Option<QueryOverrides>,
+    /// Checkpoint validation handles to give to worker 0.
+    checkpoint_validation_handles: Option<checkpoint_validation::ValidationWorkerHandles>,
 }
 
 impl Default for NotStarted {
@@ -95,6 +102,7 @@ impl Default for NotStarted {
             query_duration_threshold: None,
             query_set_type: None,
             query_overrides: None,
+            checkpoint_validation_handles: None,
         }
     }
 }
@@ -183,6 +191,20 @@ impl NotStarted {
     #[must_use]
     pub fn with_query_overrides(mut self, query_overrides: Option<QueryOverrides>) -> Self {
         self.query_overrides = query_overrides;
+        self
+    }
+
+    /// Set checkpoint validation handles for worker 0.
+    ///
+    /// Use [`create_validation_channels`] to create the paired controller and
+    /// worker handles. Pass the worker handles here; keep the controller in
+    /// the load runner.
+    #[must_use]
+    pub fn with_checkpoint_validation(
+        mut self,
+        handles: checkpoint_validation::ValidationWorkerHandles,
+    ) -> Self {
+        self.checkpoint_validation_handles = Some(handles);
         self
     }
 }
@@ -278,6 +300,8 @@ impl SpiceTest<NotStarted> {
             })
             .unwrap_or_default();
 
+        let mut checkpoint_validation_handles = self.state.checkpoint_validation_handles.take();
+
         let mut query_workers = Vec::new();
         for id in 0..self.state.parallel_count {
             let mut worker = SpiceTestQueryWorker::new(
@@ -293,6 +317,13 @@ impl SpiceTest<NotStarted> {
             .with_scale_factor(self.state.scale_factor)
             .with_shutdown_token(shutdown_token.clone())
             .with_skip_row_count_validation(row_count_validation_skip_queries.clone());
+
+            // Give checkpoint validation handles to worker 0 only.
+            if id == 0 {
+                if let Some(handles) = checkpoint_validation_handles.take() {
+                    worker = worker.with_validation_handles(handles);
+                }
+            }
 
             if let Some(multi) = &multi {
                 worker = worker.with_progress_bar(multi.add(self.get_new_progress_bar()));

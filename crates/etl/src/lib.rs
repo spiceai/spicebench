@@ -340,6 +340,11 @@ pub struct ETLPipeline {
     /// Whether to append a `__created_at` timestamp column to every batch.
     /// Defaults to `false`.
     with_created_at: bool,
+    /// The current checkpoint index, incremented each time the pipeline is
+    /// resumed via [`continue_pipeline`](ETLPipeline::continue_pipeline).
+    /// Only meaningful when the pipeline was started with
+    /// [`run`](ETLPipeline::run) (i.e. with a step budget).
+    checkpoint_idx: usize,
 }
 
 impl ETLPipeline {
@@ -380,6 +385,7 @@ impl ETLPipeline {
             })),
             last_created_at_us,
             with_created_at: false,
+            checkpoint_idx: 0,
         })
     }
 
@@ -409,6 +415,15 @@ impl ETLPipeline {
     /// Returns the underlying [`Dataset`] trait object.
     pub fn dataset(&self) -> &Arc<dyn Dataset> {
         &self.dataset
+    }
+
+    /// Returns the current checkpoint index.
+    ///
+    /// This is `0` after the first [`run`](ETLPipeline::run) call and is
+    /// incremented each time [`continue_pipeline`](ETLPipeline::continue_pipeline)
+    /// is called. Only meaningful when the pipeline uses a step budget.
+    pub fn checkpoint_idx(&self) -> usize {
+        self.checkpoint_idx
     }
 
     /// Returns a shared handle to the per-table most recent `__created_at`
@@ -683,6 +698,9 @@ impl ETLPipeline {
                 current_state
             );
         }
+
+        // Increment checkpoint index before resuming.
+        self.checkpoint_idx += 1;
 
         // Wait for the previous background task to finish (it should already
         // be done since it transitioned to Paused).
