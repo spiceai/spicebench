@@ -16,7 +16,7 @@ limitations under the License.
 
 use std::sync::Arc;
 
-use arrow::array::{Array, RecordBatch, TimestampMicrosecondArray};
+use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt64Array};
 use arrow::compute;
 use arrow::datatypes::Schema;
 use async_trait::async_trait;
@@ -30,14 +30,15 @@ use parquet::file::properties::WriterProperties;
 
 use super::{InsertOp, Sink};
 
-/// The column used for hive-style partitioning.
-const PARTITION_COLUMN: &str = "__created_at";
+/// Default partitioning column used when no explicit scheme is configured.
+const DEFAULT_PARTITION_COLUMN: &str = "__created_at";
+const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 
 /// ETL sink that writes batches as hive-partitioned Parquet files in S3.
 ///
 /// Each batch is written to a path of the form:
 /// ```text
-/// {prefix}/{table_name}/__created_at={value}/batch-{batch_id:06}.parquet
+/// {prefix}/{table_name}/{col1}={value1}/{col2}={value2}/batch-{batch_id:06}.parquet
 /// ```
 ///
 /// Only `Insert` operations are supported. `Update` and `Delete` operations
@@ -45,6 +46,7 @@ const PARTITION_COLUMN: &str = "__created_at";
 pub struct S3HiveSink {
     store: Arc<dyn ObjectStore>,
     prefix: String,
+    partition_columns: Vec<String>,
 }
 
 impl S3HiveSink {
@@ -68,9 +70,27 @@ impl S3HiveSink {
         }
 
         let store = Arc::new(builder.build()?);
+        let partition_columns = if config.partition_columns.is_empty() {
+            vec![DEFAULT_PARTITION_COLUMN.to_string()]
+        } else {
+            let columns: Vec<String> = config
+                .partition_columns
+                .iter()
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .map(ToOwned::to_owned)
+                .collect();
+            if columns.is_empty() {
+                vec![DEFAULT_PARTITION_COLUMN.to_string()]
+            } else {
+                columns
+            }
+        };
+
         Ok(Self {
             store,
             prefix: config.prefix.clone(),
+            partition_columns,
         })
     }
 
@@ -79,22 +99,41 @@ impl S3HiveSink {
         &self,
         table_name: &str,
         batch_id: u64,
-        partition_value: &str,
+        partition_path: &str,
         batch: &RecordBatch,
+        effective_partition_columns: &[String],
         partition_idx: usize,
     ) -> anyhow::Result<()> {
-        // Strip the partition column from the written data — it's encoded in the path.
-        let batch_without_partition = strip_column(batch, PARTITION_COLUMN)?;
+        // Strip partition columns from written data — they are encoded in the path.
+        let batch_without_partition = strip_columns(batch, effective_partition_columns)?;
+
+        if batch_without_partition.num_columns() == 0 {
+            anyhow::bail!(
+                "Cannot write table '{table_name}' with partition columns {:?}: no columns would remain in parquet output",
+                effective_partition_columns
+            );
+        }
 
         let path = if self.prefix.is_empty() {
-            ObjectPath::from(format!(
-                "{table_name}/{PARTITION_COLUMN}={partition_value}/batch-{batch_id:06}-{partition_idx:04}.parquet"
-            ))
+            if partition_path.is_empty() {
+                ObjectPath::from(format!("{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet"))
+            } else {
+                ObjectPath::from(format!(
+                    "{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet"
+                ))
+            }
         } else {
-            ObjectPath::from(format!(
-                "{}/{table_name}/{PARTITION_COLUMN}={partition_value}/batch-{batch_id:06}-{partition_idx:04}.parquet",
-                self.prefix
-            ))
+            if partition_path.is_empty() {
+                ObjectPath::from(format!(
+                    "{}/{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet",
+                    self.prefix
+                ))
+            } else {
+                ObjectPath::from(format!(
+                    "{}/{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet",
+                    self.prefix
+                ))
+            }
         };
 
         let props = WriterProperties::builder()
@@ -126,6 +165,7 @@ impl Sink for S3HiveSink {
         batch_id: u64,
         batch: RecordBatch,
         op: InsertOp,
+        partition_columns: Vec<String>,
     ) -> anyhow::Result<()> {
         match op {
             InsertOp::Insert => {}
@@ -141,18 +181,37 @@ impl Sink for S3HiveSink {
         }
 
         let schema = batch.schema();
-        let partition_col_idx = schema.index_of(PARTITION_COLUMN).map_err(|_| {
-            anyhow::anyhow!(
-                "Batch for table '{table_name}' is missing required partition column '{PARTITION_COLUMN}'"
+        let effective_partition_columns = if partition_columns.is_empty() {
+            self.partition_columns.clone()
+        } else {
+            partition_columns
+        };
+
+        let partition_columns_with_idx: Vec<(String, usize)> = effective_partition_columns
+            .iter()
+            .map(|column_name| {
+                let idx = schema.index_of(column_name).map_err(|_| {
+                    anyhow::anyhow!(
+                        "Batch for table '{table_name}' is missing required partition column '{column_name}'"
+                    )
+                })?;
+                Ok((column_name.clone(), idx))
+            })
+            .collect::<anyhow::Result<_>>()?;
+
+        // Group rows by distinct partition tuples in configured column order.
+        let partitions = partition_batch(&batch, &partition_columns_with_idx)?;
+
+        for (idx, (partition_path, partition_batch)) in partitions.iter().enumerate() {
+            self.write_partition(
+                table_name,
+                batch_id,
+                partition_path,
+                partition_batch,
+                &effective_partition_columns,
+                idx,
             )
-        })?;
-
-        // Group rows by distinct partition values.
-        let partitions = partition_batch(&batch, partition_col_idx)?;
-
-        for (idx, (partition_value, partition_batch)) in partitions.iter().enumerate() {
-            self.write_partition(table_name, batch_id, partition_value, partition_batch, idx)
-                .await?;
+            .await?;
         }
 
         Ok(())
@@ -160,45 +219,51 @@ impl Sink for S3HiveSink {
 }
 
 /// Splits a [`RecordBatch`] into groups based on distinct values of the column
-/// at `col_idx`. Returns `(partition_value_string, sub_batch)` pairs.
+/// set in `partition_columns_with_idx`. Returns `(partition_path, sub_batch)`
+/// pairs where `partition_path` is `col1=v1/col2=v2` in input order.
 fn partition_batch(
     batch: &RecordBatch,
-    col_idx: usize,
+    partition_columns_with_idx: &[(String, usize)],
 ) -> anyhow::Result<Vec<(String, RecordBatch)>> {
-    let col = batch.column(col_idx);
-
-    // Build a mapping from partition value → row indices.
+    // Build a mapping from partition path → row indices.
     let mut groups: indexmap::IndexMap<String, Vec<u64>> = indexmap::IndexMap::new();
 
-    if let Some(ts_array) = col.as_any().downcast_ref::<TimestampMicrosecondArray>() {
-        for row in 0..batch.num_rows() {
-            let key = if ts_array.is_null(row) {
-                "__HIVE_DEFAULT_PARTITION__".to_string()
+    let partition_arrays: Vec<(String, PartitionColumnValues)> = partition_columns_with_idx
+        .iter()
+        .map(|(name, idx)| {
+            let col = batch.column(*idx);
+            if let Some(ts_array) = col.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+                Ok((
+                    name.clone(),
+                    PartitionColumnValues::TimestampMicrosecond(ts_array.clone()),
+                ))
             } else {
-                ts_array.value(row).to_string()
-            };
-            groups.entry(key).or_default().push(row as u64);
+                let string_repr = arrow::array::cast::as_string_array(
+                    &compute::cast(col, &arrow::datatypes::DataType::Utf8).map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to cast partition column '{name}' to string: {e}"
+                        )
+                    })?,
+                )
+                .clone();
+                Ok((name.clone(), PartitionColumnValues::Utf8(string_repr)))
+            }
+        })
+        .collect::<anyhow::Result<_>>()?;
+
+    for row in 0..batch.num_rows() {
+        let mut path_segments = Vec::with_capacity(partition_arrays.len());
+        for (name, values) in &partition_arrays {
+            let value = values.value_as_partition_key(row);
+            path_segments.push(format!("{name}={value}"));
         }
-    } else {
-        // Fallback — use Display formatting for the array element.
-        let string_repr = arrow::array::cast::as_string_array(
-            &compute::cast(col, &arrow::datatypes::DataType::Utf8)
-                .map_err(|e| anyhow::anyhow!("Failed to cast partition column to string: {e}"))?,
-        )
-        .clone();
-        for row in 0..batch.num_rows() {
-            let key = if string_repr.is_null(row) {
-                "__HIVE_DEFAULT_PARTITION__".to_string()
-            } else {
-                string_repr.value(row).to_string()
-            };
-            groups.entry(key).or_default().push(row as u64);
-        }
+        let key = path_segments.join("/");
+        groups.entry(key).or_default().push(row as u64);
     }
 
     let mut result = Vec::with_capacity(groups.len());
     for (partition_value, row_indices) in groups {
-        let indices = arrow::array::UInt64Array::from(row_indices);
+        let indices = UInt64Array::from(row_indices);
         let columns: Vec<Arc<dyn Array>> = batch
             .columns()
             .iter()
@@ -212,26 +277,56 @@ fn partition_batch(
     Ok(result)
 }
 
-/// Removes a named column from a [`RecordBatch`].
-fn strip_column(batch: &RecordBatch, column_name: &str) -> anyhow::Result<RecordBatch> {
+enum PartitionColumnValues {
+    TimestampMicrosecond(TimestampMicrosecondArray),
+    Utf8(StringArray),
+}
+
+impl PartitionColumnValues {
+    fn value_as_partition_key(&self, row: usize) -> String {
+        match self {
+            Self::TimestampMicrosecond(values) => {
+                if values.is_null(row) {
+                    HIVE_DEFAULT_PARTITION.to_string()
+                } else {
+                    values.value(row).to_string()
+                }
+            }
+            Self::Utf8(values) => {
+                if values.is_null(row) {
+                    HIVE_DEFAULT_PARTITION.to_string()
+                } else {
+                    values.value(row).to_string()
+                }
+            }
+        }
+    }
+}
+
+/// Removes named columns from a [`RecordBatch`].
+fn strip_columns(batch: &RecordBatch, column_names: &[String]) -> anyhow::Result<RecordBatch> {
     let schema = batch.schema();
-    let idx = match schema.index_of(column_name) {
-        Ok(i) => i,
-        Err(_) => return Ok(batch.clone()), // column not present — nothing to strip
-    };
+    let indices_to_strip: std::collections::HashSet<usize> = column_names
+        .iter()
+        .filter_map(|name| schema.index_of(name).ok())
+        .collect();
+
+    if indices_to_strip.is_empty() {
+        return Ok(batch.clone());
+    }
 
     let new_fields: Vec<_> = schema
         .fields()
         .iter()
         .enumerate()
-        .filter(|(i, _)| *i != idx)
+        .filter(|(i, _)| !indices_to_strip.contains(i))
         .map(|(_, f)| f.clone())
         .collect();
     let new_columns: Vec<_> = batch
         .columns()
         .iter()
         .enumerate()
-        .filter(|(i, _)| *i != idx)
+        .filter(|(i, _)| !indices_to_strip.contains(i))
         .map(|(_, c)| c.clone())
         .collect();
 

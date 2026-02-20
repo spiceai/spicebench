@@ -98,6 +98,7 @@ impl Cli {
             prefix: version_prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
+            partition_columns: vec![],
         }
     }
 }

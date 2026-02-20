@@ -80,6 +80,20 @@ fn append_created_at(
     Ok(RecordBatch::try_new(new_schema, columns)?)
 }
 
+fn build_partition_columns(dataset_columns: Vec<String>) -> Vec<String> {
+    let mut columns = Vec::with_capacity(1 + dataset_columns.len());
+    columns.push(CREATED_AT_COLUMN.to_string());
+
+    for column in dataset_columns {
+        if column == CREATED_AT_COLUMN || columns.iter().any(|existing| existing == &column) {
+            continue;
+        }
+        columns.push(column);
+    }
+
+    columns
+}
+
 /// Removes internal bookkeeping columns (`_op`, `_op_index`) from a
 /// [`RecordBatch`] so they are not persisted to the sink.
 fn strip_internal_columns(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
@@ -498,8 +512,22 @@ impl ETLPipeline {
         }
 
         let tables = self.dataset.tables();
-        let first_batch_id = 0u64;
-        let total_tables = tables.len();
+        let mut init_batches: Vec<(String, u64)> = Vec::new();
+        let mut table_partition_columns: HashMap<String, Vec<String>> = HashMap::new();
+        for table_name in tables.keys() {
+            let ids = self.dataset.clone().batch_ids(table_name).await;
+            if let Some(first_id) = ids.front().copied() {
+                init_batches.push((table_name.clone(), first_id));
+            } else {
+                debug!(table = %table_name, "No batch IDs available; skipping initialization for table");
+            }
+
+            table_partition_columns.insert(
+                table_name.clone(),
+                build_partition_columns(self.dataset.partition_columns(table_name)),
+            );
+        }
+        let total_tables = init_batches.len();
 
         // Shared progress counters for periodic logging (mirrors run_pipeline style).
         let tables_completed = StdArc::new(AtomicU64::new(0));
@@ -534,11 +562,14 @@ impl ETLPipeline {
         };
 
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
-        for table_name in tables.keys() {
+        for (table_name, first_batch_id) in init_batches {
             let source = Arc::clone(&self.data_storage);
             let target = Arc::clone(&self.data_sink);
             let last_created_at = Arc::clone(&self.last_created_at_us);
-            let table_name = table_name.clone();
+            let partition_columns = table_partition_columns
+                .get(&table_name)
+                .cloned()
+                .unwrap_or_else(|| vec![CREATED_AT_COLUMN.to_string()]);
 
             join_set.spawn(async move {
                 let read_result = source
@@ -567,7 +598,13 @@ impl ETLPipeline {
                         })?;
 
                         target
-                            .write(&table_name, first_batch_id, output_batch, segment.op)
+                            .write(
+                                &table_name,
+                                first_batch_id,
+                                output_batch,
+                                segment.op,
+                                partition_columns.clone(),
+                            )
                             .await
                             .map_err(|e| {
                                 format!("write {table_name} batch {first_batch_id}: {e}")
@@ -717,9 +754,18 @@ impl ETLPipeline {
         let mut steps: BTreeMap<u64, Vec<String>> = BTreeMap::new();
 
         for name in tables.keys() {
-            for id in dataset.clone().batch_ids(name).await {
-                // Skip batch 0 — it was already processed during initialize().
-                if id == 0 {
+            let ids = dataset.clone().batch_ids(name).await;
+            let initialized_id = ids.front().copied();
+            let mut seen_ids = HashSet::new();
+
+            for id in ids {
+                // Skip the per-table first batch ID — it was processed during initialize().
+                if Some(id) == initialized_id {
+                    continue;
+                }
+                // Guard against duplicate IDs in metadata to avoid replaying the same batch.
+                if !seen_ids.insert(id) {
+                    debug!(table = %name, batch_id = id, "Skipping duplicate batch ID in work plan");
                     continue;
                 }
                 steps.entry(id).or_default().push(name.clone());
@@ -743,6 +789,18 @@ impl ETLPipeline {
         let state_tx = Arc::clone(&self.state_tx);
         let work_state = Arc::clone(&self.work_state);
         let last_created_at = Arc::clone(&self.last_created_at_us);
+        let table_partition_columns = Arc::new(
+            self.dataset
+                .tables()
+                .keys()
+                .map(|table_name| {
+                    (
+                        table_name.clone(),
+                        build_partition_columns(self.dataset.partition_columns(table_name)),
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+        );
 
         let handle = tokio::spawn(async move {
             let outcome = run_pipeline(
@@ -752,6 +810,7 @@ impl ETLPipeline {
                 cancel,
                 step_limit,
                 last_created_at,
+                table_partition_columns,
             )
             .await;
             let _ = state_tx.send(outcome);
@@ -786,6 +845,7 @@ async fn run_pipeline(
     cancel: CancellationToken,
     step_limit: Option<usize>,
     last_created_at_us: Arc<HashMap<String, AtomicI64>>,
+    table_partition_columns: Arc<HashMap<String, Vec<String>>>,
 ) -> PipelineState {
     // Take a snapshot of total counts for logging.
     let (total_steps, total_batches) = {
@@ -898,6 +958,10 @@ async fn run_pipeline(
             let data_storage = Arc::clone(&data_storage);
             let data_sink = Arc::clone(&data_sink);
             let last_created_at = Arc::clone(&last_created_at_us);
+            let partition_columns = table_partition_columns
+                .get(&table_name)
+                .cloned()
+                .unwrap_or_else(|| vec![CREATED_AT_COLUMN.to_string()]);
 
             join_set.spawn(async move {
                 // 1. Read from source
@@ -962,7 +1026,13 @@ async fn run_pipeline(
 
                         // 3. Write to sink
                         if let Err(e) = data_sink
-                            .write(&table_name, batch_id, output_batch, segment.op)
+                            .write(
+                                &table_name,
+                                batch_id,
+                                output_batch,
+                                segment.op,
+                                partition_columns.clone(),
+                            )
                             .await
                         {
                             error!(

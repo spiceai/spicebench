@@ -120,6 +120,10 @@ impl Dataset for SimpleSequenceDataset {
         vec!["id".to_string()]
     }
 
+    fn partition_columns(&self, _table: &str) -> Vec<String> {
+        vec![]
+    }
+
     fn num_batches(&self, _table: &str) -> u64 {
         // One batch per step for the single table.
         u64::from(self.num_steps)

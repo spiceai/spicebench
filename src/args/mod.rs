@@ -125,6 +125,12 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
 
+    /// Ordered list of columns used for hive-style partitioning of ETL output.
+    ///
+    /// Example: `--etl-partition-by __created_at,product_type`
+    #[arg(long, value_delimiter = ',', default_value = "__created_at")]
+    pub(crate) etl_partition_by: Vec<String>,
+
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]
     pub(crate) table_format: TableFormat,

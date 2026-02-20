@@ -305,6 +305,14 @@ pub trait Dataset: Send + Sync {
     /// Returns an empty `Vec` if the table has no defined primary key.
     fn primary_key(&self, table: &str) -> Vec<String>;
 
+    /// Returns ordered partitioning columns for the given table.
+    ///
+    /// Downstream components can use this to build table-specific partition
+    /// paths. The order of columns is significant and should be preserved.
+    fn partition_columns(&self, _table: &str) -> Vec<String> {
+        vec![]
+    }
+
     /// Returns the tables this dataset produces, including metadata, keyed by table name.
     fn tables(&self) -> HashMap<String, DatasetTable>;
 
@@ -366,6 +374,10 @@ impl Dataset for Arc<dyn Dataset> {
 
     fn primary_key(&self, table: &str) -> Vec<String> {
         (**self).primary_key(table)
+    }
+
+    fn partition_columns(&self, table: &str) -> Vec<String> {
+        (**self).partition_columns(table)
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {

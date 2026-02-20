@@ -128,6 +128,7 @@ async fn run_benchmark(
         prefix: hive_prefix.clone(),
         region: common.etl_region.clone(),
         endpoint: common.etl_endpoint.clone(),
+        partition_columns: common.etl_partition_by.clone(),
     };
 
     let target: Arc<dyn Sink> = Arc::new(S3HiveSink::new(&hive_config)?);
@@ -244,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
         prefix: version_prefix,
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
+        partition_columns: vec![],
     };
 
     let source = Arc::new(S3Storage::new(&source_config)?);
