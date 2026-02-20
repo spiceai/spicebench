@@ -135,6 +135,10 @@ pub struct DatasetConfig {
     pub schema: SchemaRef,
     /// Dataset S3 location (e.g. "s3://my-bucket/path/to/data/")
     pub location: Option<String>,
+    /// Optional column name to use as the ingestion time for metrics tracking
+    pub time_column: Option<String>,
+    /// Optional list of columns to use for partitioning the dataset in storage
+    pub partition_columns: Vec<String>,
 }
 
 /// Request to setup a benchmark run.
