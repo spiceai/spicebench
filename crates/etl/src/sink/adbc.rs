@@ -200,7 +200,6 @@ impl AdbcSink {
         }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Bulk ingest failed after retries")))
     }
-
 }
 
 #[async_trait]

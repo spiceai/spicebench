@@ -111,7 +111,8 @@ impl IcebergSink {
         {
             let created = self.created_tables.lock().await;
             if created.contains(table_name) {
-                self.ensure_state_table(table_name, batch.schema().as_ref()).await?;
+                self.ensure_state_table(table_name, batch.schema().as_ref())
+                    .await?;
                 return Ok(());
             }
         }
@@ -141,7 +142,8 @@ impl IcebergSink {
         created.insert(table_name.to_string());
         drop(created);
 
-        self.ensure_state_table(table_name, batch.schema().as_ref()).await?;
+        self.ensure_state_table(table_name, batch.schema().as_ref())
+            .await?;
         Ok(())
     }
 
@@ -216,15 +218,15 @@ impl IcebergSink {
             let guard = conn
                 .lock()
                 .map_err(|e| anyhow::anyhow!("DuckDB connection lock poisoned: {e}"))?;
-            let mut appender = guard
-                .appender(&state_table)
-                .map_err(|e| anyhow::anyhow!("Failed to create DuckDB appender for '{state_table}': {e}"))?;
-            appender
-                .append_record_batch(batch)
-                .map_err(|e| anyhow::anyhow!("Failed to append record batch to '{state_table}': {e}"))?;
-            appender
-                .flush()
-                .map_err(|e| anyhow::anyhow!("Failed to flush DuckDB appender for '{state_table}': {e}"))?;
+            let mut appender = guard.appender(&state_table).map_err(|e| {
+                anyhow::anyhow!("Failed to create DuckDB appender for '{state_table}': {e}")
+            })?;
+            appender.append_record_batch(batch).map_err(|e| {
+                anyhow::anyhow!("Failed to append record batch to '{state_table}': {e}")
+            })?;
+            appender.flush().map_err(|e| {
+                anyhow::anyhow!("Failed to flush DuckDB appender for '{state_table}': {e}")
+            })?;
             Ok::<_, anyhow::Error>(())
         })
         .await?
@@ -307,7 +309,10 @@ impl IcebergSink {
         ))
     }
 
-    fn key_column_indexes(batch: &RecordBatch, key_columns: &[String]) -> anyhow::Result<Vec<usize>> {
+    fn key_column_indexes(
+        batch: &RecordBatch,
+        key_columns: &[String],
+    ) -> anyhow::Result<Vec<usize>> {
         if key_columns.is_empty() {
             anyhow::bail!("Update/Delete requires at least one key column");
         }
@@ -350,14 +355,14 @@ impl IcebergSink {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("DuckDB connection lock poisoned: {e}"))?;
 
-            guard.execute(&create_sql, []).map_err(|e| {
-                anyhow::anyhow!("Failed to create staging table '{staging}': {e}")
-            })?;
+            guard
+                .execute(&create_sql, [])
+                .map_err(|e| anyhow::anyhow!("Failed to create staging table '{staging}': {e}"))?;
 
             {
-                let mut appender = guard
-                    .appender(&staging)
-                    .map_err(|e| anyhow::anyhow!("Failed to create appender for staging table: {e}"))?;
+                let mut appender = guard.appender(&staging).map_err(|e| {
+                    anyhow::anyhow!("Failed to create appender for staging table: {e}")
+                })?;
                 appender
                     .append_record_batch(batch)
                     .map_err(|e| anyhow::anyhow!("Failed to append to staging table: {e}"))?;
@@ -381,7 +386,10 @@ impl IcebergSink {
 
     async fn query_state_batches(&self, table_name: &str) -> anyhow::Result<Vec<RecordBatch>> {
         let conn = Arc::clone(&self.state_conn);
-        let sql = format!("SELECT * FROM {}", quote_identifier(&Self::state_table_name(table_name)));
+        let sql = format!(
+            "SELECT * FROM {}",
+            quote_identifier(&Self::state_table_name(table_name))
+        );
         tokio::task::spawn_blocking(move || {
             let guard = conn
                 .lock()
@@ -519,27 +527,16 @@ impl Sink for IcebergSink {
 
         match &op {
             InsertOp::Insert => {
-                self.append_state_batch(table_name, normalized_batch).await?;
+                self.append_state_batch(table_name, normalized_batch)
+                    .await?;
             }
             InsertOp::Update { key_columns } => {
-                self.apply_via_staging(
-                    table_name,
-                    batch_id,
-                    normalized_batch,
-                    key_columns,
-                    true,
-                )
-                .await?;
+                self.apply_via_staging(table_name, batch_id, normalized_batch, key_columns, true)
+                    .await?;
             }
             InsertOp::Delete { key_columns } => {
-                self.apply_via_staging(
-                    table_name,
-                    batch_id,
-                    normalized_batch,
-                    key_columns,
-                    false,
-                )
-                .await?;
+                self.apply_via_staging(table_name, batch_id, normalized_batch, key_columns, false)
+                    .await?;
             }
         }
 
@@ -583,6 +580,8 @@ fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {
         DataType::Date32 => Ok("DATE".to_string()),
         DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
         DataType::Decimal128(p, s) => Ok(format!("DECIMAL({p}, {s})")),
-        other => anyhow::bail!("Unsupported Arrow data type for Iceberg sink state table: {other:?}"),
+        other => {
+            anyhow::bail!("Unsupported Arrow data type for Iceberg sink state table: {other:?}")
+        }
     }
 }

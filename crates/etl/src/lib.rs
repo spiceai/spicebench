@@ -856,7 +856,9 @@ async fn run_pipeline(
 
     loop {
         // Check step budget.
-        if let Some(limit) = step_limit && steps_processed >= limit {
+        if let Some(limit) = step_limit
+            && steps_processed >= limit
+        {
             info!(steps_processed, "Step limit reached, pausing pipeline");
             progress_logger.abort();
             return PipelineState::Paused;
