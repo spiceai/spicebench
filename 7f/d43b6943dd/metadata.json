@@ -3,9 +3,13 @@
   "checkpoint_id": "7fd43b6943dd",
   "strategy": "manual-commit",
   "branch": "jeadie/26-02-20/metrics",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
-    "src/main.rs"
+    "crates/system-adapter-protocol/src/client.rs",
+    "crates/system-adapter-protocol/src/lib.rs",
+    "crates/system-adapter-protocol/src/server.rs",
+    "src/main.rs",
+    "system-adapters/databricks/src/main.rs"
   ],
   "sessions": [
     {
@@ -14,13 +18,20 @@
       "context": "/7f/d43b6943dd/0/context.md",
       "content_hash": "/7f/d43b6943dd/0/content_hash.txt",
       "prompt": "/7f/d43b6943dd/0/prompt.txt"
+    },
+    {
+      "metadata": "/7f/d43b6943dd/1/metadata.json",
+      "transcript": "/7f/d43b6943dd/1/full.jsonl",
+      "context": "/7f/d43b6943dd/1/context.md",
+      "content_hash": "/7f/d43b6943dd/1/content_hash.txt",
+      "prompt": "/7f/d43b6943dd/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 49,
-    "cache_creation_tokens": 38807,
-    "cache_read_tokens": 1960563,
-    "output_tokens": 1073,
-    "api_call_count": 45
+    "input_tokens": 75,
+    "cache_creation_tokens": 62815,
+    "cache_read_tokens": 2348448,
+    "output_tokens": 1267,
+    "api_call_count": 61
   }
 }
