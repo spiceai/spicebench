@@ -25,6 +25,7 @@ use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
 use etl::sink::Sink;
 use etl::sink::QuoteStyle;
+use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
 use etl::sink::iceberg::{IcebergObjectStoreConfig, IcebergSink};
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};

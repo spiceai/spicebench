@@ -479,7 +479,6 @@ impl IcebergSink {
                 location_generator,
                 file_name_generator,
             );
-
             let mut data_file_writer = DataFileWriterBuilder::new(rolling_writer_builder)
                 .build(None)
                 .await?;
