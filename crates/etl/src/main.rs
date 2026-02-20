@@ -97,9 +97,19 @@ async fn main() -> anyhow::Result<()> {
     let mutations = version_metadata.mutation_config();
 
     let hive_prefix = if cli.target_prefix.is_empty() {
-        format!("{}/{}/{}", cli.prefix.trim_matches('/'), cli.scenario, cli.version)
+        format!(
+            "{}/{}/{}",
+            cli.prefix.trim_matches('/'),
+            cli.scenario,
+            cli.version
+        )
     } else {
-        format!("{}/{}/{}", cli.target_prefix.trim_matches('/'), cli.scenario, cli.version)
+        format!(
+            "{}/{}/{}",
+            cli.target_prefix.trim_matches('/'),
+            cli.scenario,
+            cli.version
+        )
     };
     let hive_config = TargetConfig {
         bucket: cli.bucket.clone(),

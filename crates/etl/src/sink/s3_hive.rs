@@ -198,8 +198,7 @@ fn partition_batch(
 
     let mut result = Vec::with_capacity(groups.len());
     for (partition_value, row_indices) in groups {
-        let indices =
-            arrow::array::UInt64Array::from(row_indices);
+        let indices = arrow::array::UInt64Array::from(row_indices);
         let columns: Vec<Arc<dyn Array>> = batch
             .columns()
             .iter()
