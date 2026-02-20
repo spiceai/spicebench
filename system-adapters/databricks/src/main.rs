@@ -865,7 +865,11 @@ impl DatabricksAdapter {
         Ok(())
     }
 
-    async fn ensure_notebook(&self, scenario_slug: &str, table_locations: &HashMap<String, String>) -> Result<()> {
+    async fn ensure_notebook(
+        &self,
+        scenario_slug: &str,
+        table_locations: &HashMap<String, String>,
+    ) -> Result<()> {
         let table_locations_json = serde_json::to_string(table_locations)?;
         let notebook_source = format!(
             r#"
@@ -1041,9 +1045,7 @@ print("OK")
             eprintln!(
                 "[databricks-adapter] failed to create scheduled sync job: scenario={scenario_slug} job_name={job_name} status={status} body={body}"
             );
-            return Err(anyhow!(
-                "Databricks jobs/create failed ({status}): {body}"
-            ));
+            return Err(anyhow!("Databricks jobs/create failed ({status}): {body}"));
         }
 
         eprintln!(
@@ -1350,7 +1352,7 @@ impl Handler for DatabricksAdapter {
                     );
                     self.execute_sql_statement(&drop_sql).await.map_err(|e| {
                         format!(
-                            "Failed to drop existing Lakebase table '{table_name}' during create_tables: {e}"
+                            "Failed to drop existing table '{table_name}' during create_tables: {e}"
                         )
                     })?;
 
@@ -1358,9 +1360,9 @@ impl Handler for DatabricksAdapter {
 
                     eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
 
-                    self.execute_sql_statement(&create_sql).await.map_err(|e| {
-                        format!("Failed to create Lakebase table '{table_name}': {e}")
-                    })?;
+                    self.execute_sql_statement(&create_sql)
+                        .await
+                        .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
 
                     table_locations.insert(table_name.clone(), location.to_string());
                     created_tables.push(table_name.clone());
@@ -1377,8 +1379,8 @@ impl Handler for DatabricksAdapter {
             .map_err(|e| format!("Failed to upload sync notebook: {e}"))?;
 
         self.ensure_notebook_sync_job(&scenario_slug)
-                .await
-                .map_err(|e| format!("Failed to create scheduled notebook sync job: {e}"))?;
+            .await
+            .map_err(|e| format!("Failed to create scheduled notebook sync job: {e}"))?;
 
         // The Databricks ADBC driver does not allow specifying both a URI and
         // individual connection options (e.g. catalog, schema). All connection
