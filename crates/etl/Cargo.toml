@@ -17,7 +17,6 @@ name = "etl"
 path = "src/main.rs"
 
 [dependencies]
-adbc_client = { path = "../adbc_client" }
 anyhow.workspace = true
 arrow.workspace = true
 async-trait.workspace = true
@@ -25,9 +24,10 @@ chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
 duckdb = { workspace = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
-iceberg = { version = "0.8.0", default-features = false, features = ["storage-s3"] }
-parquet.workspace = true
+indexmap = { workspace = true }
+object_store = { workspace = true }
 serde_json.workspace = true
+parquet.workspace = true
 system-adapter-protocol = { path = "../system-adapter-protocol" }
 tokio.workspace = true
 tokio-util.workspace = true
