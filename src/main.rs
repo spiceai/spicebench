@@ -221,14 +221,27 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // --- Connect to S3 and read version metadata ---
+    let scenario_name = cli.common.scenario.to_string();
+    let version_prefix = build_version_prefix(
+        &cli.common.etl_prefix,
+        &scenario_name,
+        &cli.common.etl_version,
+    );
+    tracing::info!(
+        etl_source = %format!("s3://{}/{}/tables/", cli.common.etl_bucket, version_prefix),
+        etl_bucket = %cli.common.etl_bucket,
+        etl_prefix = %cli.common.etl_prefix,
+        etl_version = %cli.common.etl_version,
+        etl_region = ?cli.common.etl_region,
+        table_format = %cli.common.table_format,
+        scenario = %scenario_name,
+        concurrency = cli.common.concurrency,
+        "ETL configuration"
+    );
+
     let source_config = TargetConfig {
         bucket: cli.common.etl_bucket.clone(),
-        prefix: build_version_prefix(
-            &cli.common.etl_prefix,
-            &cli.common.scenario.to_string(),
-            &cli.common.etl_version,
-        ),
+        prefix: version_prefix,
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
     };
