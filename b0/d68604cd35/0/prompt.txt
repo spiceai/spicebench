@@ -1,0 +1,64 @@
+remove any reference to create_tables RPC in crates/system-adapter-protocol
+
+---
+
+[Request interrupted by user]
+
+---
+
+Compiling checkpointer v0.1.0 (/Users/jeadie/Github/spicebench-2/crates/checkpointer)
+   Compiling spicebench v0.1.0 (/Users/jeadie/Github/spicebench-2)
+error[E0599]: no method named `create_tables` found for struct `tokio::sync::MutexGuard<'_, system_adapter_protocol::Client>` in the current scope
+   --> src/main.rs:141:10
+    |
+138 | /     system_adapter_client
+139 | |         .lock()
+140 | |         .await
+141 | |         .create_tables(run_id, datasets)
+    | |         -^^^^^^^^^^^^^ method not found in `tokio::sync::MutexGuard<'_, system_adapter_protocol::Client>`
+    | |_________|
+    |
+
+error[E0061]: this method takes 3 arguments but 2 arguments were supplied
+   --> src/main.rs:257:10
+    |
+257 |         .setup(run_id.clone(), setup_metadata)
+    |          ^^^^^-------------------------------- argument #3 of type `HashMap<std::string::String, system_adapter_protocol::DatasetConfig>` is missing
+    |
+note: method defined here
+   --> /Users/jeadie/Github/spicebench-2/crates/system-adapter-protocol/src/client.rs:179:18
+    |
+179 |     pub async fn setup(
+    |                  ^^^^^
+help: provide the argument
+    |
+257 |         .setup(run_id.clone(), setup_metadata, /* HashMap<std::string::String, system_adapter_protocol::DatasetConfig> */)
+    |                                              ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Some errors have detailed explanations: E0061, E0599.
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `spicebench` (bin "spicebench") due to 2 previous errors
+
+---
+
+Okay, fixed and did some merge conflicts. Someone added 
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetupResponse {
+    /// Driver configuration for ingesting data into the SUT
+    pub ingest_driver: DriverConfig,
+    /// Driver configuration for reading/querying data from the SUT
+    pub read_driver: DriverConfig,
+}
+
+But now we only want to return the read driver, so we should just have 
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetupResponse {
+    /// ADBC driver to use
+    pub driver: AdbcDriver,
+    /// Driver-specific connection parameters
+    pub db_kwargs: HashMap<String, serde_json::Value>,
+}
+
+Since these DriverConfig will be for query only

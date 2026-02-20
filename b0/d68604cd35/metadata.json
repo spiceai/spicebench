@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "b0d68604cd35",
+  "strategy": "manual-commit",
+  "branch": "ci/parallel-check-test",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/pr.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b0/d68604cd35/0/metadata.json",
+      "transcript": "/b0/d68604cd35/0/full.jsonl",
+      "context": "/b0/d68604cd35/0/context.md",
+      "content_hash": "/b0/d68604cd35/0/content_hash.txt",
+      "prompt": "/b0/d68604cd35/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 71,
+    "cache_creation_tokens": 107196,
+    "cache_read_tokens": 3434713,
+    "output_tokens": 1356,
+    "api_call_count": 65
+  }
+}
