@@ -280,6 +280,7 @@ fn load_checkpoint_results(
 }
 
 #[expect(clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn run(
     system_adapter_client: Arc<Mutex<system_adapter_protocol::Client>>,
     run_id: uuid::Uuid,

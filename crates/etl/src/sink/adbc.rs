@@ -287,7 +287,6 @@ impl Sink for AdbcSink {
             InsertOp::Insert => {
                 let batch = self.limit_rows(batch);
                 if batch.num_rows() == 0 {
-
                     return Ok(());
                 }
             }
