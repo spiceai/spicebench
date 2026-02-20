@@ -83,6 +83,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: ./.github/actions/setup-cc
+
       - uses: ./.github/actions/management-login
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
         with:
