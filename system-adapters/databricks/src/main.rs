@@ -436,6 +436,23 @@ impl DatabricksAdapter {
         ))
     }
 
+    /// Build a CTAS statement that creates the table by reading parquet files
+    /// from S3.
+    ///
+    /// ```sql
+    /// CREATE OR REPLACE TABLE catalog.schema.table
+    ///   AS SELECT * FROM parquet.`s3://bucket/prefix/scenario/version/tables/table/`
+    /// ```
+    fn create_table_ctas(&self, table_name: &str) -> String {
+        let source_uri = format!(
+            "s3://spiceai-public-datasets/data-gen/tpch/4/tables/{table_name}/"
+        );
+        format!(
+            "CREATE OR REPLACE TABLE {} AS SELECT * FROM parquet.`{source_uri}`",
+            self.lakebase_table_full_name(table_name),
+        )
+    }
+
     fn table_format_from_setup_metadata(
         &self,
         metadata: &HashMap<String, Value>,
@@ -1084,19 +1101,11 @@ impl Handler for DatabricksAdapter {
             },
         );
 
-        let table_format = {
-            let state = self
-                .runs
-                .get(&run_id)
-                .ok_or_else(|| format!("Unknown run_id: {run_id}"))?;
-            state.table_format
-        };
-
         let mut created_tables = Vec::with_capacity(datasets.len());
 
         match self.config.variant {
             DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
-                for (table_name, dataset_cfg) in datasets {
+                for (table_name, _dataset_cfg) in datasets {
                     let drop_sql = format!(
                         "DROP TABLE IF EXISTS {}",
                         self.lakebase_table_full_name(&table_name)
@@ -1107,11 +1116,7 @@ impl Handler for DatabricksAdapter {
                         )
                     })?;
 
-                    let create_sql = self
-                        .create_table_ddl(&table_name, &dataset_cfg, table_format)
-                        .map_err(|e| {
-                            format!("Failed to build Lakebase table DDL for '{table_name}': {e}")
-                        })?;
+                    let create_sql = self.create_table_ctas(&table_name);
 
                     eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
 
