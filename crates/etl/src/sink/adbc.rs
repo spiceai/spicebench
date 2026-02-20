@@ -104,24 +104,58 @@ impl AdbcSink {
         table_name: &str,
         batch: RecordBatch,
     ) -> anyhow::Result<()> {
-        let conn = Arc::clone(&self.conn);
-        let target_table = table_name.to_string();
-        let target_schema = self.schema_name.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = conn
-                .lock()
-                .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
-            guard
-                .bulk_ingest(
-                    &target_table,
-                    target_schema.as_deref(),
-                    IngestMode::Append,
-                    batch,
-                )
-                .map_err(|e| anyhow::anyhow!("ADBC bulk ingest failed: {e}"))?;
-            Ok::<_, anyhow::Error>(())
-        })
-        .await?
+        const MAX_RETRIES: u32 = 3;
+        const INITIAL_BACKOFF_MS: u64 = 1000;
+
+        let mut last_err = None;
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let backoff = INITIAL_BACKOFF_MS * 2u64.pow(attempt - 1);
+                tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+            }
+
+            let conn = Arc::clone(&self.conn);
+            let target_table = table_name.to_string();
+            let target_schema = self.schema_name.clone();
+            let batch_clone = batch.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let mut guard = conn
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
+                guard
+                    .bulk_ingest(
+                        &target_table,
+                        target_schema.as_deref(),
+                        IngestMode::Append,
+                        batch_clone,
+                    )
+                    .map_err(|e| anyhow::anyhow!("ADBC bulk ingest failed: {e}"))?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await?;
+
+            match result {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let msg = e.to_string();
+                    let is_retryable = msg.contains("TableNotFound")
+                        || msg.contains("unavailable")
+                        || msg.contains("Internal");
+                    if is_retryable && attempt < MAX_RETRIES {
+                        tracing::warn!(
+                            table = %table_name,
+                            attempt = attempt + 1,
+                            error = %e,
+                            "Bulk ingest failed, retrying"
+                        );
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Bulk ingest failed after retries")))
     }
 }
 
