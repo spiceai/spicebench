@@ -128,6 +128,7 @@ async fn run_benchmark(
         prefix: hive_prefix.clone(),
         region: common.etl_region.clone(),
         endpoint: common.etl_endpoint.clone(),
+        partition_columns: common.etl_partition_by.clone(),
     };
 
     let target: Arc<dyn Sink> = Arc::new(S3HiveSink::new(&hive_config)?);
@@ -244,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
         prefix: version_prefix,
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
+        partition_columns: vec![],
     };
 
     let source = Arc::new(S3Storage::new(&source_config)?);
@@ -322,6 +324,29 @@ async fn main() -> anyhow::Result<()> {
             "etl_s3_hive_uri".to_string(),
             serde_json::Value::String(format!("s3://{}/{}", cli.common.etl_bucket, hive_prefix)),
         );
+    }
+
+    if let Ok(system_under_test) = std::env::var("SYSTEM_UNDER_TEST") {
+        setup_metadata.insert(
+            "system_under_test".to_string(),
+            serde_json::Value::String(system_under_test.clone()),
+        );
+
+        if let Some((prefix, variant)) = system_under_test.split_once('-') {
+            setup_metadata.insert(
+                "system_adapter_prefix".to_string(),
+                serde_json::Value::String(prefix.to_string()),
+            );
+            setup_metadata.insert(
+                "system_adapter_variant".to_string(),
+                serde_json::Value::String(variant.to_string()),
+            );
+        } else {
+            setup_metadata.insert(
+                "system_adapter_prefix".to_string(),
+                serde_json::Value::String(system_under_test),
+            );
+        }
     }
 
     let system_adapter_client = Arc::new(Mutex::new(system_adapter_client));

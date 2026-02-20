@@ -437,12 +437,28 @@ impl Dataset for TpchDataset {
         }
     }
 
+    fn partition_columns(&self, table: &str) -> Vec<String> {
+        match table {
+            "lineitem" => vec!["l_shipdate".to_string(), "l_returnflag".to_string()],
+            "orders" => vec!["o_orderdate".to_string()],
+            "customer" => vec!["c_nationkey".to_string()],
+            "supplier" => vec!["s_nationkey".to_string()],
+            "part" => vec!["p_brand".to_string()],
+            _ => vec![],
+        }
+    }
+
     fn num_batches(&self, table: &str) -> u64 {
         if !TPCH_TABLES.iter().any(|(name, _)| *name == table) {
             return 0;
         }
 
-        // One batch per table per step.
+        // Region and nation are fixed-size tables and should be emitted once.
+        if matches!(table, "region" | "nation") {
+            return 1;
+        }
+
+        // One batch per step for all other tables.
         u64::from(self.num_steps)
     }
 
@@ -454,14 +470,23 @@ impl Dataset for TpchDataset {
             .ok_or_else(|| anyhow::anyhow!("Unknown TPC-H table: {table}"))?;
 
         let current_step = step_counter.fetch_add(1, Ordering::SeqCst);
-        if current_step >= self.num_steps {
+        // Region and nation do not support part/part_count partitioning in tpchgen.
+        // Emit them only on the first step to avoid duplicate primary keys.
+        if matches!(table, "region" | "nation") {
+            if current_step > 0 {
+                return Ok(None);
+            }
+        } else if current_step >= self.num_steps {
             return Ok(None); // all parts exhausted for this table
         }
 
         // Generate the raw batch using tpchgen part/part_count for correct partitioning.
         // Parts are 1-indexed in tpchgen; part_count = num_steps.
-        let part = i32::from(current_step) + 1;
-        let part_count = i32::from(self.num_steps);
+        let (part, part_count) = if matches!(table, "region" | "nation") {
+            (1, 1)
+        } else {
+            (i32::from(current_step) + 1, i32::from(self.num_steps))
+        };
         let batch = generate_raw_batch(table, self.scale_factor, part, part_count);
         let num_creates = batch.num_rows();
 
@@ -594,5 +619,221 @@ impl Dataset for TpchDataset {
                 )
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    use crate::storage::{ReadResult, WriteResult};
+    use crate::version::VersionMetadata;
+
+    struct NoopStorage;
+
+    #[async_trait]
+    impl DataStorage for NoopStorage {
+        async fn list_batches(&self, _table_name: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn read_batch(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+        ) -> anyhow::Result<Option<ReadResult>> {
+            Ok(None)
+        }
+
+        async fn write(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+            _batch: RecordBatch,
+        ) -> anyhow::Result<WriteResult> {
+            Ok(WriteResult {
+                rows_written: 0,
+                bytes_written: 0,
+            })
+        }
+
+        async fn write_version_metadata(&self, _metadata: &VersionMetadata) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
+            Ok(None)
+        }
+
+        async fn read_batch_ids(&self, _table_name: &str) -> anyhow::Result<VecDeque<u64>> {
+            Ok(VecDeque::new())
+        }
+
+        fn table_params(&self, _table_name: &str) -> HashMap<String, serde_json::Value> {
+            HashMap::new()
+        }
+
+        fn expected_files(&self, _table_name: &str, _batch_ids: &[u64]) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    fn build_dataset(scale_factor: f64, num_steps: u16) -> TpchDataset {
+        TpchDataset::new(
+            &DatasetConfig {
+                dataset_type: "tpch".to_string(),
+                scale_factor,
+                num_steps,
+            },
+            &MutationConfig::new(0.0, 0.0),
+            Arc::new(NoopStorage),
+        )
+        .expect("failed to construct TpchDataset")
+    }
+
+    #[tokio::test]
+    async fn tpch_sf1_total_rows_match_expected_per_table() {
+        let dataset = build_dataset(1.0, 25);
+
+        for (table, _) in TPCH_TABLES {
+            let mut total_rows = 0u64;
+
+            while let Some(batch) = dataset
+                .raw_next_batch(table)
+                .await
+                .expect("raw_next_batch should not fail")
+            {
+                total_rows += batch.num_rows() as u64;
+            }
+
+            assert_eq!(
+                total_rows,
+                total_rows_for_table(table, 1.0),
+                "unexpected total row count for table '{table}' at SF1"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tpch_num_batches_matches_emitted_batches_per_table() {
+        let dataset = build_dataset(1.0, 7);
+
+        for (table, _) in TPCH_TABLES {
+            let mut emitted_batches = 0u64;
+
+            while dataset
+                .raw_next_batch(table)
+                .await
+                .expect("raw_next_batch should not fail")
+                .is_some()
+            {
+                emitted_batches += 1;
+            }
+
+            assert_eq!(
+                emitted_batches,
+                dataset.num_batches(table),
+                "unexpected batch count for table '{table}'"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tpch_zero_mutation_batches_have_create_only_ops() {
+        let dataset = build_dataset(1.0, 10);
+
+        for (table, _) in TPCH_TABLES {
+            while let Some(batch) = dataset
+                .raw_next_batch(table)
+                .await
+                .expect("raw_next_batch should not fail")
+            {
+                let op_col_idx = batch
+                    .schema()
+                    .index_of("_op")
+                    .expect("schema must contain _op column");
+                let ops = batch
+                    .column(op_col_idx)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("_op must be Utf8/StringArray");
+
+                for row in 0..ops.len() {
+                    assert!(!ops.is_null(row), "_op must not contain nulls");
+                    assert_eq!(
+                        ops.value(row),
+                        "c",
+                        "expected create op only for zero-mutation batch in table '{table}'"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tpch_row_counts_match_expected_for_varied_scale_factors() {
+        let scale_factors = [0.1, 1.0, 10.0];
+        // Keep this test fast while still validating both fixed-size and scale-dependent tables.
+        let tables = ["region", "nation", "supplier"];
+
+        for scale_factor in scale_factors {
+            let dataset = build_dataset(scale_factor, 25);
+
+            for table in tables {
+                let mut total_rows = 0u64;
+
+                while let Some(batch) = dataset
+                    .raw_next_batch(table)
+                    .await
+                    .expect("raw_next_batch should not fail")
+                {
+                    total_rows += batch.num_rows() as u64;
+                }
+
+                assert_eq!(
+                    total_rows,
+                    total_rows_for_table(table, scale_factor),
+                    "unexpected total row count for table '{table}' at SF={scale_factor}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tpch_sf1_lineitem_composite_primary_key_is_unique() {
+        let dataset = build_dataset(1.0, 25);
+
+        let mut seen_keys = HashSet::new();
+        let mut total_rows = 0u64;
+
+        while let Some(batch) = dataset
+            .raw_next_batch("lineitem")
+            .await
+            .expect("raw_next_batch should not fail")
+        {
+            let order_idx = batch
+                .schema()
+                .index_of("l_orderkey")
+                .expect("lineitem must contain l_orderkey");
+            let line_idx = batch
+                .schema()
+                .index_of("l_linenumber")
+                .expect("lineitem must contain l_linenumber");
+
+            for row in 0..batch.num_rows() {
+                let orderkey = get_i64_from_array(batch.column(order_idx).as_ref(), row) as u64;
+                let linenumber = get_i64_from_array(batch.column(line_idx).as_ref(), row) as u64;
+                let composite = (orderkey << 8) | linenumber;
+                assert!(
+                    seen_keys.insert(composite),
+                    "duplicate lineitem PK detected: (l_orderkey={orderkey}, l_linenumber={linenumber})"
+                );
+            }
+
+            total_rows += batch.num_rows() as u64;
+        }
+
+        assert_eq!(total_rows, total_rows_for_table("lineitem", 1.0));
     }
 }

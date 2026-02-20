@@ -25,20 +25,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Seed the target with a small initial batch of data (10 rows)
-    Initialize(CommonArgs),
     /// Run the full data generation pipeline from scratch
-    Run(RunArgs),
-}
-
-#[derive(Parser, Clone)]
-pub struct RunArgs {
-    #[command(flatten)]
-    pub common: CommonArgs,
-
-    /// Skip records that would be written during initialization (use after running `initialize` separately)
-    #[arg(long, default_value_t = false)]
-    pub skip_initial: bool,
+    Run(CommonArgs),
 }
 
 #[derive(Parser, Clone)]
@@ -98,6 +86,10 @@ pub struct TargetConfig {
     pub prefix: String,
     pub region: Option<String>,
     pub endpoint: Option<String>,
+    /// Ordered list of columns used for hive-style partitioning.
+    ///
+    /// Path segments are created in this same order, e.g. `a=.../b=...`.
+    pub partition_columns: Vec<String>,
 }
 
 pub struct IngestorConfig {
@@ -123,6 +115,7 @@ impl CommonArgs {
             prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
+            partition_columns: vec![],
         }
     }
 

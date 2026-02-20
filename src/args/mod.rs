@@ -45,7 +45,10 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) scenario: Scenario,
 
-    /// The number of clients to run simultaneously. Each client will send a query, wait for a response, then send another query.
+    /// The number of clients to run simultaneously.
+    ///
+    /// Each client runs query-set iterations independently and dispatches its
+    /// queries asynchronously.
     #[arg(long, default_value = "1")]
     pub(crate) concurrency: usize,
 
@@ -124,6 +127,12 @@ pub struct CommonArgs {
     /// S3 endpoint URL for the ETL bucket (for MinIO/LocalStack)
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
+
+    /// Ordered list of columns used for hive-style partitioning of ETL output.
+    ///
+    /// Example: `--etl-partition-by __created_at,product_type`
+    #[arg(long, value_delimiter = ',', default_value = "__created_at")]
+    pub(crate) etl_partition_by: Vec<String>,
 
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]

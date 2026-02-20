@@ -344,6 +344,7 @@ impl Sink for DuckDBSink {
         batch_id: u64,
         batch: RecordBatch,
         op: InsertOp,
+        _partition_columns: Vec<String>,
     ) -> anyhow::Result<()> {
         // Ensure the target table exists for insert/update operations.
         let should_ensure_table = matches!(op, InsertOp::Insert | InsertOp::Update { .. });
