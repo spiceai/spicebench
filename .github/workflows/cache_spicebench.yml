@@ -8,11 +8,11 @@ on:
 jobs:
   build-and-cache:
     name: Build and cache spicebench
-    runs-on: ubuntu-latest
+    runs-on: spiceai-macos
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
       - uses: ./.github/actions/build-spicebench
         with:
-          lookup-only: "true"
+          lookup-only: 'true'

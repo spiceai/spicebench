@@ -67,10 +67,10 @@ pub struct CommonArgs {
     #[arg(long, default_value = "tpch")]
     pub scenario: String,
 
-    /// Version identifier for this generation (e.g. 1, 2, 3).
+    /// Version identifier for this generation (e.g. 1, 2, 3, auto-ab12cd34).
     /// Storage path: `{prefix}/{scenario}/{version}/`
     #[arg(long)]
-    pub version: u64,
+    pub version: String,
 
     /// AWS region
     #[arg(long)]
@@ -116,7 +116,7 @@ impl CommonArgs {
     ///
     /// The resulting prefix is `{prefix}/{scenario}/{version}`.
     pub fn target_config(&self) -> TargetConfig {
-        let prefix = build_version_prefix(&self.prefix, &self.scenario, self.version);
+        let prefix = build_version_prefix(&self.prefix, &self.scenario, &self.version);
         TargetConfig {
             bucket: self.bucket.clone(),
             prefix,
@@ -135,7 +135,7 @@ impl CommonArgs {
 /// Builds the versioned storage prefix: `{prefix}/{scenario}/{version}`.
 ///
 /// If `prefix` is empty, the result is `{scenario}/{version}`.
-pub fn build_version_prefix(prefix: &str, scenario: &str, version: u64) -> String {
+pub fn build_version_prefix(prefix: &str, scenario: &str, version: &str) -> String {
     if prefix.is_empty() {
         format!("{scenario}/{version}")
     } else {
