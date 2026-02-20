@@ -132,6 +132,14 @@ pub struct CommonArgs {
     /// Append a `__created_at` timestamp column to every batch written to the sink.
     #[arg(long, default_value_t = false)]
     pub(crate) with_created_at: bool,
+
+    /// Enable checkpoint-based results validation during load tests.
+    ///
+    /// When enabled and checkpoint data is available, the load runner will
+    /// validate query results against pre-computed checkpoint snapshots at
+    /// each ETL pause boundary.
+    #[arg(long, default_value_t = false)]
+    pub(crate) validate_results: bool,
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
