@@ -17,20 +17,24 @@ limitations under the License.
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     panic,
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::Result;
 use arrow::array::RecordBatch;
 use dashmap::DashMap;
-use futures::TryStreamExt;
+use futures::StreamExt;
+use futures::{TryStreamExt, stream::FuturesUnordered};
 use indicatif::ProgressBar;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::execution::QueryExecutor;
+use crate::opentelemetry::KeyValue;
+use crate::opentelemetry::metrics::{Gauge, Histogram};
+use crate::telemetry::meter;
 use crate::telemetry::streaming::QueryMetricEvent;
 
 use crate::{
@@ -43,6 +47,22 @@ use super::EndCondition;
 use super::checkpoint_validation::{
     QueryValidationOutcome, ValidationCommand, ValidationStatus, ValidationWorkerHandles,
 };
+
+static QUERY_QUEUE_LENGTH: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+    meter()
+        .u64_gauge("query_queue_length")
+        .with_description("Queue depth when a query starts execution within a client worker")
+        .with_unit("queries")
+        .build()
+});
+
+static QUERY_QUEUE_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    meter()
+        .f64_histogram("query_queue_duration_ms")
+        .with_description("Queue wait time before query execution starts within a client worker")
+        .with_unit("ms")
+        .build()
+});
 
 /// Mutable state for checkpoint-based results validation.
 ///
@@ -279,6 +299,16 @@ impl SpiceTestQueryWorkerResult {
 }
 
 impl SpiceTestQueryWorker {
+    fn record_queue_metrics(&self, query_name: &str, queue_depth: usize, queue_duration: Duration) {
+        let attributes = vec![
+            KeyValue::new("query_name", query_name.to_string()),
+            KeyValue::new("client_id", self.id.to_string()),
+        ];
+
+        QUERY_QUEUE_LENGTH.record(queue_depth.try_into().unwrap_or(u64::MAX), &attributes);
+        QUERY_QUEUE_DURATION_MS.record(queue_duration.as_secs_f64() * 1000.0, &attributes);
+    }
+
     pub fn new(
         id: usize,
         query_set: Vec<Query>,
@@ -541,6 +571,8 @@ impl SpiceTestQueryWorker {
                                 &mut BTreeMap::new(),
                                 snapshot_results,
                                 false,
+                                0,
+                                Instant::now(),
                                 &mut checkpoint_validation,
                             )
                             .await?;
@@ -610,6 +642,8 @@ impl SpiceTestQueryWorker {
                                     &mut row_counts,
                                     false, // don't attempt to snapshot results more than once
                                     self.validate,
+                                    0,
+                                    Instant::now(),
                                     &mut checkpoint_validation,
                                 )
                                 .await?;
@@ -663,44 +697,110 @@ impl SpiceTestQueryWorker {
         queries: &[Query],
         checkpoint_validation: &mut Option<CheckpointValidationState>,
     ) -> Result<bool> {
+        if checkpoint_validation.as_ref().is_some_and(|cv| cv.active) {
+            for query in queries {
+                if self.shutdown_token.is_cancelled() {
+                    return Ok(false);
+                }
+                let QueryRunResult {
+                    connection_failed,
+                    query_failure,
+                    shutdown,
+                } = self
+                    .run_single_query(
+                        query,
+                        Arc::clone(&query_durations),
+                        row_counts,
+                        false,
+                        false,
+                        0,
+                        Instant::now(),
+                        checkpoint_validation,
+                    )
+                    .await?;
+                if shutdown || connection_failed {
+                    return Ok(false);
+                }
+
+                let worker_status = if let Some(query_failure) = query_failure {
+                    QueryStatus::Failed(Some(query_failure.into()))
+                } else {
+                    QueryStatus::Passed
+                };
+
+                query_statuses
+                    .entry(Arc::clone(&query.name))
+                    .and_modify(|existing_status| {
+                        if matches!(worker_status, QueryStatus::Failed(_)) {
+                            *existing_status = worker_status.clone();
+                        }
+                    })
+                    .or_insert(worker_status);
+            }
+            return Ok(true);
+        }
+
+        // For duration-based load runs, fan out all queries for this worker/client
+        // concurrently so each client can drive maximum request pressure.
+        // Concurrency is still controlled by the number of clients (workers).
+        let mut in_flight = FuturesUnordered::new();
         for query in queries {
             if self.shutdown_token.is_cancelled() {
                 return Ok(false);
             }
-            let QueryRunResult {
-                connection_failed,
-                query_failure,
-                shutdown,
-            } = self
-                .run_single_query(
-                    query,
-                    Arc::clone(&query_durations),
-                    row_counts,
-                    false,
-                    false,
-                    checkpoint_validation,
-                )
-                .await?;
-            if shutdown || connection_failed {
+
+            let query_name = Arc::clone(&query.name);
+            let query_durations = Arc::clone(&query_durations);
+            let queue_depth = in_flight.len();
+            let enqueued_at = Instant::now();
+
+            in_flight.push(async move {
+                let mut local_row_counts = BTreeMap::new();
+                let mut local_checkpoint_validation: Option<CheckpointValidationState> = None;
+                let run_result = self
+                    .run_single_query(
+                        query,
+                        query_durations,
+                        &mut local_row_counts,
+                        false,
+                        false,
+                        queue_depth,
+                        enqueued_at,
+                        &mut local_checkpoint_validation,
+                    )
+                    .await?;
+
+                Ok::<_, anyhow::Error>((query_name, run_result, local_row_counts))
+            });
+        }
+
+        while let Some(result) = in_flight.next().await {
+            let (query_name, run_result, local_row_counts) = result?;
+
+            if run_result.shutdown || run_result.connection_failed {
                 return Ok(false);
             }
 
-            let worker_status = if let Some(query_failure) = query_failure {
+            for (name, counts) in local_row_counts {
+                row_counts.entry(name).or_default().extend(counts);
+            }
+
+            let worker_status = if let Some(query_failure) = run_result.query_failure {
                 QueryStatus::Failed(Some(query_failure.into()))
             } else {
                 QueryStatus::Passed
             };
 
             query_statuses
-                .entry(Arc::clone(&query.name))
+                .entry(query_name)
                 .and_modify(|existing_status| {
-                    // If the worker reports failure, update the status to Failed
                     if matches!(worker_status, QueryStatus::Failed(_)) {
                         *existing_status = worker_status.clone();
                     }
                 })
                 .or_insert(worker_status);
         }
+
         Ok(true)
     }
 
@@ -712,6 +812,8 @@ impl SpiceTestQueryWorker {
         row_counts: &mut BTreeMap<Arc<str>, Vec<usize>>,
         results_snapshot: bool,
         validate: bool,
+        queue_depth: usize,
+        enqueued_at: Instant,
         checkpoint_validation: &mut Option<CheckpointValidationState>,
     ) -> Result<QueryRunResult> {
         match self
@@ -721,6 +823,8 @@ impl SpiceTestQueryWorker {
                 row_counts,
                 results_snapshot,
                 validate,
+                queue_depth,
+                enqueued_at,
                 checkpoint_validation,
             )
             .await
@@ -789,8 +893,12 @@ impl SpiceTestQueryWorker {
         row_counts: &mut BTreeMap<Arc<str>, Vec<usize>>,
         results_snapshot: bool,
         validate: bool,
+        queue_depth: usize,
+        enqueued_at: Instant,
         checkpoint_validation: &mut Option<CheckpointValidationState>,
     ) -> Result<()> {
+        self.record_queue_metrics(&query.name, queue_depth, enqueued_at.elapsed());
+
         // Race query execution against shutdown signal so in-flight queries
         // are aborted immediately when shutdown is requested.
         let result = tokio::select! {
