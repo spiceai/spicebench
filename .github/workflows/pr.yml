@@ -91,6 +91,9 @@ jobs:
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.rust == 'true'
+    concurrency:
+      group: spicebench-run
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v6
 
