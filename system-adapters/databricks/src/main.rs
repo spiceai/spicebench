@@ -1195,7 +1195,7 @@ impl DatabricksAdapter {
                 }
                 "SYNCED_TABLE_OFFLINE_FAILED" | "OFFLINE_FAILED" => {
                     let message = body
-                        .pointer("/status/data_synchronization_status/message")
+                        .pointer("/data_synchronization_status/message")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown error");
                     return Err(anyhow!(
@@ -1431,27 +1431,27 @@ impl Handler for DatabricksAdapter {
             }
             DatabricksVariant::Lakebase => {
                 // Phase 1: Create S3 External Tables
-                for (table_name, _dataset_cfg) in datasets.clone() {
-                    let drop_sql = format!(
-                        "DROP TABLE IF EXISTS {}",
-                        self.lakebase_table_full_name(&table_name)
-                    );
-                    self.execute_sql_statement(&drop_sql).await.map_err(|e| {
-                        format!(
-                            "Failed to drop existing table '{table_name}' during create_tables: {e}"
-                        )
-                    })?;
-
-                    let create_sql = self.create_table_ctas(&table_name);
-
-                    eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
-
-                    self.execute_sql_statement(&create_sql).await.map_err(|e| {
-                        format!("Failed to create table '{table_name}': {e}")
-                    })?;
-
-                    created_tables.push(table_name);
-                }
+                // for (table_name, _dataset_cfg) in datasets.clone() {
+                //     let drop_sql = format!(
+                //         "DROP TABLE IF EXISTS {}",
+                //         self.lakebase_table_full_name(&table_name)
+                //     );
+                //     self.execute_sql_statement(&drop_sql).await.map_err(|e| {
+                //         format!(
+                //             "Failed to drop existing table '{table_name}' during create_tables: {e}"
+                //         )
+                //     })?;
+                //
+                //     let create_sql = self.create_table_ctas(&table_name);
+                //
+                //     eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+                //
+                //     self.execute_sql_statement(&create_sql).await.map_err(|e| {
+                //         format!("Failed to create table '{table_name}': {e}")
+                //     })?;
+                //
+                //     created_tables.push(table_name);
+                // }
 
                 // Phase 2: Parallel synced table creation + wait for ONLINE
                 let this = &*self;
