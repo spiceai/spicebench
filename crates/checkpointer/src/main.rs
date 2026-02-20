@@ -200,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(
         scenario = %scenario_name,
-            version = %cli.version,
+        version = %cli.version,
         dataset = %version_metadata.dataset_type,
         bucket = %cli.bucket,
         prefix = %cli.prefix,
