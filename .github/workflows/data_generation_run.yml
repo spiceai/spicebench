@@ -1,5 +1,5 @@
 name: data-generation run
-run-name: data-generation run - ${{ github.event.inputs.scenario }} - sf${{ github.event.inputs.scale_factor }}
+run-name: data-generation run - ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }} - v${{ inputs.version || github.event.inputs.version }} - sf${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
 
 on:
   workflow_call:
@@ -8,9 +8,12 @@ on:
         required: false
         default: 'tpch'
         type: string
+      version:
+        required: true
+        type: string
       scale_factor:
         required: false
-        default: '1.0'
+        default: '0.01'
         type: string
       bucket:
         required: true
@@ -31,6 +34,14 @@ on:
         required: false
         default: false
         type: boolean
+      num_steps:
+        required: false
+        default: '25'
+        type: string
+      checkpoint_interval_steps:
+        required: false
+        default: '100'
+        type: string
       runner_type:
         required: false
         default: 'ubuntu-latest'
@@ -52,10 +63,14 @@ on:
         required: false
         default: 'spiceai-macos'
         type: string
+      version:
+        description: 'Version identifier for this generation (e.g. 1, 2, 3, auto-tpch-sf0p01-spice-cloud-adbc-parquet-na-nocreatedat)'
+        required: true
+        type: string
       scale_factor:
         description: 'TPC-H scale factor'
         required: true
-        default: '1.0'
+        default: '0.01'
         type: string
       bucket:
         description: 'S3 bucket name'
@@ -81,6 +96,16 @@ on:
         required: false
         default: false
         type: boolean
+      num_steps:
+        description: 'Number of data generation steps (partitions for TPC-H dbgen)'
+        required: false
+        default: '5'
+        type: string
+      checkpoint_interval_steps:
+        description: 'Every N steps to take a checkpoint'
+        required: false
+        default: '3'
+        type: string
 
 jobs:
   run-data-generation:
@@ -104,7 +129,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.91
-          cache: true
+          cache: false
 
       - name: Build data-generation
         if: steps.cache-data-generation.outputs.cache-hit != 'true'
@@ -116,25 +141,27 @@ jobs:
       - name: Run data generation
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
-          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '1.0' }}
+          VERSION: ${{ inputs.version || github.event.inputs.version }}
+          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
-          PREFIX_BASE: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
+          PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           MAX_CONCURRENCY: ${{ inputs.max_concurrency || github.event.inputs.max_concurrency || '8' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           SKIP_INITIAL: ${{ inputs.skip_initial || github.event.inputs.skip_initial || false }}
+          NUM_STEPS: ${{ inputs.num_steps || github.event.inputs.num_steps || '25' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          PREFIX="${PREFIX_BASE}"
-          PREFIX="${PREFIX%/}/${SCENARIO}"
-
           ARGS="--dataset ${SCENARIO}"
+          ARGS="${ARGS} --scenario ${SCENARIO}"
+          ARGS="${ARGS} --version ${VERSION}"
           ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
           ARGS="${ARGS} --bucket ${BUCKET}"
           ARGS="${ARGS} --prefix ${PREFIX}"
           ARGS="${ARGS} --max-concurrency ${MAX_CONCURRENCY}"
           ARGS="${ARGS} --region ${REGION}"
+          ARGS="${ARGS} --num-steps ${NUM_STEPS}"
 
           if [ "${SKIP_INITIAL}" = "true" ]; then
             ARGS="${ARGS} --skip-initial"
@@ -162,27 +189,27 @@ jobs:
       - name: Run checkpointer
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
-          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '1.0' }}
+          VERSION: ${{ inputs.version || github.event.inputs.version }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
-          PREFIX_BASE: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
+          PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
+          CHECKPOINT_INTERVAL_STEPS: ${{ inputs.checkpoint_interval_steps || github.event.inputs.checkpoint_interval_steps || '100' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          PREFIX="${PREFIX_BASE}"
-          PREFIX="${PREFIX%/}/${SCENARIO}"
-
-          ARGS="--dataset ${SCENARIO}"
-          ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
+          ARGS="--scenario ${SCENARIO}"
+          ARGS="${ARGS} --version ${VERSION}"
           ARGS="${ARGS} --bucket ${BUCKET}"
-          ARGS="${ARGS} --source-prefix ${PREFIX}"
+          ARGS="${ARGS} --prefix ${PREFIX}"
           ARGS="${ARGS} --duckdb-path ./checkpointer.duckdb"
           ARGS="${ARGS} --checkpoint-dir ./checkpoints"
 
           if [ -n "${REGION}" ]; then
             ARGS="${ARGS} --region ${REGION}"
           fi
+
+          ARGS="${ARGS} --checkpoint-interval-steps ${CHECKPOINT_INTERVAL_STEPS}"
 
           echo "Running: checkpointer ${ARGS}"
           ~/.spice/bin/checkpointer ${ARGS}

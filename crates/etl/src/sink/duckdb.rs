@@ -298,6 +298,42 @@ impl DuckDBSink {
         })
         .await?
     }
+
+    /// Returns the result schema of an arbitrary SQL query without requiring
+    /// any rows to be returned. This uses DuckDB's `query_arrow` +
+    /// `get_schema()` which provides the schema even for empty result sets.
+    pub async fn query_schema(&self, sql: &str) -> anyhow::Result<arrow::datatypes::SchemaRef> {
+        let conn = Arc::clone(&self.conn);
+        let sql = sql.to_string();
+        tokio::task::spawn_blocking(move || {
+            let guard = conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("DuckDB connection lock poisoned: {e}"))?;
+            let mut stmt = guard
+                .prepare(&sql)
+                .map_err(|e| anyhow::anyhow!("Failed to prepare DuckDB query: {e}"))?;
+            let result = stmt
+                .query_arrow([])
+                .map_err(|e| anyhow::anyhow!("Failed to execute DuckDB query: {e}"))?;
+            let duckdb_schema = result.get_schema();
+
+            // Convert from duckdb::arrow::Schema to arrow::datatypes::Schema
+            // via IPC serialization round-trip for crate compatibility.
+            let mut buf = Vec::new();
+            {
+                let mut writer =
+                    duckdb::arrow::ipc::writer::FileWriter::try_new(&mut buf, &duckdb_schema)
+                        .map_err(|e| anyhow::anyhow!("IPC write init failed: {e}"))?;
+                writer
+                    .finish()
+                    .map_err(|e| anyhow::anyhow!("IPC finish failed: {e}"))?;
+            }
+            let reader = arrow::ipc::reader::FileReader::try_new(std::io::Cursor::new(buf), None)
+                .map_err(|e| anyhow::anyhow!("IPC read failed: {e}"))?;
+            Ok(reader.schema())
+        })
+        .await?
+    }
 }
 
 #[async_trait]
@@ -355,23 +391,23 @@ fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
-fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<&'static str> {
+fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {
     match data_type {
-        DataType::Boolean => Ok("BOOLEAN"),
-        DataType::Int8 => Ok("TINYINT"),
-        DataType::Int16 => Ok("SMALLINT"),
-        DataType::Int32 => Ok("INTEGER"),
-        DataType::UInt8 => Ok("UTINYINT"),
-        DataType::UInt16 => Ok("USMALLINT"),
-        DataType::UInt32 => Ok("UINTEGER"),
-        DataType::Int64 => Ok("BIGINT"),
-        DataType::UInt64 => Ok("UBIGINT"),
-        DataType::Float32 => Ok("FLOAT"),
-        DataType::Float64 => Ok("DOUBLE"),
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok("VARCHAR"),
-        DataType::Date32 => Ok("DATE"),
-        DataType::Timestamp(_, _) => Ok("TIMESTAMP"),
-        DataType::Decimal128(_, _) => Ok("DECIMAL(38, 18)"),
+        DataType::Boolean => Ok("BOOLEAN".to_string()),
+        DataType::Int8 => Ok("TINYINT".to_string()),
+        DataType::Int16 => Ok("SMALLINT".to_string()),
+        DataType::Int32 => Ok("INTEGER".to_string()),
+        DataType::UInt8 => Ok("UTINYINT".to_string()),
+        DataType::UInt16 => Ok("USMALLINT".to_string()),
+        DataType::UInt32 => Ok("UINTEGER".to_string()),
+        DataType::Int64 => Ok("BIGINT".to_string()),
+        DataType::UInt64 => Ok("UBIGINT".to_string()),
+        DataType::Float32 => Ok("FLOAT".to_string()),
+        DataType::Float64 => Ok("DOUBLE".to_string()),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok("VARCHAR".to_string()),
+        DataType::Date32 => Ok("DATE".to_string()),
+        DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
+        DataType::Decimal128(p, s) => Ok(format!("DECIMAL({p}, {s})")),
         other => anyhow::bail!("Unsupported Arrow data type for DuckDB sink: {other:?}"),
     }
 }

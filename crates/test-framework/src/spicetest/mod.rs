@@ -21,8 +21,6 @@ use anyhow::{Context, Result};
 use crate::spiced::SpicedInstance;
 
 pub mod datasets;
-pub mod search;
-pub mod text_to_sql;
 
 pub trait TestState {}
 pub trait TestNotStarted: TestState {}

@@ -11,17 +11,14 @@ version.workspace = true
 [dependencies]
 anyhow.workspace = true
 arrow.workspace = true
-async-trait.workspace = true
-chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
 etl = { path = "../etl", features = ["duckdb"] }
+test-framework = { path = "../test-framework" }
 object_store = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-system-adapter-protocol = { path = "../system-adapter-protocol" }
 parquet.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

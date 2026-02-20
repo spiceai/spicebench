@@ -309,12 +309,22 @@ fn build_random_array(
             let scale_u32 = u32::try_from(*scale).map_err(|_| {
                 anyhow::anyhow!("Decimal128 scale must be non-negative, got {scale}")
             })?;
-            let scale_mult = 10i64.pow(scale_u32);
+            // Cap the effective fractional digits to 4 so that DuckDB arithmetic
+            // (which sums scales on multiply) stays within its max scale of 38.
+            let effective_scale = scale_u32.min(4);
+            let effective_mult = 10i64.pow(effective_scale);
+            // Zero-pad the remaining scale digits so the value matches the column's
+            // declared scale.
+            let padding = 10i128.pow(scale_u32 - effective_scale);
+            // Limit the whole-number range to the available integer digits
+            // (precision - scale), capped at 4 digits.
+            let int_digits = ((*precision as i8) - (*scale)).max(1) as u32;
+            let max_whole = 10i64.pow(int_digits.min(4));
             let values: Vec<i128> = (0..num_rows)
                 .map(|_| {
-                    let whole = rng.random_range(0..1_000_000i64);
-                    let frac = rng.random_range(0..scale_mult);
-                    i128::from(whole * scale_mult + frac)
+                    let whole = rng.random_range(0..max_whole);
+                    let frac = rng.random_range(0..effective_mult);
+                    i128::from(whole * effective_mult + frac) * padding
                 })
                 .collect();
             Ok(Arc::new(

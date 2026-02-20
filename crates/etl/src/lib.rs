@@ -29,7 +29,7 @@ use data_generation::storage::DataStorage;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 use system_adapter_protocol::DatasetConfig as ProtocolDatasetConfig;
 use tokio::sync::watch;
@@ -59,12 +59,16 @@ fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
 }
 
 /// Appends a `__created_at` column (current wall-clock time, microsecond UTC)
-/// to the given batch.
-fn append_created_at(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
+/// to the given batch and stores the value in `last_created_at`.
+fn append_created_at(
+    batch: &RecordBatch,
+    last_created_at: &AtomicI64,
+) -> anyhow::Result<RecordBatch> {
     let now_us = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time before UNIX epoch")
         .as_micros() as i64;
+    last_created_at.store(now_us, Ordering::Relaxed);
 
     let timestamps =
         TimestampMicrosecondArray::from(vec![Some(now_us); batch.num_rows()]).with_timezone("UTC");
@@ -221,6 +225,19 @@ pub enum DatasetSource {
 }
 
 impl DatasetSource {
+    /// Creates a [`DatasetSource`] from a dataset type string (e.g. from version metadata).
+    ///
+    /// Supported values: `"tpch"`, `"simple_sequence"`.
+    pub fn from_dataset_type(dataset_type: &str) -> anyhow::Result<Self> {
+        match dataset_type {
+            "tpch" => Ok(DatasetSource::Tpch),
+            "simple_sequence" => Ok(DatasetSource::SimpleSequence),
+            other => {
+                anyhow::bail!("Unknown dataset type: {other}. Use 'tpch' or 'simple_sequence'.")
+            }
+        }
+    }
+
     /// Create an [`Arc<dyn Dataset>`] for this source variant using the given
     /// configuration.
     ///
@@ -317,6 +334,17 @@ pub struct ETLPipeline {
     batch_budget: Option<usize>,
     /// Shared work state handed between the pipeline and its background task.
     work_state: Arc<StdMutex<PipelineWorkState>>,
+    /// Per-table most recent `__created_at` timestamp (microseconds UTC)
+    /// written by the pipeline.  Updated atomically by [`append_created_at`].
+    last_created_at_us: Arc<HashMap<String, AtomicI64>>,
+    /// Whether to append a `__created_at` timestamp column to every batch.
+    /// Defaults to `false`.
+    with_created_at: bool,
+    /// The current checkpoint index, incremented each time the pipeline is
+    /// resumed via [`continue_pipeline`](ETLPipeline::continue_pipeline).
+    /// Only meaningful when the pipeline was started with
+    /// [`run`](ETLPipeline::run) (i.e. with a step budget).
+    checkpoint_idx: usize,
 }
 
 impl ETLPipeline {
@@ -333,6 +361,13 @@ impl ETLPipeline {
         mutations: &MutationConfig,
     ) -> anyhow::Result<Self> {
         let dataset = dataset_source.create(config, mutations, Arc::clone(&data_storage))?;
+        let last_created_at_us = Arc::new(
+            dataset
+                .tables()
+                .keys()
+                .map(|name| (name.clone(), AtomicI64::new(0)))
+                .collect(),
+        );
         let (state_tx, state_rx) = watch::channel(PipelineState::NotStarted);
         Ok(Self {
             dataset_source,
@@ -348,7 +383,18 @@ impl ETLPipeline {
                 steps: BTreeMap::new(),
                 finished_tables: HashSet::new(),
             })),
+            last_created_at_us,
+            with_created_at: false,
+            checkpoint_idx: 0,
         })
+    }
+
+    /// Sets whether the pipeline appends a `__created_at` timestamp column
+    /// to every batch written to the sink. Defaults to `false`.
+    #[must_use]
+    pub fn with_created_at(mut self, enabled: bool) -> Self {
+        self.with_created_at = enabled;
+        self
     }
 
     /// Returns the current state of the pipeline.
@@ -369,6 +415,21 @@ impl ETLPipeline {
     /// Returns the underlying [`Dataset`] trait object.
     pub fn dataset(&self) -> &Arc<dyn Dataset> {
         &self.dataset
+    }
+
+    /// Returns the current checkpoint index.
+    ///
+    /// This is `0` after the first [`run`](ETLPipeline::run) call and is
+    /// incremented each time [`continue_pipeline`](ETLPipeline::continue_pipeline)
+    /// is called. Only meaningful when the pipeline uses a step budget.
+    pub fn checkpoint_idx(&self) -> usize {
+        self.checkpoint_idx
+    }
+
+    /// Returns a shared handle to the per-table most recent `__created_at`
+    /// timestamps (microseconds UTC) written by the pipeline.
+    pub fn last_created_at_us(&self) -> Arc<HashMap<String, AtomicI64>> {
+        Arc::clone(&self.last_created_at_us)
     }
 
     /// Returns the [`CancellationToken`] for this pipeline.
@@ -393,13 +454,27 @@ impl ETLPipeline {
     /// [`CreateTablesRequest`](system_adapter_protocol::CreateTablesRequest) for
     /// the system adapter.
     pub fn create_tables_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
+        let with_created_at = self.with_created_at;
         self.dataset
             .tables()
             .into_iter()
             .map(|(name, table)| {
-                let config = ProtocolDatasetConfig {
-                    schema: schema_with_created_at(&table.schema),
+                // Strip internal columns (_op, _op_index) from the schema, as
+                // these are removed before data is written to the sink.
+                let fields: Vec<_> = table
+                    .schema
+                    .fields()
+                    .iter()
+                    .filter(|f| !INTERNAL_COLUMNS.contains(&f.name().as_str()))
+                    .cloned()
+                    .collect();
+                let schema: SchemaRef = Arc::new(Schema::new(fields));
+                let schema = if with_created_at {
+                    schema_with_created_at(&schema)
+                } else {
+                    schema
                 };
+                let config = ProtocolDatasetConfig { schema };
                 (name, config)
             })
             .collect()
@@ -424,12 +499,47 @@ impl ETLPipeline {
 
         let tables = self.dataset.tables();
         let first_batch_id = 0u64;
+        let total_tables = tables.len();
+
+        // Shared progress counters for periodic logging (mirrors run_pipeline style).
+        let tables_completed = StdArc::new(AtomicU64::new(0));
+        let init_start = Instant::now();
+
+        // Spawn periodic progress logger (every 5 seconds).
+        let progress_logger = {
+            let tables_completed = StdArc::clone(&tables_completed);
+            let cancel = self.cancel_token.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let elapsed = init_start.elapsed();
+                            let secs = elapsed.as_secs_f64();
+                            if secs < 0.001 {
+                                continue;
+                            }
+                            let done = tables_completed.load(Ordering::Relaxed);
+                            info!(
+                                elapsed_secs = format!("{secs:.1}"),
+                                tables = format!("{done}/{total_tables}"),
+                                tables_per_sec = format!("{:.1}", done as f64 / secs),
+                                "ETL initialization progress"
+                            );
+                        }
+                        () = cancel.cancelled() => break,
+                    }
+                }
+            })
+        };
 
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
         for table_name in tables.keys() {
             let source = Arc::clone(&self.data_storage);
             let target = Arc::clone(&self.data_sink);
+            let last_created_at = Arc::clone(&self.last_created_at_us);
             let table_name = table_name.clone();
+            let with_created_at = self.with_created_at;
 
             join_set.spawn(async move {
                 let read_result = source
@@ -448,14 +558,20 @@ impl ETLPipeline {
                     })?;
 
                     for segment in segments {
-                        let rehydrated = append_created_at(&segment.batch).map_err(|e| {
-                            format!(
-                                "append __created_at to {table_name} batch {first_batch_id}: {e}"
-                            )
-                        })?;
+                        let tracker = last_created_at
+                            .get(&table_name)
+                            .expect("table missing from last_created_at map");
+                        let output_batch = if with_created_at {
+                            append_created_at(&segment.batch, tracker).map_err(|e| {
+                                format!(
+                                    "append __created_at to {table_name} batch {first_batch_id}: {e}"
+                                )
+                        })?} else {
+                            segment.batch
+                        };
 
                         target
-                            .write(&table_name, first_batch_id, rehydrated, segment.op)
+                            .write(&table_name, first_batch_id, output_batch, segment.op)
                             .await
                             .map_err(|e| {
                                 format!("write {table_name} batch {first_batch_id}: {e}")
@@ -474,14 +590,18 @@ impl ETLPipeline {
 
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok(Ok(_table_name)) => {}
+                Ok(Ok(_table_name)) => {
+                    tables_completed.fetch_add(1, Ordering::Relaxed);
+                }
                 Ok(Err(err_msg)) => {
+                    progress_logger.abort();
                     let _ = self
                         .state_tx
                         .send(PipelineState::Stopped(StopReason::Error(err_msg.clone())));
                     anyhow::bail!("ETL initialization failed: {err_msg}");
                 }
                 Err(e) => {
+                    progress_logger.abort();
                     let msg = format!("Task panicked during initialization: {e}");
                     let _ = self
                         .state_tx
@@ -491,7 +611,13 @@ impl ETLPipeline {
             }
         }
 
-        info!("ETL pipeline initialized with first batch for all tables");
+        progress_logger.abort();
+        let elapsed = init_start.elapsed();
+        info!(
+            elapsed = ?elapsed,
+            tables = total_tables,
+            "ETL pipeline initialized with first batch for all tables"
+        );
         let _ = self.state_tx.send(PipelineState::Initialized);
         Ok(())
     }
@@ -573,6 +699,9 @@ impl ETLPipeline {
             );
         }
 
+        // Increment checkpoint index before resuming.
+        self.checkpoint_idx += 1;
+
         // Wait for the previous background task to finish (it should already
         // be done since it transitioned to Paused).
         if let Some(handle) = self.handle.take() {
@@ -617,9 +746,20 @@ impl ETLPipeline {
         let cancel = self.cancel_token.clone();
         let state_tx = Arc::clone(&self.state_tx);
         let work_state = Arc::clone(&self.work_state);
+        let last_created_at = Arc::clone(&self.last_created_at_us);
+        let with_created_at = self.with_created_at;
 
         let handle = tokio::spawn(async move {
-            let outcome = run_pipeline(source, target, work_state, cancel, step_limit).await;
+            let outcome = run_pipeline(
+                source,
+                target,
+                work_state,
+                cancel,
+                step_limit,
+                last_created_at,
+                with_created_at,
+            )
+            .await;
             let _ = state_tx.send(outcome);
         });
 
@@ -651,6 +791,8 @@ async fn run_pipeline(
     work_state: Arc<StdMutex<PipelineWorkState>>,
     cancel: CancellationToken,
     step_limit: Option<usize>,
+    last_created_at_us: Arc<HashMap<String, AtomicI64>>,
+    with_created_at: bool,
 ) -> PipelineState {
     // Take a snapshot of total counts for logging.
     let (total_steps, total_batches) = {
@@ -714,12 +856,12 @@ async fn run_pipeline(
 
     loop {
         // Check step budget.
-        if let Some(limit) = step_limit {
-            if steps_processed >= limit {
-                info!(steps_processed, "Step limit reached, pausing pipeline");
-                progress_logger.abort();
-                return PipelineState::Paused;
-            }
+        if let Some(limit) = step_limit
+            && steps_processed >= limit
+        {
+            info!(steps_processed, "Step limit reached, pausing pipeline");
+            progress_logger.abort();
+            return PipelineState::Paused;
         }
 
         if cancel.is_cancelled() {
@@ -762,6 +904,7 @@ async fn run_pipeline(
         for table_name in active_tables {
             let data_storage = Arc::clone(&data_storage);
             let data_sink = Arc::clone(&data_sink);
+            let last_created_at = Arc::clone(&last_created_at_us);
 
             join_set.spawn(async move {
                 // 1. Read from source
@@ -806,24 +949,31 @@ async fn run_pipeline(
                     };
 
                     for segment in segments {
-                        let rehydrated = match append_created_at(&segment.batch) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                error!(
-                                    table = %table_name,
-                                    batch_id,
-                                    error = %e,
-                                    "Failed to append __created_at column"
-                                );
-                                return Err(format!(
-                                    "append __created_at to {table_name} batch {batch_id}: {e}"
-                                ));
+                        let tracker = last_created_at
+                            .get(&table_name)
+                            .expect("table missing from last_created_at map");
+                        let output_batch = if with_created_at {
+                            match append_created_at(&segment.batch, tracker) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    error!(
+                                        table = %table_name,
+                                        batch_id,
+                                        error = %e,
+                                        "Failed to append __created_at column"
+                                    );
+                                    return Err(format!(
+                                        "append __created_at to {table_name} batch {batch_id}: {e}"
+                                    ));
+                                }
                             }
+                        } else {
+                            segment.batch
                         };
 
                         // 3. Write to sink
                         if let Err(e) = data_sink
-                            .write(&table_name, batch_id, rehydrated, segment.op)
+                            .write(&table_name, batch_id, output_batch, segment.op)
                             .await
                         {
                             error!(
@@ -885,4 +1035,253 @@ async fn run_pipeline(
         "ETL pipeline completed successfully"
     );
     PipelineState::Stopped(StopReason::Completed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::RecordBatch;
+    use async_trait::async_trait;
+    use data_generation::config::DatasetConfig as GenerationDatasetConfig;
+    use data_generation::dataset::MutationConfig;
+    use data_generation::storage::{DataStorage, ReadResult, WriteResult};
+    use data_generation::version::VersionMetadata;
+    use std::collections::{HashMap, VecDeque};
+
+    /// A no-op [`DataStorage`] implementation for testing.
+    ///
+    /// The TPCH dataset only needs storage during batch generation/reading,
+    /// which is not exercised by `create_tables_request_datasets`.
+    struct MockStorage;
+
+    #[async_trait]
+    impl DataStorage for MockStorage {
+        async fn list_batches(&self, _table_name: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn read_batch(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+        ) -> anyhow::Result<Option<ReadResult>> {
+            Ok(None)
+        }
+
+        async fn write(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+            _batch: RecordBatch,
+        ) -> anyhow::Result<WriteResult> {
+            Ok(WriteResult {
+                rows_written: 0,
+                bytes_written: 0,
+            })
+        }
+
+        async fn write_version_metadata(&self, _metadata: &VersionMetadata) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
+            Ok(None)
+        }
+
+        async fn read_batch_ids(&self, _table_name: &str) -> anyhow::Result<VecDeque<u64>> {
+            Ok(VecDeque::new())
+        }
+
+        fn table_params(&self, _table_name: &str) -> HashMap<String, serde_json::Value> {
+            HashMap::new()
+        }
+
+        fn expected_files(&self, _table_name: &str, _batch_ids: &[u64]) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    /// A no-op [`Sink`] implementation for testing.
+    struct MockSink;
+
+    #[async_trait]
+    impl Sink for MockSink {
+        async fn write(
+            &self,
+            _table_name: &str,
+            _batch_id: u64,
+            _batch: RecordBatch,
+            _op: InsertOp,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Helper to build a pipeline with the TPCH dataset for testing.
+    fn make_tpch_pipeline(with_created_at: bool) -> ETLPipeline {
+        let config = GenerationDatasetConfig {
+            dataset_type: "tpch".to_string(),
+            scale_factor: 0.01,
+            num_steps: 1,
+        };
+        let mutations = MutationConfig::new(0.0, 0.0);
+        let storage: Arc<dyn DataStorage> = Arc::new(MockStorage);
+        let sink: Arc<dyn Sink> = Arc::new(MockSink);
+
+        let pipeline = ETLPipeline::new(DatasetSource::Tpch, &config, storage, sink, &mutations)
+            .expect("failed to create pipeline");
+
+        if with_created_at {
+            pipeline.with_created_at(true)
+        } else {
+            pipeline
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_strips_internal_columns() {
+        let pipeline = make_tpch_pipeline(false);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        // The TPCH dataset should expose all 8 tables.
+        assert!(!datasets.is_empty(), "Expected non-empty dataset map");
+
+        for (table_name, dataset_config) in &datasets {
+            let field_names: Vec<&str> = dataset_config
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+
+            assert!(
+                !field_names.contains(&"_op"),
+                "Table '{table_name}' schema should not contain '_op' column, but found fields: {field_names:?}"
+            );
+            assert!(
+                !field_names.contains(&"_op_index"),
+                "Table '{table_name}' schema should not contain '_op_index' column, but found fields: {field_names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_does_not_include_created_at_by_default() {
+        let pipeline = make_tpch_pipeline(false);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        for (table_name, dataset_config) in &datasets {
+            let field_names: Vec<&str> = dataset_config
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+
+            assert!(
+                !field_names.contains(&CREATED_AT_COLUMN),
+                "Table '{table_name}' should not have '{CREATED_AT_COLUMN}' when with_created_at is false, but found fields: {field_names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_includes_created_at_when_enabled() {
+        let pipeline = make_tpch_pipeline(true);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        for (table_name, dataset_config) in &datasets {
+            let field_names: Vec<&str> = dataset_config
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+
+            assert!(
+                field_names.contains(&CREATED_AT_COLUMN),
+                "Table '{table_name}' should have '{CREATED_AT_COLUMN}' when with_created_at is true, but found fields: {field_names:?}"
+            );
+
+            // Internal columns should still be stripped.
+            assert!(
+                !field_names.contains(&"_op"),
+                "Table '{table_name}' schema should not contain '_op' even with created_at enabled, but found fields: {field_names:?}"
+            );
+            assert!(
+                !field_names.contains(&"_op_index"),
+                "Table '{table_name}' schema should not contain '_op_index' even with created_at enabled, but found fields: {field_names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_preserves_data_columns() {
+        let pipeline = make_tpch_pipeline(false);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        // Verify the raw dataset's tables DO have internal columns (sanity
+        // check that the test is meaningful).
+        let raw_tables = pipeline.dataset().tables();
+        for (table_name, raw_table) in &raw_tables {
+            let raw_field_names: Vec<&str> = raw_table
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+            assert!(
+                raw_field_names.contains(&"_op"),
+                "Sanity check: raw TPCH table '{table_name}' should contain '_op'"
+            );
+            assert!(
+                raw_field_names.contains(&"_op_index"),
+                "Sanity check: raw TPCH table '{table_name}' should contain '_op_index'"
+            );
+        }
+
+        // Now verify the returned datasets have all the non-internal columns.
+        for (table_name, raw_table) in &raw_tables {
+            let dataset_config = datasets
+                .get(table_name)
+                .unwrap_or_else(|| panic!("Table '{table_name}' missing from datasets"));
+
+            let expected_fields: Vec<&str> = raw_table
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .filter(|name| !INTERNAL_COLUMNS.contains(name))
+                .collect();
+            let actual_fields: Vec<&str> = dataset_config
+                .schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect();
+
+            assert_eq!(
+                expected_fields, actual_fields,
+                "Table '{table_name}' should retain all non-internal fields"
+            );
+        }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_returns_all_tpch_tables() {
+        let pipeline = make_tpch_pipeline(false);
+        let datasets = pipeline.create_tables_request_datasets();
+
+        let expected_tables = [
+            "region", "nation", "supplier", "customer", "part", "partsupp", "orders", "lineitem",
+        ];
+
+        for table in expected_tables {
+            assert!(
+                datasets.contains_key(table),
+                "Expected table '{table}' in create_tables_request_datasets output"
+            );
+        }
+        assert_eq!(datasets.len(), expected_tables.len());
+    }
 }

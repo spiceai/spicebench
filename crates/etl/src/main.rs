@@ -17,39 +17,45 @@ limitations under the License.
 use std::sync::Arc;
 
 use adbc_client::AdbcConnection;
-use clap::Parser;
-use data_generation::config::{DatasetConfig, TargetConfig};
-use data_generation::dataset::MutationConfig;
+use clap::{Parser, ValueEnum};
+use data_generation::config::{TargetConfig, build_version_prefix};
+use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
+use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
+use etl::sink::iceberg::{IcebergObjectStoreConfig, IcebergSink};
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum EtlSinkMode {
+    Adbc,
+    IcebergObjectStore,
+}
+
 #[derive(Parser)]
 #[command(
-    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC"
+    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to either ADBC or Iceberg object storage"
 )]
 struct Cli {
-    /// Dataset type: "tpch" or "simple_sequence"
+    /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
     #[arg(long, default_value = "tpch")]
-    dataset: String,
+    scenario: String,
 
-    /// Scale factor for data generation
-    #[arg(long, default_value_t = 1.0)]
-    scale_factor: f64,
-
-    /// Number of data generation steps (partitions)
-    #[arg(long, default_value_t = 25)]
-    num_steps: u16,
+    /// Version identifier for the data generation to read from.
+    #[arg(long)]
+    version: String,
 
     /// S3 bucket name (used for both source and target)
     #[arg(long)]
     bucket: String,
 
-    /// S3 key prefix for source data
+    /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
     #[arg(long, default_value = "")]
-    source_prefix: String,
+    prefix: String,
+
     /// AWS region
     #[arg(long)]
     region: Option<String>,
@@ -58,42 +64,39 @@ struct Cli {
     #[arg(long)]
     endpoint: Option<String>,
 
+    /// Output sink mode for ETL writes.
+    #[arg(long, value_enum, default_value = "adbc")]
+    sink_mode: EtlSinkMode,
+
     /// ADBC driver name (for example: databricks, flightsql)
     #[arg(long)]
-    adbc_driver: String,
+    adbc_driver: Option<String>,
 
     /// ADBC connection URI passed as db option `uri`
     #[arg(long)]
-    adbc_uri: String,
+    adbc_uri: Option<String>,
 
     /// Optional schema name to prefix destination table names
     #[arg(long)]
     adbc_schema: Option<String>,
+
+    /// Iceberg target base prefix in the object store bucket.
+    #[arg(long, default_value = "etl-iceberg-output")]
+    iceberg_target_prefix: String,
+
+    /// Append a `__created_at` timestamp column to every batch written to the sink.
+    #[arg(long, default_value_t = false)]
+    with_created_at: bool,
 }
 
 impl Cli {
-    fn dataset_source(&self) -> anyhow::Result<DatasetSource> {
-        match self.dataset.as_str() {
-            "tpch" => Ok(DatasetSource::Tpch),
-            "simple_sequence" => Ok(DatasetSource::SimpleSequence),
-            other => {
-                anyhow::bail!("Unknown dataset type: {other}. Use 'tpch' or 'simple_sequence'.")
-            }
-        }
-    }
-
-    fn dataset_config(&self) -> DatasetConfig {
-        DatasetConfig {
-            dataset_type: self.dataset.clone(),
-            scale_factor: self.scale_factor,
-            num_steps: self.num_steps,
-        }
-    }
-
+    /// Builds the source config with the versioned prefix:
+    /// `{prefix}/{scenario}/{version}`
     fn source_config(&self) -> TargetConfig {
+        let version_prefix = build_version_prefix(&self.prefix, &self.scenario, &self.version);
         TargetConfig {
             bucket: self.bucket.clone(),
-            prefix: self.source_prefix.clone(),
+            prefix: version_prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }
@@ -108,30 +111,71 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let dataset_source = cli.dataset_source()?;
-    let dataset_config = cli.dataset_config();
+    let source_config = cli.source_config();
+    let version_prefix = source_config.prefix.clone();
+    let source = Arc::new(S3Storage::new(&source_config)?);
 
-    let source = Arc::new(S3Storage::new(&cli.source_config())?);
+    // Read version metadata to derive dataset config and mutations.
+    let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No version.json found at {version_prefix}. Was data generation run for this version?"
+        )
+    })?;
 
-    let adbc_conn = AdbcConnection::create(
-        &cli.adbc_driver,
-        std::collections::HashMap::from([("uri".to_string(), Value::String(cli.adbc_uri.clone()))]),
-    )?;
-    let target = Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()));
+    let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
+    let dataset_config = version_metadata.dataset_config();
+    let mutations = version_metadata.mutation_config();
 
-    let mutations = MutationConfig::new(0.1, 0.1);
+    let target: Arc<dyn Sink> = match cli.sink_mode {
+        EtlSinkMode::Adbc => {
+            let adbc_driver = cli.adbc_driver.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("--adbc-driver is required when --sink-mode=adbc")
+            })?;
+            let adbc_uri = cli
+                .adbc_uri
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("--adbc-uri is required when --sink-mode=adbc"))?;
+            let adbc_conn = AdbcConnection::create(
+                adbc_driver,
+                std::collections::HashMap::from([(
+                    "uri".to_string(),
+                    Value::String(adbc_uri.clone()),
+                )]),
+            )?;
+            Arc::new(AdbcSink::new(adbc_conn, cli.adbc_schema.clone()))
+        }
+        EtlSinkMode::IcebergObjectStore => {
+            let iceberg_prefix = format!(
+                "{}/{}/{}/{}",
+                cli.iceberg_target_prefix.trim_matches('/'),
+                cli.scenario,
+                cli.version,
+                "adhoc"
+            );
+            let sink = IcebergSink::new(IcebergObjectStoreConfig {
+                warehouse_uri: format!("s3://{}/{}", cli.bucket, iceberg_prefix),
+                namespace: vec!["spicebench".to_string(), "etl".to_string()],
+                s3_region: cli.region.clone(),
+                s3_endpoint: cli.endpoint.clone(),
+            })
+            .await?;
+            Arc::new(sink)
+        }
+    };
 
     let mut pipeline =
-        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
+        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?
+            .with_created_at(cli.with_created_at);
 
     tracing::info!(
-        dataset = %cli.dataset,
+        scenario = %cli.scenario,
+        version = %cli.version,
+        dataset = %version_metadata.dataset_type,
         bucket = %cli.bucket,
-        source_prefix = %cli.source_prefix,
-        adbc_driver = %cli.adbc_driver,
-        adbc_schema = ?cli.adbc_schema,
-        scale_factor = cli.scale_factor,
-        num_steps = cli.num_steps,
+        prefix = %cli.prefix,
+        sink_mode = ?cli.sink_mode,
+        scale_factor = version_metadata.scale_factor,
+        num_steps = version_metadata.num_steps,
         "Starting ETL pipeline"
     );
 

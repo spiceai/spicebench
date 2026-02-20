@@ -59,9 +59,18 @@ pub struct CommonArgs {
     #[arg(long)]
     pub bucket: String,
 
-    /// S3 key prefix for generated files
+    /// S3 key prefix for generated files (the `{prefix}` portion of the path)
     #[arg(long, default_value = "")]
     pub prefix: String,
+
+    /// Scenario name (e.g. "tpch") — used as `{scenario}` in the storage path `{prefix}/{scenario}/{version}/`
+    #[arg(long, default_value = "tpch")]
+    pub scenario: String,
+
+    /// Version identifier for this generation (e.g. 1, 2, 3, auto-ab12cd34).
+    /// Storage path: `{prefix}/{scenario}/{version}/`
+    #[arg(long)]
+    pub version: String,
 
     /// AWS region
     #[arg(long)]
@@ -84,6 +93,7 @@ pub struct DatasetConfig {
 
 pub struct TargetConfig {
     pub bucket: String,
+    /// The fully-qualified prefix: `{prefix}/{scenario}/{version}`
     pub prefix: String,
     pub region: Option<String>,
     pub endpoint: Option<String>,
@@ -102,10 +112,14 @@ impl CommonArgs {
         }
     }
 
+    /// Builds the target config with the version-based storage path.
+    ///
+    /// The resulting prefix is `{prefix}/{scenario}/{version}`.
     pub fn target_config(&self) -> TargetConfig {
+        let prefix = build_version_prefix(&self.prefix, &self.scenario, &self.version);
         TargetConfig {
             bucket: self.bucket.clone(),
-            prefix: self.prefix.clone(),
+            prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
         }
@@ -116,4 +130,25 @@ impl CommonArgs {
             max_concurrency: self.max_concurrency,
         }
     }
+}
+
+/// Builds the versioned storage prefix: `{prefix}/{scenario}/{version}`.
+///
+/// If `prefix` is empty, the result is `{scenario}/{version}`.
+pub fn build_version_prefix(prefix: &str, scenario: &str, version: &str) -> String {
+    if prefix.is_empty() {
+        format!("{scenario}/{version}")
+    } else {
+        format!("{prefix}/{scenario}/{version}")
+    }
+}
+
+/// Formats a scale factor for use in S3 key paths.
+///
+/// Uses Rust's default `Display` formatting which preserves all significant
+/// digits (e.g. `0.01` stays `"0.01"`), then appends `.0` for whole numbers
+/// so that `1` becomes `"1.0"` to match github workflow values.
+pub fn format_scale_factor(sf: f64) -> String {
+    let s = format!("{sf}");
+    if s.contains('.') { s } else { format!("{s}.0") }
 }

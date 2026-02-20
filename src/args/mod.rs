@@ -27,6 +27,23 @@ pub enum TableFormat {
     Delta,
 }
 
+#[derive(Clone, Debug, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum EtlSinkMode {
+    Adbc,
+    IcebergObjectStore,
+}
+
+impl std::fmt::Display for EtlSinkMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Adbc => "adbc",
+            Self::IcebergObjectStore => "iceberg-object-store",
+        };
+        write!(f, "{value}")
+    }
+}
+
 impl std::fmt::Display for TableFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
@@ -104,9 +121,13 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) etl_bucket: String,
 
-    /// S3 key prefix for the ETL source data
+    /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
     #[arg(long, default_value = "")]
-    pub(crate) etl_source_prefix: String,
+    pub(crate) etl_prefix: String,
+
+    /// Version identifier for the data generation to read from.
+    #[arg(long)]
+    pub(crate) etl_version: String,
 
     /// Base S3 key prefix for the ETL target (rehydrated) data.
     /// A random suffix is appended automatically to create a unique destination per run.
@@ -121,17 +142,25 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
 
-    /// Number of ETL data generation steps (partitions)
-    #[arg(long, default_value_t = 25)]
-    pub(crate) etl_num_steps: u16,
+    /// ETL sink mode to use for writing transformed batches.
+    #[arg(long, value_enum, default_value = "adbc")]
+    pub(crate) etl_sink_mode: EtlSinkMode,
 
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]
     pub(crate) table_format: TableFormat,
 
-    /// Scale factor for the ETL dataset
-    #[arg(long, default_value_t = 1.0)]
-    pub(crate) scale_factor: f64,
+    /// Append a `__created_at` timestamp column to every batch written to the sink.
+    #[arg(long, default_value_t = false)]
+    pub(crate) with_created_at: bool,
+
+    /// Enable checkpoint-based results validation during load tests.
+    ///
+    /// When enabled and checkpoint data is available, the load runner will
+    /// validate query results against pre-computed checkpoint snapshots at
+    /// each ETL pause boundary.
+    #[arg(long, default_value_t = false)]
+    pub(crate) validate_results: bool,
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {

@@ -140,8 +140,8 @@ impl DatasetTable {
 
 #[derive(Debug, Clone)]
 pub struct MutationConfig {
-    pub(crate) update_ratio: f64,
-    pub(crate) delete_ratio: f64,
+    pub update_ratio: f64,
+    pub delete_ratio: f64,
 }
 
 impl MutationConfig {
