@@ -99,11 +99,7 @@ impl AdbcSink {
         Ok(())
     }
 
-    async fn bulk_ingest_single(
-        &self,
-        table_name: &str,
-        batch: RecordBatch,
-    ) -> anyhow::Result<()> {
+    async fn bulk_ingest_single(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
         const MAX_RETRIES: u32 = 3;
         const INITIAL_BACKOFF_MS: u64 = 1000;
 
