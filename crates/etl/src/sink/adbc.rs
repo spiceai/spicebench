@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use adbc_client::{AdbcConnection, IngestMode};
@@ -26,10 +27,31 @@ use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate};
+use tokio::sync::Mutex as TokioMutex;
 
 use super::{InsertOp, Sink};
 
+const DEFAULT_INSERT_ROWS_PER_STATEMENT: usize = 2048;
 const BULK_INGEST_CHUNK_ROWS: usize = 500_000;
+
+/// Identifier quoting style for SQL dialects.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum QuoteStyle {
+    /// ANSI standard double-quote: `"identifier"`
+    #[default]
+    DoubleQuote,
+    /// Backtick quoting used by Databricks / MySQL: `` `identifier` ``
+    Backtick,
+}
+
+impl QuoteStyle {
+    fn quote(self, value: &str) -> String {
+        match self {
+            Self::DoubleQuote => format!("\"{}\"", value.replace('"', "\"\"")),
+            Self::Backtick => format!("`{}`", value.replace('`', "``")),
+        }
+    }
+}
 
 /// ETL sink that writes transformed batches directly into the SUT via ADBC.
 ///
@@ -44,7 +66,11 @@ const BULK_INGEST_CHUNK_ROWS: usize = 500_000;
 /// the ADBC bulk ingest API only supports append semantics.
 pub struct AdbcSink {
     conn: Arc<Mutex<AdbcConnection>>,
+    created_tables: TokioMutex<HashSet<String>>,
     schema_name: Option<String>,
+    insert_rows_per_statement: usize,
+    auto_create_tables: bool,
+    quote_style: QuoteStyle,
 }
 
 impl AdbcSink {
@@ -52,17 +78,61 @@ impl AdbcSink {
     pub fn new(conn: AdbcConnection, schema_name: Option<String>) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
+            created_tables: TokioMutex::new(HashSet::new()),
             schema_name,
+            insert_rows_per_statement: DEFAULT_INSERT_ROWS_PER_STATEMENT,
+            auto_create_tables: true,
+            quote_style: QuoteStyle::default(),
         }
+    }
+
+    #[must_use]
+    pub fn new_without_table_creation(conn: AdbcConnection, schema_name: Option<String>) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+            created_tables: TokioMutex::new(HashSet::new()),
+            schema_name,
+            insert_rows_per_statement: DEFAULT_INSERT_ROWS_PER_STATEMENT,
+            auto_create_tables: false,
+            quote_style: QuoteStyle::default(),
+        }
+    }
+
+    /// Set the identifier quoting style for generated SQL.
+    #[must_use]
+    pub fn with_quote_style(mut self, quote_style: QuoteStyle) -> Self {
+        self.quote_style = quote_style;
+        self
+    }
+
+    fn quote_identifier(&self, value: &str) -> String {
+        self.quote_style.quote(value)
     }
 
     fn table_identifier(&self, table_name: &str) -> String {
         match &self.schema_name {
             Some(schema) if !schema.is_empty() => {
-                format!("{}.{table_name}", quote_identifier(schema))
+                format!("{}.{table_name}", self.quote_identifier(schema))
             }
-            _ => quote_identifier(table_name),
+            _ => self.quote_identifier(table_name),
         }
+    }
+
+    fn create_table_sql(&self, table_name: &str, schema: &Schema) -> anyhow::Result<String> {
+        let columns = schema
+            .fields()
+            .iter()
+            .map(|f| {
+                let col_type = sql_type_for_arrow(f.data_type())?;
+                Ok::<_, anyhow::Error>(format!("{} {col_type}", self.quote_identifier(f.name())))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .join(", ");
+
+        Ok(format!(
+            "CREATE TABLE IF NOT EXISTS {} ({columns})",
+            self.table_identifier(table_name)
+        ))
     }
 
     async fn execute_sql_batch(&self, statements: Vec<String>) -> anyhow::Result<()> {
@@ -159,6 +229,28 @@ impl AdbcSink {
         }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Bulk ingest failed after retries")))
     }
+
+    fn insert_sql_for_rows(
+        &self,
+        table_name: &str,
+        batch: &RecordBatch,
+        row_range: std::ops::Range<usize>,
+    ) -> anyhow::Result<String> {
+        let mut tuples = Vec::with_capacity(row_range.len());
+        for row_idx in row_range {
+            let mut values = Vec::with_capacity(batch.num_columns());
+            for (column, field) in batch.columns().iter().zip(batch.schema().fields()) {
+                values.push(sql_literal_for_value(column, field.data_type(), row_idx)?);
+            }
+            tuples.push(format!("({})", values.join(", ")));
+        }
+
+        Ok(format!(
+            "INSERT INTO {} VALUES {}",
+            self.table_identifier(table_name),
+            tuples.join(", ")
+        ))
+    }
 }
 
 #[async_trait]
@@ -250,14 +342,14 @@ impl AdbcSink {
             let field = &fields[col_idx];
             let value =
                 sql_literal_for_value(&batch.columns()[col_idx], field.data_type(), row_idx)?;
-            set_clauses.push(format!("{} = {value}", quote_identifier(field.name())));
+            set_clauses.push(format!("{} = {value}", self.quote_identifier(field.name())));
         }
 
         if set_clauses.is_empty() {
             anyhow::bail!("Update requires at least one non-key column in batch schema");
         }
 
-        let where_clause = where_clause_for_row(batch, row_idx, key_indexes)?;
+        let where_clause = where_clause_for_row(batch, row_idx, key_indexes, self.quote_style)?;
         Ok(format!(
             "UPDATE {} SET {} WHERE {where_clause}",
             self.table_identifier(table_name),
@@ -272,7 +364,7 @@ impl AdbcSink {
         row_idx: usize,
         key_indexes: &[usize],
     ) -> anyhow::Result<String> {
-        let where_clause = where_clause_for_row(batch, row_idx, key_indexes)?;
+        let where_clause = where_clause_for_row(batch, row_idx, key_indexes, self.quote_style)?;
         Ok(format!(
             "DELETE FROM {} WHERE {where_clause}",
             self.table_identifier(table_name)
@@ -284,6 +376,7 @@ fn where_clause_for_row(
     batch: &RecordBatch,
     row_idx: usize,
     key_indexes: &[usize],
+    quote_style: QuoteStyle,
 ) -> anyhow::Result<String> {
     let schema = batch.schema();
     let fields = schema.fields();
@@ -291,7 +384,7 @@ fn where_clause_for_row(
     for &col_idx in key_indexes {
         let field = &fields[col_idx];
         let column = &batch.columns()[col_idx];
-        let col_ident = quote_identifier(field.name());
+        let col_ident = quote_style.quote(field.name());
         if column.is_null(row_idx) {
             predicates.push(format!("{col_ident} IS NULL"));
         } else {
@@ -300,10 +393,6 @@ fn where_clause_for_row(
         }
     }
     Ok(predicates.join(" AND "))
-}
-
-fn quote_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 /// Cast any `Utf8View` columns to `Utf8` so the batch schema matches the
@@ -349,6 +438,23 @@ fn normalize_utf8view_to_utf8(batch: RecordBatch) -> anyhow::Result<RecordBatch>
 
 fn quote_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {
+    match data_type {
+        DataType::Boolean => Ok("BOOLEAN".to_string()),
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::UInt8 | DataType::UInt16 => {
+            Ok("INT".to_string())
+        }
+        DataType::Int64 | DataType::UInt32 | DataType::UInt64 => Ok("BIGINT".to_string()),
+        DataType::Float32 => Ok("FLOAT".to_string()),
+        DataType::Float64 => Ok("DOUBLE".to_string()),
+        DataType::Utf8 | DataType::LargeUtf8 => Ok("STRING".to_string()),
+        DataType::Date32 => Ok("DATE".to_string()),
+        DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
+        DataType::Decimal128(p, s) => Ok(format!("DECIMAL({p}, {s})")),
+        other => anyhow::bail!("Unsupported Arrow data type for ADBC sink: {other:?}"),
+    }
 }
 
 fn sql_literal_for_value(
