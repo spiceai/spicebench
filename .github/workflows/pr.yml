@@ -18,7 +18,7 @@ env:
 jobs:
   changes:
     name: Detect changes
-    runs-on: spiceai-macos
+    runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
@@ -36,7 +36,7 @@ jobs:
 
   check:
     name: cargo check + test
-    runs-on: spiceai-macos
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -56,7 +56,7 @@ jobs:
 
   lint-fix:
     name: cargo fmt + clippy fix
-    runs-on: spiceai-macos
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: changes
     if: needs.changes.outputs.rust == 'true' && github.event_name == 'pull_request'
