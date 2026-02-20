@@ -308,14 +308,18 @@ async fn main() -> anyhow::Result<()> {
         cli.common
             .etl_region
             .as_ref()
-            .map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.clone())),
+            .map_or(serde_json::Value::Null, |v| {
+                serde_json::Value::String(v.clone())
+            }),
     );
     setup_metadata.insert(
         "etl_endpoint".to_string(),
         cli.common
             .etl_endpoint
             .as_ref()
-            .map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.clone())),
+            .map_or(serde_json::Value::Null, |v| {
+                serde_json::Value::String(v.clone())
+            }),
     );
 
     if matches!(cli.common.etl_sink_mode, EtlSinkMode::IcebergObjectStore) {
