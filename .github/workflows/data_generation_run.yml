@@ -64,7 +64,7 @@ on:
         default: 'spiceai-macos'
         type: string
       version:
-        description: 'Version identifier for this generation (e.g. 1, 2, 3, auto-ab12cd34)'
+        description: 'Version identifier for this generation (e.g. 1, 2, 3, auto-tpch-sf0p01-spice-cloud-adbc-parquet-na-nocreatedat)'
         required: true
         type: string
       scale_factor:

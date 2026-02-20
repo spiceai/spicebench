@@ -123,9 +123,14 @@ async fn run_benchmark(
     let sink_kwargs = adbc_driver.db_kwargs.clone();
     let load_kwargs = adbc_driver.db_kwargs;
 
+    let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
+    let generation_config = version_metadata.dataset_config();
+    let mutations = version_metadata.mutation_config();
+    let data_source: Arc<dyn DataStorage> = source.clone();
+
     let target: Arc<dyn Sink> = match common.etl_sink_mode {
         EtlSinkMode::Adbc => {
-            let adbc_conn = AdbcConnection::create(&driver_name, sink_kwargs).map_err(|e| {
+            let adbc_conn = AdbcConnection::create(&driver_name, sink_kwargs.clone()).map_err(|e| {
                 anyhow::anyhow!(
                     "Failed to create ADBC connection for driver {}: {e}",
                     driver_name
@@ -157,13 +162,10 @@ async fn run_benchmark(
         }
     };
 
-    let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
-    let generation_config = version_metadata.dataset_config();
-    let mutations = version_metadata.mutation_config();
     let mut pipeline = ETLPipeline::new(
         dataset_source,
         &generation_config,
-        source,
+        Arc::clone(&data_source),
         target,
         &mutations,
     )?
@@ -176,6 +178,37 @@ async fn run_benchmark(
         return Err(anyhow::anyhow!(
             "Failed to create tables via system adapter: {e}"
         ));
+    }
+
+    if matches!(common.etl_sink_mode, EtlSinkMode::Adbc) {
+        tracing::info!(
+            "Recreating ADBC sink connection after create_tables to refresh table visibility"
+        );
+
+        let adbc_conn = AdbcConnection::create(&driver_name, sink_kwargs).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to create refreshed ADBC connection for driver {}: {e}",
+                driver_name
+            )
+        })?;
+
+        let quote_style = match adbc_driver.driver {
+            AdbcDriver::Databricks => QuoteStyle::Backtick,
+            AdbcDriver::Flightsql => QuoteStyle::default(),
+        };
+
+        let refreshed_target: Arc<dyn Sink> = Arc::new(
+            AdbcSink::new_without_table_creation(adbc_conn, None).with_quote_style(quote_style),
+        );
+
+        pipeline = ETLPipeline::new(
+            DatasetSource::from_dataset_type(&version_metadata.dataset_type)?,
+            &generation_config,
+            Arc::clone(&data_source),
+            refreshed_target,
+            &mutations,
+        )?
+        .with_created_at(common.with_created_at);
     }
 
     // --- Initialize: ETL the first batch so the target has data ---

@@ -252,8 +252,15 @@ jobs:
             DATABRICKS_VARIANT_FOR_VERSION="${DATABRICKS_VARIANT}"
           fi
 
-          ETL_VERSION_INPUTS="${SCENARIO}|${SYSTEM_UNDER_TEST}|${DATABRICKS_VARIANT_FOR_VERSION}|${DATABRICKS_TABLE_FORMAT}|${ETL_SINK_MODE}|${ETL_BUCKET}|${ETL_PREFIX}|${ETL_REGION}|${SCALE_FACTOR}|${{ github.event.inputs.with_created_at }}"
-          ETL_VERSION="auto-$(printf '%s' "${ETL_VERSION_INPUTS}" | sha256sum | cut -c1-16)"
+          SCALE_FACTOR_TAG="$(printf '%s' "${SCALE_FACTOR}" | sed 's/\./p/g')"
+          WITH_CREATED_AT_TAG="nocreatedat"
+          if [ "${{ github.event.inputs.with_created_at }}" = "true" ]; then
+            WITH_CREATED_AT_TAG="createdat"
+          fi
+
+          ETL_VERSION="auto-${SCENARIO}-sf${SCALE_FACTOR_TAG}-${SYSTEM_UNDER_TEST}-${ETL_SINK_MODE}-${DATABRICKS_TABLE_FORMAT}-${DATABRICKS_VARIANT_FOR_VERSION}-${WITH_CREATED_AT_TAG}"
+          ETL_VERSION="$(printf '%s' "${ETL_VERSION}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-')"
+          ETL_VERSION="${ETL_VERSION%-}"
           echo "Derived ETL_VERSION=${ETL_VERSION} from workflow inputs"
 
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-version ${ETL_VERSION}"
