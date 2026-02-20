@@ -30,18 +30,8 @@ use chrono::{Duration, NaiveDate};
 use super::{InsertOp, Sink};
 
 const BULK_INGEST_CHUNK_ROWS: usize = 500_000;
-const DEFAULT_INSERT_ROWS_PER_STATEMENT: usize = 2048;
 const TABLE_READY_MAX_WAIT_SECS: u64 = 45;
 const TABLE_READY_RETRY_MS: u64 = 750;
-
-/// Returns `true` when the ADBC bulk ingest API should be used for inserts.
-///
-/// Controlled by the `ADBC_BULK_INGEST` environment variable (default: `true`).
-fn use_bulk_ingest() -> bool {
-    std::env::var("ADBC_BULK_INGEST")
-        .map(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false"))
-        .unwrap_or(true)
-}
 
 /// Identifier quoting style for SQL dialects.
 #[derive(Debug, Clone, Copy, Default)]
@@ -180,46 +170,6 @@ impl AdbcSink {
         .await?
     }
 
-    fn insert_sql_for_rows(
-        &self,
-        table_name: &str,
-        batch: &RecordBatch,
-        row_range: std::ops::Range<usize>,
-    ) -> anyhow::Result<String> {
-        let mut tuples = Vec::with_capacity(row_range.len());
-        for row_idx in row_range {
-            let mut values = Vec::with_capacity(batch.num_columns());
-            for (column, field) in batch.columns().iter().zip(batch.schema().fields()) {
-                values.push(sql_literal_for_value(column, field.data_type(), row_idx)?);
-            }
-            tuples.push(format!("({})", values.join(", ")));
-        }
-
-        Ok(format!(
-            "INSERT INTO {} VALUES {}",
-            self.table_identifier(table_name),
-            tuples.join(", ")
-        ))
-    }
-
-    async fn sql_insert_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
-        let num_rows = batch.num_rows();
-        if num_rows == 0 {
-            return Ok(());
-        }
-
-        self.wait_for_table_ready(table_name).await?;
-
-        let mut statements = Vec::new();
-        let mut start = 0usize;
-        while start < num_rows {
-            let end = std::cmp::min(start + DEFAULT_INSERT_ROWS_PER_STATEMENT, num_rows);
-            statements.push(self.insert_sql_for_rows(table_name, &batch, start..end)?);
-            start = end;
-        }
-        self.execute_sql_batch(statements).await
-    }
-
     async fn bulk_ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
         const MAX_RETRIES: u32 = 3;
         const INITIAL_BACKOFF_MS: u64 = 1000;
@@ -316,9 +266,7 @@ impl Sink for AdbcSink {
         op: InsertOp,
     ) -> anyhow::Result<()> {
         let num_rows = batch.num_rows();
-        let bulk = use_bulk_ingest();
-        let method = if bulk { "bulk_ingest" } else { "sql_insert" };
-        tracing::debug!(table = %table_name, rows = num_rows, op = ?op, method, "Writing batch");
+        tracing::debug!(table = %table_name, rows = num_rows, op = ?op, method = "bulk_ingest", "Writing batch");
         let start = std::time::Instant::now();
         match op {
             InsertOp::Insert => {
@@ -326,11 +274,7 @@ impl Sink for AdbcSink {
                     return Ok(());
                 }
 
-                if bulk {
-                    self.bulk_ingest_batch(table_name, batch).await?;
-                } else {
-                    self.sql_insert_batch(table_name, batch).await?;
-                }
+                self.bulk_ingest_batch(table_name, batch).await?;
             }
             InsertOp::Update { ref key_columns } => {
                 if num_rows == 0 {
