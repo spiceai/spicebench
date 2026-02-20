@@ -23,9 +23,9 @@ use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
+use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
 use etl::sink::iceberg::{IcebergObjectStoreConfig, IcebergSink};
-use etl::sink::Sink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tracing::Level;
@@ -137,7 +137,10 @@ async fn run_benchmark(
                 s3_endpoint: common.etl_endpoint.clone(),
             })
             .await?;
-            println!("Iceberg sink initialized at s3://{}/{}", common.etl_bucket, iceberg_prefix);
+            println!(
+                "Iceberg sink initialized at s3://{}/{}",
+                common.etl_bucket, iceberg_prefix
+            );
             Arc::new(sink)
         }
     };

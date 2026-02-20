@@ -22,8 +22,8 @@ use async_trait::async_trait;
 use iceberg::arrow::{arrow_schema_to_schema_auto_assign_ids, schema_to_arrow_schema};
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::DataFileFormat;
-use iceberg::transaction::Transaction;
 use iceberg::transaction::ApplyTransactionAction;
+use iceberg::transaction::Transaction;
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::file_writer::location_generator::{
@@ -58,25 +58,30 @@ pub struct IcebergSink {
 
 impl IcebergSink {
     pub async fn new(config: IcebergObjectStoreConfig) -> anyhow::Result<Self> {
-        let mut props = HashMap::from([(MEMORY_CATALOG_WAREHOUSE.to_string(), config.warehouse_uri.clone())]);
+        let mut props = HashMap::from([(
+            MEMORY_CATALOG_WAREHOUSE.to_string(),
+            config.warehouse_uri.clone(),
+        )]);
 
         if let Some(region) = &config.s3_region {
             props.insert("s3.region".to_string(), region.clone());
         }
         if let Some(endpoint) = &config.s3_endpoint {
-            let endpoint_with_scheme = if endpoint.starts_with("http://")
-                || endpoint.starts_with("https://")
-            {
-                endpoint.clone()
-            } else {
-                format!("https://{endpoint}")
-            };
+            let endpoint_with_scheme =
+                if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+                    endpoint.clone()
+                } else {
+                    format!("https://{endpoint}")
+                };
             props.insert("s3.endpoint".to_string(), endpoint_with_scheme);
             props.insert("s3.path-style-access".to_string(), "true".to_string());
         }
 
-        let catalog: Arc<iceberg::MemoryCatalog> =
-            Arc::new(MemoryCatalogBuilder::default().load("spicebench", props).await?);
+        let catalog: Arc<iceberg::MemoryCatalog> = Arc::new(
+            MemoryCatalogBuilder::default()
+                .load("spicebench", props)
+                .await?,
+        );
 
         let namespace = NamespaceIdent::from_vec(config.namespace)?;
         if !catalog.namespace_exists(&namespace).await? {
@@ -170,8 +175,10 @@ impl Sink for IcebergSink {
             None,
             DataFileFormat::Parquet,
         );
-        let parquet_writer_builder =
-            ParquetWriterBuilder::new(WriterProperties::builder().build(), table.current_schema_ref());
+        let parquet_writer_builder = ParquetWriterBuilder::new(
+            WriterProperties::builder().build(),
+            table.current_schema_ref(),
+        );
         let rolling_writer_builder = RollingFileWriterBuilder::new_with_default_file_size(
             parquet_writer_builder,
             table.file_io().clone(),

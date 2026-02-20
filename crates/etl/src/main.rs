@@ -21,9 +21,9 @@ use clap::{Parser, ValueEnum};
 use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
+use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
 use etl::sink::iceberg::{IcebergObjectStoreConfig, IcebergSink};
-use etl::sink::Sink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
@@ -128,10 +128,9 @@ async fn main() -> anyhow::Result<()> {
 
     let target: Arc<dyn Sink> = match cli.sink_mode {
         EtlSinkMode::Adbc => {
-            let adbc_driver = cli
-                .adbc_driver
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("--adbc-driver is required when --sink-mode=adbc"))?;
+            let adbc_driver = cli.adbc_driver.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("--adbc-driver is required when --sink-mode=adbc")
+            })?;
             let adbc_uri = cli
                 .adbc_uri
                 .as_ref()
