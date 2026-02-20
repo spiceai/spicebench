@@ -307,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_setup() {
         let mut server = Server::new(TestHandler);
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","metadata":{}}}"#;
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setup","params":{"run_id":"00000000-0000-0000-0000-000000000000","metadata":{},"datasets":{}}}"#;
         let response = server.handle_request(request).await;
 
         assert!(response.get("result").is_some());

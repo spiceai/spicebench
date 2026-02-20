@@ -57,8 +57,7 @@ limitations under the License.
 //! # #[cfg(feature = "server")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use system_adapter_protocol::{
-//!     AdbcDriver, Handler, Server, SetupResponse,
-//!     TeardownResponse, DatasetConfig,
+//!     AdbcDriver, DatasetConfig, Handler, Server, SetupResponse, TeardownResponse,
 //! };
 //! use async_trait::async_trait;
 //! use std::collections::HashMap;
@@ -72,9 +71,9 @@ limitations under the License.
 //!         &mut self,
 //!         run_id: Uuid,
 //!         metadata: HashMap<String, serde_json::Value>,
+//!         datasets: HashMap<String, DatasetConfig>,
 //!     ) -> Result<SetupResponse, String> {
-//!         // Your setup logic here
-//!         let _ = metadata;
+//!         let _ = (metadata, datasets);
 //!         Ok(SetupResponse {
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
@@ -159,7 +158,6 @@ pub struct SetupResponse {
     /// Driver-specific connection parameters
     pub db_kwargs: HashMap<String, serde_json::Value>,
 }
-
 /// Request to teardown a benchmark run
 ///
 /// JSON-RPC method: `teardown`

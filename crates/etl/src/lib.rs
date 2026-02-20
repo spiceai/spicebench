@@ -453,9 +453,11 @@ impl ETLPipeline {
     /// the rehydrated Arrow schema. This can be used to build a
     /// [`CreateTablesRequest`](system_adapter_protocol::CreateTablesRequest) for
     /// the system adapter.
-    pub fn create_tables_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
-        let with_created_at = self.with_created_at;
-        self.dataset
+    pub fn create_tables_request_datasets(
+        with_created_at: bool,
+        dataset: Arc<dyn Dataset>,
+    ) -> HashMap<String, ProtocolDatasetConfig> {
+        dataset
             .tables()
             .into_iter()
             .map(|(name, table)| {
@@ -856,12 +858,12 @@ async fn run_pipeline(
 
     loop {
         // Check step budget.
-        if let Some(limit) = step_limit {
-            if steps_processed >= limit {
-                info!(steps_processed, "Step limit reached, pausing pipeline");
-                progress_logger.abort();
-                return PipelineState::Paused;
-            }
+        if let Some(limit) = step_limit
+            && steps_processed >= limit
+        {
+            info!(steps_processed, "Step limit reached, pausing pipeline");
+            progress_logger.abort();
+            return PipelineState::Paused;
         }
 
         if cancel.is_cancelled() {
@@ -905,7 +907,6 @@ async fn run_pipeline(
             let data_storage = Arc::clone(&data_storage);
             let data_sink = Arc::clone(&data_sink);
             let last_created_at = Arc::clone(&last_created_at_us);
-            let with_created_at = with_created_at;
 
             join_set.spawn(async move {
                 // 1. Read from source

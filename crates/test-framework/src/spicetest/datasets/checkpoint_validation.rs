@@ -67,9 +67,10 @@ pub struct QueryValidationOutcome {
 
 /// A snapshot of the current checkpoint validation state, published via a
 /// `watch` channel so the load runner can inspect it at any time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ValidationStatus {
     /// Checkpoint validation is not currently active.
+    #[default]
     Inactive,
     /// Checkpoint validation is active for the given checkpoint index.
     Active {
@@ -81,12 +82,6 @@ pub enum ValidationStatus {
         /// since validation was enabled for this checkpoint.
         completed_iterations: usize,
     },
-}
-
-impl Default for ValidationStatus {
-    fn default() -> Self {
-        Self::Inactive
-    }
 }
 
 impl ValidationStatus {
