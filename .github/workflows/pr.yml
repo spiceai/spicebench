@@ -35,7 +35,7 @@ jobs:
               - '.github/workflows/pr.yml'
 
   check:
-    name: cargo check + test
+    name: cargo check
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: changes
@@ -50,6 +50,20 @@ jobs:
 
       - name: cargo check
         run: make check
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91
 
       - name: cargo test
         run: make test
