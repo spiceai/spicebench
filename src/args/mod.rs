@@ -101,15 +101,15 @@ pub struct CommonArgs {
     pub(crate) system_adapter_env: Vec<(String, String)>,
 
     /// S3 bucket name for the ETL source and target
-    #[arg(long)]
+    #[arg(long, default_value = "spiceai-public-datasets")]
     pub(crate) etl_bucket: String,
 
     /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
-    #[arg(long, default_value = "")]
+    #[arg(long, default_value = "data-gen")]
     pub(crate) etl_prefix: String,
 
     /// Version identifier for the data generation to read from.
-    #[arg(long)]
+    #[arg(long, default_value = "1")]
     pub(crate) etl_version: String,
 
     /// Base S3 key prefix for the ETL target (rehydrated) data.
@@ -118,7 +118,7 @@ pub struct CommonArgs {
     pub(crate) etl_target_base_prefix: String,
 
     /// AWS region for the ETL S3 bucket
-    #[arg(long)]
+    #[arg(long, default_value = "us-east-1")]
     pub(crate) etl_region: Option<String>,
 
     /// S3 endpoint URL for the ETL bucket (for MinIO/LocalStack)

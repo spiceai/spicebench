@@ -13,7 +13,7 @@ anyhow.workspace = true
 arrow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
-etl = { path = "../etl", features = ["duckdb"] }
+etl = { path = "../etl" }
 test-framework = { path = "../test-framework" }
 object_store = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -22,3 +22,7 @@ parquet.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[features]
+default = []
+duckdb = ["etl/duckdb"]

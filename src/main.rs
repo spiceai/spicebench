@@ -141,6 +141,11 @@ async fn run_benchmark(
     )?
     .with_target_config(hive_config.clone());
 
+    // --- Initialize: ETL the first batch so the target has data ---
+    tracing::info!("Initializing ETL pipeline (first batch)...");
+    pipeline.initialize().await?;
+    tracing::info!("ETL pipeline initialized");
+
     // --- Call setup with datasets to provision the SUT ---
     let setup_response = system_adapter_client
         .lock()
@@ -155,11 +160,6 @@ async fn run_benchmark(
 
     let driver_name = setup_response.driver.to_string();
     let db_kwargs = setup_response.db_kwargs;
-
-    // --- Initialize: ETL the first batch so the target has data ---
-    tracing::info!("Initializing ETL pipeline (first batch)...");
-    pipeline.initialize().await?;
-    tracing::info!("ETL pipeline initialized");
 
     let load_conn = match AdbcConnection::create(&driver_name, db_kwargs) {
         Ok(conn) => conn,
@@ -221,14 +221,27 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // --- Connect to S3 and read version metadata ---
+    let scenario_name = cli.common.scenario.to_string();
+    let version_prefix = build_version_prefix(
+        &cli.common.etl_prefix,
+        &scenario_name,
+        &cli.common.etl_version,
+    );
+    tracing::info!(
+        etl_source = %format!("s3://{}/{}/tables/", cli.common.etl_bucket, version_prefix),
+        etl_bucket = %cli.common.etl_bucket,
+        etl_prefix = %cli.common.etl_prefix,
+        etl_version = %cli.common.etl_version,
+        etl_region = ?cli.common.etl_region,
+        table_format = %cli.common.table_format,
+        scenario = %scenario_name,
+        concurrency = cli.common.concurrency,
+        "ETL configuration"
+    );
+
     let source_config = TargetConfig {
         bucket: cli.common.etl_bucket.clone(),
-        prefix: build_version_prefix(
-            &cli.common.etl_prefix,
-            &cli.common.scenario.to_string(),
-            &cli.common.etl_version,
-        ),
+        prefix: version_prefix,
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
     };
