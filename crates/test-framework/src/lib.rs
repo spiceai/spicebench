@@ -62,7 +62,7 @@ impl Scenario {
 
     pub fn end_condition(&self) -> EndCondition {
         match self {
-            Scenario::TPCH => EndCondition::Duration(Duration::from_secs(30)),
+            Scenario::TPCH => EndCondition::Unlimited,
         }
     }
 }
