@@ -141,40 +141,40 @@ impl CheckpointValidationState {
     /// or `Some(result)` with the validation outcome.
     fn validate(
         &mut self,
-        query: &Query,
+        query_name: &Arc<str>,
         actual_batches: &[RecordBatch],
     ) -> Option<QueryValidationResult> {
         if !self.active {
             return None;
         }
 
-        let expected_batches = self.expected_results.get(&query.name)?;
+        let expected_batches = self.expected_results.get(query_name)?;
 
         let result = validation::validate_with_expected_batches(
-            &query.name,
+            query_name,
             actual_batches,
             expected_batches,
         );
 
         match &result {
             Ok(QueryValidationResult::Pass) => {
-                self.record_outcome(&query.name, true, None);
+                self.record_outcome(query_name, true, None);
             }
             Ok(QueryValidationResult::Fail(reason)) => {
                 eprintln!(
                     "Checkpoint validation FAIL - checkpoint {} - query '{}': {:?}",
-                    self.checkpoint_idx, query.name, reason
+                    self.checkpoint_idx, query_name, reason
                 );
-                self.record_outcome(&query.name, false, Some(reason.clone()));
+                self.record_outcome(query_name, false, Some(reason.clone()));
             }
             Err(e) => {
                 eprintln!(
                     "Checkpoint validation error - checkpoint {} - query '{}': {}",
-                    self.checkpoint_idx, query.name, e
+                    self.checkpoint_idx, query_name, e
                 );
                 // Treat errors as failures
                 self.record_outcome(
-                    &query.name,
+                    query_name,
                     false,
                     Some(crate::queries::validation::QueryValidationFailReason::NoExpectedAnswer),
                 );
@@ -273,6 +273,7 @@ struct QueryRunResult {
     connection_failed: bool,
     query_failure: Option<String>,
     shutdown: bool,
+    checkpoint_batches: Option<Vec<RecordBatch>>,
 }
 
 impl SpiceTestQueryWorkerResult {
@@ -571,6 +572,7 @@ impl SpiceTestQueryWorker {
                                 &mut BTreeMap::new(),
                                 snapshot_results,
                                 false,
+                                false,
                                 0,
                                 Instant::now(),
                                 &mut checkpoint_validation,
@@ -635,6 +637,7 @@ impl SpiceTestQueryWorker {
                                 connection_failed,
                                 query_failure,
                                 shutdown,
+                                ..
                             } = self
                                 .run_single_query(
                                     query,
@@ -642,6 +645,7 @@ impl SpiceTestQueryWorker {
                                     &mut row_counts,
                                     false, // don't attempt to snapshot results more than once
                                     self.validate,
+                                    false,
                                     0,
                                     Instant::now(),
                                     &mut checkpoint_validation,
@@ -698,38 +702,63 @@ impl SpiceTestQueryWorker {
         checkpoint_validation: &mut Option<CheckpointValidationState>,
     ) -> Result<bool> {
         if checkpoint_validation.as_ref().is_some_and(|cv| cv.active) {
+            let mut in_flight = FuturesUnordered::new();
             for query in queries {
                 if self.shutdown_token.is_cancelled() {
                     return Ok(false);
                 }
-                let QueryRunResult {
-                    connection_failed,
-                    query_failure,
-                    shutdown,
-                } = self
-                    .run_single_query(
-                        query,
-                        Arc::clone(&query_durations),
-                        row_counts,
-                        false,
-                        false,
-                        0,
-                        Instant::now(),
-                        checkpoint_validation,
-                    )
-                    .await?;
-                if shutdown || connection_failed {
+
+                let query_name = Arc::clone(&query.name);
+                let query_durations = Arc::clone(&query_durations);
+                let queue_depth = in_flight.len();
+                let enqueued_at = Instant::now();
+
+                in_flight.push(async move {
+                    let mut local_row_counts = BTreeMap::new();
+                    let mut local_checkpoint_validation: Option<CheckpointValidationState> = None;
+                    let run_result = self
+                        .run_single_query(
+                            query,
+                            query_durations,
+                            &mut local_row_counts,
+                            false,
+                            false,
+                            true,
+                            queue_depth,
+                            enqueued_at,
+                            &mut local_checkpoint_validation,
+                        )
+                        .await?;
+
+                    Ok::<_, anyhow::Error>((query_name, run_result, local_row_counts))
+                });
+            }
+
+            while let Some(result) = in_flight.next().await {
+                let (query_name, run_result, local_row_counts) = result?;
+
+                if run_result.shutdown || run_result.connection_failed {
                     return Ok(false);
                 }
 
-                let worker_status = if let Some(query_failure) = query_failure {
+                for (name, counts) in local_row_counts {
+                    row_counts.entry(name).or_default().extend(counts);
+                }
+
+                if let Some(cv) = checkpoint_validation
+                    && let Some(batches) = run_result.checkpoint_batches.as_deref()
+                {
+                    cv.validate(&query_name, batches);
+                }
+
+                let worker_status = if let Some(query_failure) = run_result.query_failure {
                     QueryStatus::Failed(Some(query_failure.into()))
                 } else {
                     QueryStatus::Passed
                 };
 
                 query_statuses
-                    .entry(Arc::clone(&query.name))
+                    .entry(query_name)
                     .and_modify(|existing_status| {
                         if matches!(worker_status, QueryStatus::Failed(_)) {
                             *existing_status = worker_status.clone();
@@ -737,6 +766,7 @@ impl SpiceTestQueryWorker {
                     })
                     .or_insert(worker_status);
             }
+
             return Ok(true);
         }
 
@@ -762,6 +792,7 @@ impl SpiceTestQueryWorker {
                         query,
                         query_durations,
                         &mut local_row_counts,
+                        false,
                         false,
                         false,
                         queue_depth,
@@ -812,6 +843,7 @@ impl SpiceTestQueryWorker {
         row_counts: &mut BTreeMap<Arc<str>, Vec<usize>>,
         results_snapshot: bool,
         validate: bool,
+        capture_checkpoint_batches: bool,
         queue_depth: usize,
         enqueued_at: Instant,
         checkpoint_validation: &mut Option<CheckpointValidationState>,
@@ -823,16 +855,18 @@ impl SpiceTestQueryWorker {
                 row_counts,
                 results_snapshot,
                 validate,
+                capture_checkpoint_batches,
                 queue_depth,
                 enqueued_at,
                 checkpoint_validation,
             )
             .await
         {
-            Ok(()) => Ok(QueryRunResult {
+            Ok(checkpoint_batches) => Ok(QueryRunResult {
                 connection_failed: false,
                 query_failure: None,
                 shutdown: false,
+                checkpoint_batches,
             }),
             Err(e) => {
                 // If shutdown was requested, exit quietly without logging errors
@@ -841,6 +875,7 @@ impl SpiceTestQueryWorker {
                         connection_failed: false,
                         query_failure: None,
                         shutdown: true,
+                        checkpoint_batches: None,
                     });
                 }
 
@@ -865,6 +900,7 @@ impl SpiceTestQueryWorker {
                         connection_failed: true,
                         query_failure: None,
                         shutdown: false,
+                        checkpoint_batches: None,
                     })
                 } else {
                     eprintln!(
@@ -880,6 +916,7 @@ impl SpiceTestQueryWorker {
                         connection_failed: false,
                         query_failure: Some(format!("{e}")),
                         shutdown: false,
+                        checkpoint_batches: None,
                     })
                 }
             }
@@ -893,10 +930,11 @@ impl SpiceTestQueryWorker {
         row_counts: &mut BTreeMap<Arc<str>, Vec<usize>>,
         results_snapshot: bool,
         validate: bool,
+        capture_checkpoint_batches: bool,
         queue_depth: usize,
         enqueued_at: Instant,
         checkpoint_validation: &mut Option<CheckpointValidationState>,
-    ) -> Result<()> {
+    ) -> Result<Option<Vec<RecordBatch>>> {
         self.record_queue_metrics(&query.name, queue_depth, enqueued_at.elapsed());
 
         // Race query execution against shutdown signal so in-flight queries
@@ -916,8 +954,17 @@ impl SpiceTestQueryWorker {
             && self.executor.supports_validation()
             && let Some(batches) = &result.batches
         {
-            cv.validate(query, batches);
+            cv.validate(&query.name, batches);
         }
+
+        let checkpoint_batches = if capture_checkpoint_batches
+            && self.executor.supports_validation()
+            && let Some(batches) = &result.batches
+        {
+            Some(batches.clone())
+        } else {
+            None
+        };
 
         // Handle validation if supported and requested
         if validate
@@ -1077,7 +1124,7 @@ impl SpiceTestQueryWorker {
             pb.inc(1);
         }
 
-        Ok(())
+        Ok(checkpoint_batches)
     }
 }
 
