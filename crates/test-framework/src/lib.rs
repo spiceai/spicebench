@@ -27,7 +27,6 @@ pub mod spicetest;
 pub mod telemetry;
 
 use std::fmt::Display;
-use std::time::Duration;
 
 use queries::QuerySet;
 use spicetest::datasets::EndCondition;
