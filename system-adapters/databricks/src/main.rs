@@ -152,12 +152,21 @@ struct StdioArgs {
 
     /// Lakebase database instance name (for Provisioned synced table creation).
     /// Mutually exclusive with --lakebase-project.
-    #[arg(long, env = "LAKEBASE_DATABASE_INSTANCE", conflicts_with = "lakebase_project")]
+    #[arg(
+        long,
+        env = "LAKEBASE_DATABASE_INSTANCE",
+        conflicts_with = "lakebase_project"
+    )]
     lakebase_database_instance: Option<String>,
 
     /// Lakebase project name (for Autoscaling synced table creation).
     /// Mutually exclusive with --lakebase-database-instance.
-    #[arg(long, env = "LAKEBASE_PROJECT", conflicts_with = "lakebase_database_instance", conflicts_with = "lakebase_pg_db_name")]
+    #[arg(
+        long,
+        env = "LAKEBASE_PROJECT",
+        conflicts_with = "lakebase_database_instance",
+        conflicts_with = "lakebase_pg_db_name"
+    )]
     lakebase_project: Option<String>,
 
     /// Lakebase branch name (used with --lakebase-project, defaults to "production").
@@ -463,7 +472,11 @@ impl DatabricksAdapter {
         )
     }
 
-    fn lakebase_synced_table_full_name(&self, table_name: &str, lakebase_config: &LakebaseConfig) -> String {
+    fn lakebase_synced_table_full_name(
+        &self,
+        table_name: &str,
+        lakebase_config: &LakebaseConfig,
+    ) -> String {
         format!(
             "{}.{}.{}",
             self.config.catalog, lakebase_config.schema, table_name
@@ -1383,7 +1396,11 @@ print("OK")
     fn lakebase_pg_uri(&self) -> Result<String> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
-            _ => return Err(anyhow!("lakebase_pg_uri called without Lakebase compute target")),
+            _ => {
+                return Err(anyhow!(
+                    "lakebase_pg_uri called without Lakebase compute target"
+                ));
+            }
         };
         Ok(format!(
             "postgresql://{}:{}@{}/{}?sslmode=require&options=--search_path%3D{}",
@@ -1403,7 +1420,11 @@ print("OK")
     ) -> Result<()> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
-            _ => return Err(anyhow!("create_synced_table called without Lakebase compute target")),
+            _ => {
+                return Err(anyhow!(
+                    "create_synced_table called without Lakebase compute target"
+                ));
+            }
         };
         let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
         let source_table_name = self.uc_table_full_name(table_name);
@@ -1461,10 +1482,15 @@ print("OK")
             "[databricks-adapter] synced table '{}' created, waiting for ONLINE status",
             table_name
         );
-        self.wait_for_synced_table_online(table_name, lakebase_config).await
+        self.wait_for_synced_table_online(table_name, lakebase_config)
+            .await
     }
 
-    async fn wait_for_synced_table_online(&self, table_name: &str, lakebase_config: &LakebaseConfig) -> Result<()> {
+    async fn wait_for_synced_table_online(
+        &self,
+        table_name: &str,
+        lakebase_config: &LakebaseConfig,
+    ) -> Result<()> {
         let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
         let status_url = format!(
             "https://{}/api/2.0/database/synced_tables/{}",
@@ -1533,7 +1559,11 @@ print("OK")
     async fn delete_synced_table(&self, table_name: &str) -> Result<()> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
-            _ => return Err(anyhow!("delete_synced_table called without Lakebase compute target")),
+            _ => {
+                return Err(anyhow!(
+                    "delete_synced_table called without Lakebase compute target"
+                ));
+            }
         };
         let synced_table_name = self.lakebase_synced_table_full_name(table_name, lakebase_config);
         let url = format!(
@@ -1743,23 +1773,18 @@ impl Handler for DatabricksAdapter {
             let location = dataset_cfg.location.as_deref().ok_or_else(|| {
                 format!("Dataset '{table_name}' is missing required 'location' field")
             })?;
-            let drop_sql = format!(
-                "DROP TABLE IF EXISTS {}",
-                self.table_full_name(table_name)
-            );
+            let drop_sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
             self.execute_sql_statement(&drop_sql).await.map_err(|e| {
-                format!(
-                    "Failed to drop existing table '{table_name}' during create_tables: {e}"
-                )
+                format!("Failed to drop existing table '{table_name}' during create_tables: {e}")
             })?;
 
             let create_sql = self.create_table_ctas(table_name, location);
 
             eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
 
-            self.execute_sql_statement(&create_sql).await.map_err(|e| {
-                format!("Failed to create table '{table_name}': {e}")
-            })?;
+            self.execute_sql_statement(&create_sql)
+                .await
+                .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
 
             table_locations.insert(table_name.clone(), location.to_string());
             created_tables.push(table_name.clone());
@@ -1788,9 +1813,7 @@ impl Handler for DatabricksAdapter {
                             this.create_synced_table(&table_name, &pks)
                                 .await
                                 .map_err(|e| {
-                                    format!(
-                                        "Failed to create synced table for '{table_name}': {e}"
-                                    )
+                                    format!("Failed to create synced table for '{table_name}': {e}")
                                 })?;
                             Ok::<_, String>(table_name)
                         }
@@ -1874,17 +1897,16 @@ impl Handler for DatabricksAdapter {
         if self.config.drop_tables_on_teardown {
             let table_count = state.created_tables.len();
             for table_name in &state.created_tables {
-                match state.variant {
-                    DatabricksVariant::Databricks | DatabricksVariant::Lakebase => {
-                        let sql =
-                            format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
-                        self.execute_sql_statement(&sql).await.map_err(|e| {
-                            format!(
-                                "Failed to drop table '{table_name}' during teardown: {e}"
-                            )
-                        })?;
-                    }
+                if state.variant == DatabricksVariant::Lakebase {
+                    self.delete_synced_table(table_name).await.map_err(|e| {
+                        format!("Failed to delete synced table '{table_name}' during teardown: {e}")
+                    })?;
                 }
+
+                let sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
+                self.execute_sql_statement(&sql).await.map_err(|e| {
+                    format!("Failed to drop table '{table_name}' during teardown: {e}")
+                })?;
             }
             eprintln!("[databricks-adapter] cleaned up {table_count} temporary table(s)");
         }
