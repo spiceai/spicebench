@@ -126,7 +126,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          ETL_VERSION_INPUTS="tpch|spice_cloud|n/a|parquet|adbc|spiceai-public-datasets|pr-validation|us-east-1|false"
+          ETL_VERSION_INPUTS="tpch|spice_cloud|n/a|parquet|adbc|spiceai-public-datasets|pr-validation|us-east-1|0.0001|false"
           ETL_VERSION="auto-$(printf '%s' "${ETL_VERSION_INPUTS}" | sha256sum | cut -c1-16)"
           echo "ETL_VERSION=${ETL_VERSION}" >> "$GITHUB_ENV"
 

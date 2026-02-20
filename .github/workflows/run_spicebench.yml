@@ -35,6 +35,11 @@ on:
         required: false
         default: 'data-gen'
         type: string
+      scale_factor:
+        description: 'Scale factor used by data generation (included in derived ETL version key)'
+        required: false
+        default: '0.01'
+        type: string
       etl_region:
         description: 'AWS region for the ETL S3 bucket'
         required: false
@@ -232,6 +237,7 @@ jobs:
           EXECUTOR_INSTANCE_TYPE: ${{ github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
+          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '0.01' }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
           ETL_SINK_MODE: ${{ github.event.inputs.etl_sink_mode || 'adbc' }}
@@ -246,7 +252,7 @@ jobs:
             DATABRICKS_VARIANT_FOR_VERSION="${DATABRICKS_VARIANT}"
           fi
 
-          ETL_VERSION_INPUTS="${SCENARIO}|${SYSTEM_UNDER_TEST}|${DATABRICKS_VARIANT_FOR_VERSION}|${DATABRICKS_TABLE_FORMAT}|${ETL_SINK_MODE}|${ETL_BUCKET}|${ETL_PREFIX}|${ETL_REGION}|${{ github.event.inputs.with_created_at }}"
+          ETL_VERSION_INPUTS="${SCENARIO}|${SYSTEM_UNDER_TEST}|${DATABRICKS_VARIANT_FOR_VERSION}|${DATABRICKS_TABLE_FORMAT}|${ETL_SINK_MODE}|${ETL_BUCKET}|${ETL_PREFIX}|${ETL_REGION}|${SCALE_FACTOR}|${{ github.event.inputs.with_created_at }}"
           ETL_VERSION="auto-$(printf '%s' "${ETL_VERSION_INPUTS}" | sha256sum | cut -c1-16)"
           echo "Derived ETL_VERSION=${ETL_VERSION} from workflow inputs"
 
