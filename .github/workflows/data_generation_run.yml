@@ -8,17 +8,8 @@ on:
         required: false
         default: 'tpch'
         type: string
-      system_under_test:
-        required: false
-        default: 'spice_cloud'
-        type: string
-      table_format:
-        required: false
-        default: 'parquet'
-        type: string
-      databricks_variant:
-        required: false
-        default: 'databricks'
+      version:
+        required: true
         type: string
       scale_factor:
         required: false
@@ -72,27 +63,10 @@ on:
         required: false
         default: 'spiceai-macos'
         type: string
-      system_under_test:
-        description: 'System under test (for version derivation, must match the run workflow)'
-        required: false
-        default: 'spice_cloud'
-        type: choice
-        options:
-          - spice_cloud
-          - databricks
-      table_format:
-        description: 'Table format (for version derivation, must match the run workflow)'
-        required: false
-        default: 'parquet'
+      version:
+        description: 'Data generation version identifier'
+        required: true
         type: string
-      databricks_variant:
-        description: 'Databricks variant (for version derivation, must match the run workflow)'
-        required: false
-        default: 'databricks'
-        type: choice
-        options:
-          - databricks
-          - lakebase
       scale_factor:
         description: 'TPC-H scale factor'
         required: true
@@ -168,9 +142,7 @@ jobs:
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
           SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
-          SYSTEM_UNDER_TEST: ${{ inputs.system_under_test || github.event.inputs.system_under_test || 'spice_cloud' }}
-          TABLE_FORMAT: ${{ inputs.table_format || github.event.inputs.table_format || 'parquet' }}
-          DATABRICKS_VARIANT: ${{ inputs.databricks_variant || github.event.inputs.databricks_variant || 'databricks' }}
+          VERSION: ${{ inputs.version || github.event.inputs.version }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           MAX_CONCURRENCY: ${{ inputs.max_concurrency || github.event.inputs.max_concurrency || '8' }}
@@ -181,18 +153,6 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          DATABRICKS_VARIANT_FOR_VERSION="na"
-          if [ "${SYSTEM_UNDER_TEST}" = "databricks" ]; then
-            DATABRICKS_VARIANT_FOR_VERSION="${DATABRICKS_VARIANT}"
-          fi
-
-          SCALE_FACTOR_TAG="$(printf '%s' "${SCALE_FACTOR}" | sed 's/\./p/g')"
-
-          VERSION="auto-${SCENARIO}-sf${SCALE_FACTOR_TAG}-${SYSTEM_UNDER_TEST}-s3-hive-${TABLE_FORMAT}-${DATABRICKS_VARIANT_FOR_VERSION}-createdat"
-          VERSION="$(printf '%s' "${VERSION}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-')"
-          VERSION="${VERSION%-}"
-          echo "Derived VERSION=${VERSION} from workflow inputs"
-
           ARGS="--dataset ${SCENARIO}"
           ARGS="${ARGS} --scenario ${SCENARIO}"
           ARGS="${ARGS} --version ${VERSION}"
@@ -223,16 +183,13 @@ jobs:
         if: steps.cache-checkpointer.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.spice/bin
-          cargo build --release -p checkpointer
+          cargo build --release --features duckdb -p checkpointer
           install -m 755 target/release/checkpointer ~/.spice/bin/checkpointer
 
       - name: Run checkpointer
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
-          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
-          SYSTEM_UNDER_TEST: ${{ inputs.system_under_test || github.event.inputs.system_under_test || 'spice_cloud' }}
-          TABLE_FORMAT: ${{ inputs.table_format || github.event.inputs.table_format || 'parquet' }}
-          DATABRICKS_VARIANT: ${{ inputs.databricks_variant || github.event.inputs.databricks_variant || 'databricks' }}
+          VERSION: ${{ inputs.version || github.event.inputs.version }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
@@ -241,18 +198,6 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          DATABRICKS_VARIANT_FOR_VERSION="na"
-          if [ "${SYSTEM_UNDER_TEST}" = "databricks" ]; then
-            DATABRICKS_VARIANT_FOR_VERSION="${DATABRICKS_VARIANT}"
-          fi
-
-          SCALE_FACTOR_TAG="$(printf '%s' "${SCALE_FACTOR}" | sed 's/\./p/g')"
-
-          VERSION="auto-${SCENARIO}-sf${SCALE_FACTOR_TAG}-${SYSTEM_UNDER_TEST}-s3-hive-${TABLE_FORMAT}-${DATABRICKS_VARIANT_FOR_VERSION}-createdat"
-          VERSION="$(printf '%s' "${VERSION}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-')"
-          VERSION="${VERSION%-}"
-          echo "Derived VERSION=${VERSION} from workflow inputs"
-
           ARGS="--scenario ${SCENARIO}"
           ARGS="${ARGS} --version ${VERSION}"
           ARGS="${ARGS} --bucket ${BUCKET}"
