@@ -23,7 +23,7 @@ async-trait.workspace = true
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
-duckdb = { workspace = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
+duckdb = { workspace = true, optional = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
 indexmap = { workspace = true }
 object_store = { workspace = true }
 serde_json.workspace = true
@@ -36,4 +36,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = []
-duckdb = []
+duckdb = ["dep:duckdb"]
