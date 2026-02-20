@@ -39,7 +39,7 @@ on:
         description: 'Version identifier for the data generation to read from'
         required: true
         type: string
-        default: "1"
+        default: '1'
       etl_region:
         description: 'AWS region for the ETL S3 bucket'
         required: false
@@ -70,6 +70,8 @@ jobs:
     name: Run spicebench
     runs-on: ubuntu-latest
     timeout-minutes: 600
+    concurrency:
+      group: spicebench-run
     steps:
       - uses: actions/checkout@v6
 
