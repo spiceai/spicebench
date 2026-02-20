@@ -27,6 +27,7 @@ pub mod spicetest;
 pub mod telemetry;
 
 use std::fmt::Display;
+use std::time::Duration;
 
 use queries::QuerySet;
 use spicetest::datasets::EndCondition;
@@ -61,7 +62,7 @@ impl Scenario {
 
     pub fn end_condition(&self) -> EndCondition {
         match self {
-            Scenario::TPCH => EndCondition::Unlimited,
+            Scenario::TPCH => EndCondition::Duration(Duration::from_secs(30)),
         }
     }
 }
