@@ -4281,6 +4281,7 @@ dependencies = [
  "clap",
  "data-generation",
  "etl",
+ "parquet",
  "serde",
  "serde_json",
  "system-adapter-protocol",
