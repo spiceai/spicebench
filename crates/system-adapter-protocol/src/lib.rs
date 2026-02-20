@@ -133,6 +133,8 @@ impl std::fmt::Display for AdbcDriver {
 pub struct DatasetConfig {
     /// Arrow schema for the dataset
     pub schema: SchemaRef,
+    /// Dataset S3 location (e.g. "s3://my-bucket/path/to/data/")
+    pub location: Option<String>,
 }
 
 /// Request to setup a benchmark run.

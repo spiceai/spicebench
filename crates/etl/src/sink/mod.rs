@@ -17,9 +17,7 @@ limitations under the License.
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
 
-pub mod adbc;
-pub use adbc::QuoteStyle;
-pub mod iceberg;
+pub mod s3_hive;
 
 #[cfg(feature = "duckdb")]
 pub mod duckdb;

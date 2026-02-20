@@ -27,23 +27,6 @@ pub enum TableFormat {
     Delta,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
-#[value(rename_all = "kebab-case")]
-pub enum EtlSinkMode {
-    Adbc,
-    IcebergObjectStore,
-}
-
-impl std::fmt::Display for EtlSinkMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Adbc => "adbc",
-            Self::IcebergObjectStore => "iceberg-object-store",
-        };
-        write!(f, "{value}")
-    }
-}
-
 impl std::fmt::Display for TableFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
@@ -142,17 +125,9 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
 
-    /// ETL sink mode to use for writing transformed batches.
-    #[arg(long, value_enum, default_value = "adbc")]
-    pub(crate) etl_sink_mode: EtlSinkMode,
-
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]
     pub(crate) table_format: TableFormat,
-
-    /// Append a `__created_at` timestamp column to every batch written to the sink.
-    #[arg(long, default_value_t = false)]
-    pub(crate) with_created_at: bool,
 
     /// Enable checkpoint-based results validation during load tests.
     ///
