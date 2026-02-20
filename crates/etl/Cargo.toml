@@ -24,7 +24,7 @@ async-trait.workspace = true
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
-duckdb = { workspace = true, optional = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
+duckdb = { workspace = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
 iceberg = { version = "0.8.0", default-features = false, features = ["storage-s3"] }
 parquet.workspace = true
 serde_json.workspace = true
@@ -36,4 +36,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = []
-duckdb = ["dep:duckdb"]
+duckdb = []
