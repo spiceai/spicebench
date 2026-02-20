@@ -463,13 +463,11 @@ pub(crate) async fn run(
                                             completed_iterations,
                                             ..
                                         } = &status
-                                        {
-                                            if *idx == checkpoint_idx
+                                            && *idx == checkpoint_idx
                                                 && *completed_iterations >= TARGET_ITERATIONS
                                             {
                                                 break;
                                             }
-                                        }
                                         if wait_start.elapsed() >= MAX_WAIT {
                                             tracing::warn!(
                                                 checkpoint_idx,
