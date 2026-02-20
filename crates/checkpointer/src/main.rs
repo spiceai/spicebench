@@ -70,10 +70,6 @@ struct Cli {
     /// Directory to write checkpoint parquet files into
     #[arg(long, default_value = "./checkpoints")]
     checkpoint_dir: PathBuf,
-
-    /// Append a `__created_at` timestamp column to every batch written to the sink.
-    #[arg(long, default_value_t = false)]
-    with_created_at: bool,
 }
 
 impl Cli {
@@ -195,8 +191,7 @@ async fn main() -> anyhow::Result<()> {
         source,
         target_sink,
         &mutations,
-    )?
-    .with_created_at(cli.with_created_at);
+    )?;
 
     tracing::info!(
         scenario = %scenario_name,
@@ -212,12 +207,6 @@ async fn main() -> anyhow::Result<()> {
         checkpoint_dir = %cli.checkpoint_dir.display(),
         "Starting Checkpointer"
     );
-
-    // Log the tables and schemas that will be processed.
-    let datasets = pipeline.create_tables_request_datasets();
-    for (name, config) in &datasets {
-        tracing::info!(table = %name, schema = ?config.schema, "Dataset table registered");
-    }
 
     pipeline.initialize().await?;
     pipeline.run(cli.checkpoint_interval_steps as usize).await?;

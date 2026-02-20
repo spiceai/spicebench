@@ -46,7 +46,7 @@ def method_setup(params: dict[str, Any]) -> dict[str, Any]:
     port = int(os.getenv("SUT_PORT", "50051"))
     use_tls = os.getenv("SUT_TLS", "false").lower() == "true"
 
-    return {
+    driver_config = {
         "driver": "flightsql",
         "db_kwargs": {
             "uri": f"grpc{'s' if use_tls else ''}://{host}:{port}",
@@ -54,6 +54,11 @@ def method_setup(params: dict[str, Any]) -> dict[str, Any]:
             "password": os.getenv("SUT_PASSWORD", ""),
             "tls": use_tls,
         },
+    }
+
+    return {
+        "ingest_driver": driver_config,
+        "read_driver": driver_config,
     }
 
 

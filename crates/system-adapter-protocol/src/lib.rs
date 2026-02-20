@@ -22,7 +22,7 @@ limitations under the License.
 //!
 //! # Features
 //!
-//! - **Protocol types**: Request/response types for setup, create_tables, teardown, and metrics
+//! - **Protocol types**: Request/response types for setup, teardown, and metrics
 //! - **Client**: Ready-to-use client with Stdio and HTTP transports (requires `client` feature)
 //! - **Server**: Easy server implementation via Handler trait (requires `server` feature)
 //! - **JSON-RPC**: Standard JSON-RPC 2.0 envelope types
@@ -41,8 +41,7 @@ limitations under the License.
 //!
 //! // Setup a benchmark run
 //! let run_id = Uuid::new_v4();
-//! let setup_response = client.setup(run_id, HashMap::new()).await?;
-//! let create_tables_response = client.create_tables(run_id, HashMap::new()).await?;
+//! let setup_response = client.setup(run_id, HashMap::new(), HashMap::new()).await?;
 //!
 //! println!("Driver: {:?}", setup_response.driver);
 //!
@@ -58,8 +57,7 @@ limitations under the License.
 //! # #[cfg(feature = "server")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use system_adapter_protocol::{
-//!     AdbcDriver, CreateTablesResponse, DatasetConfig, Handler, Server, SetupResponse,
-//!     TeardownResponse,
+//!     AdbcDriver, DatasetConfig, Handler, Server, SetupResponse, TeardownResponse,
 //! };
 //! use async_trait::async_trait;
 //! use std::collections::HashMap;
@@ -73,22 +71,13 @@ limitations under the License.
 //!         &mut self,
 //!         run_id: Uuid,
 //!         metadata: HashMap<String, serde_json::Value>,
+//!         datasets: HashMap<String, DatasetConfig>,
 //!     ) -> Result<SetupResponse, String> {
-//!         // Your setup logic here
-//!         let _ = metadata;
+//!         let _ = (metadata, datasets);
 //!         Ok(SetupResponse {
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
 //!         })
-//!     }
-//!
-//!     async fn create_tables(
-//!         &mut self,
-//!         run_id: Uuid,
-//!         datasets: HashMap<String, DatasetConfig>,
-//!     ) -> Result<CreateTablesResponse, String> {
-//!         let _ = datasets;
-//!         Ok(CreateTablesResponse { ok: true })
 //!     }
 //!
 //!     async fn teardown(&mut self, run_id: Uuid) -> Result<TeardownResponse, String> {
@@ -144,6 +133,8 @@ impl std::fmt::Display for AdbcDriver {
 pub struct DatasetConfig {
     /// Arrow schema for the dataset
     pub schema: SchemaRef,
+    /// Dataset S3 location (e.g. "s3://my-bucket/path/to/data/")
+    pub location: Option<String>,
 }
 
 /// Request to setup a benchmark run.
@@ -157,6 +148,8 @@ pub struct SetupRequest {
     /// Arbitrary run metadata propagated from spicebench to adapters
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+    /// Map of dataset name to dataset definition
+    pub datasets: HashMap<String, DatasetConfig>,
 }
 
 /// Response from setup request containing ADBC connection information
@@ -167,26 +160,6 @@ pub struct SetupResponse {
     /// Driver-specific connection parameters
     pub db_kwargs: HashMap<String, serde_json::Value>,
 }
-
-/// Request to create benchmark tables in the system under test.
-///
-/// JSON-RPC method: `create_tables`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateTablesRequest {
-    /// Unique identifier for this benchmark run
-    pub run_id: Uuid,
-    /// Map of dataset name to dataset definition
-    pub datasets: HashMap<String, DatasetConfig>,
-}
-
-/// Response from create_tables request
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreateTablesResponse {
-    /// Indicates if table creation was successful
-    pub ok: bool,
-}
-
 /// Request to teardown a benchmark run
 ///
 /// JSON-RPC method: `teardown`
@@ -357,7 +330,6 @@ pub mod error_codes {
 /// Method names for the system adapter protocol
 pub mod methods {
     pub const SETUP: &str = "setup";
-    pub const CREATE_TABLES: &str = "create_tables";
     pub const TEARDOWN: &str = "teardown";
     pub const METRICS: &str = "metrics";
     pub const RPC_METHODS: &str = "rpc.methods";

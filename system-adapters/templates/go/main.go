@@ -80,7 +80,7 @@ func methodSetup(_ map[string]interface{}) interface{} {
 		scheme = "grpcs"
 	}
 
-	return map[string]interface{}{
+	driverConfig := map[string]interface{}{
 		"driver": "flightsql",
 		"db_kwargs": map[string]interface{}{
 			"uri":      fmt.Sprintf("%s://%s:%d", scheme, host, port),
@@ -88,6 +88,11 @@ func methodSetup(_ map[string]interface{}) interface{} {
 			"password": getenvOr("SUT_PASSWORD", ""),
 			"tls":      tls,
 		},
+	}
+
+	return map[string]interface{}{
+		"ingest_driver": driverConfig,
+		"read_driver":   driverConfig,
 	}
 }
 

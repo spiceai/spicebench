@@ -1,5 +1,5 @@
 name: Run
-run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.system_under_test == 'databricks' && (github.event.inputs.databricks_variant || 'databricks') || 'n/a' }}
+run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.system_under_test == 'databricks' && (github.event.inputs.databricks_variant || 'databricks') || 'na' }}
 
 on:
   workflow_dispatch:
@@ -59,19 +59,6 @@ on:
         required: false
         default: 'github-hosted-ubuntu-latest'
         type: string
-      with_created_at:
-        description: 'Append a __created_at timestamp column to every batch written to the sink'
-        required: false
-        default: false
-        type: boolean
-      etl_sink_mode:
-        description: 'ETL sink mode (adbc or iceberg-object-store)'
-        required: false
-        default: 'adbc'
-        type: choice
-        options:
-          - adbc
-          - iceberg-object-store
 
 jobs:
   run-spicebench:
@@ -242,25 +229,20 @@ jobs:
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '0.01' }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
-          ETL_SINK_MODE: ${{ github.event.inputs.etl_sink_mode || 'adbc' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: 'info'
         run: |
-          DATABRICKS_VARIANT_FOR_VERSION="n/a"
+          DATABRICKS_VARIANT_FOR_VERSION="na"
           if [ "${SYSTEM_UNDER_TEST}" = "databricks" ]; then
             DATABRICKS_VARIANT_FOR_VERSION="${DATABRICKS_VARIANT}"
           fi
 
           SCALE_FACTOR_TAG="$(printf '%s' "${SCALE_FACTOR}" | sed 's/\./p/g')"
-          WITH_CREATED_AT_TAG="nocreatedat"
-          if [ "${{ github.event.inputs.with_created_at }}" = "true" ]; then
-            WITH_CREATED_AT_TAG="createdat"
-          fi
 
-          ETL_VERSION="auto-${SCENARIO}-sf${SCALE_FACTOR_TAG}-${SYSTEM_UNDER_TEST}-${ETL_SINK_MODE}-${DATABRICKS_TABLE_FORMAT}-${DATABRICKS_VARIANT_FOR_VERSION}-${WITH_CREATED_AT_TAG}"
+          ETL_VERSION="auto-${SCENARIO}-sf${SCALE_FACTOR_TAG}-${SYSTEM_UNDER_TEST}-s3-hive-${DATABRICKS_TABLE_FORMAT}-${DATABRICKS_VARIANT_FOR_VERSION}-createdat"
           ETL_VERSION="$(printf '%s' "${ETL_VERSION}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-')"
           ETL_VERSION="${ETL_VERSION%-}"
           echo "Derived ETL_VERSION=${ETL_VERSION} from workflow inputs"
@@ -275,7 +257,6 @@ jobs:
           if [ -n "${ETL_ENDPOINT}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
           fi
-          ETL_ARGS="${ETL_ARGS} --etl-sink-mode ${ETL_SINK_MODE}"
 
           if [ "${SYSTEM_UNDER_TEST}" = "databricks" ]; then
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
@@ -295,11 +276,6 @@ jobs:
             ADAPTER_ENVS=""
           fi
 
-          WITH_CREATED_AT_FLAG=""
-          if [ "${{ github.event.inputs.with_created_at }}" = "true" ]; then
-            WITH_CREATED_AT_FLAG="--with-created-at"
-          fi
-
           ~/.spice/bin/spicebench \
             --concurrency 2  \
             --scenario "${SCENARIO}" \
@@ -307,5 +283,4 @@ jobs:
             ${ETL_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
-            ${ADAPTER_ENVS} \
-            ${WITH_CREATED_AT_FLAG}
+            ${ADAPTER_ENVS}
