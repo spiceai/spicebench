@@ -31,7 +31,8 @@
             },
             "id": 2,
             "panels": [],
-            "title": "Overview",
+            "title": "Benchmark summary",
+            "description": "Top-level benchmark outcomes across duration, throughput, and latency.",
             "type": "row"
         },
         {
@@ -125,7 +126,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Total Duration",
+            "title": "Benchmark duration (ms)",
+            "description": "Wall-clock benchmark duration by adapter and scenario.",
             "type": "timeseries"
         },
         {
@@ -184,7 +186,8 @@
                                 "value": 80
                             }
                         ]
-                    }
+                    },
+                    "unit": "ops"
                 },
                 "overrides": []
             },
@@ -218,7 +221,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "QPS",
+            "title": "Throughput (queries/sec)",
+            "description": "Observed query throughput over time.",
             "type": "timeseries"
         },
         {
@@ -312,7 +316,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "P99 E2E Latency",
+            "title": "End-to-end latency P99 (ms)",
+            "description": "99th percentile end-to-end request latency.",
             "type": "timeseries"
         },
         {
@@ -406,7 +411,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "P99 Query Duration - Overall",
+            "title": "Query latency P99 — overall (ms)",
+            "description": "Overall P99 query latency aggregated across all queries.",
             "type": "timeseries"
         },
         {
@@ -500,7 +506,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "P99 Query Duration - Per Query",
+            "title": "Query latency P99 — by query (ms)",
+            "description": "Per-query P99 latency to highlight slow or regressing queries.",
             "type": "timeseries"
         },
         {
@@ -559,7 +566,8 @@
                                 "value": 80
                             }
                         ]
-                    }
+                    },
+                    "unit": "short"
                 },
                 "overrides": []
             },
@@ -593,7 +601,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Queries Failed",
+            "title": "Failed queries (count)",
+            "description": "Number of failed query executions over time.",
             "type": "timeseries"
         },
         {
@@ -606,7 +615,8 @@
             },
             "id": 19,
             "panels": [],
-            "title": "Client Metrics",
+            "title": "Client queue & concurrency",
+            "description": "Client-side concurrency and queueing pressure signals.",
             "type": "row"
         },
         {
@@ -665,7 +675,8 @@
                                 "value": 80
                             }
                         ]
-                    }
+                    },
+                    "unit": "short"
                 },
                 "overrides": []
             },
@@ -699,7 +710,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Num Clients",
+            "title": "Active clients (count)",
+            "description": "Number of active concurrent client connections.",
             "type": "timeseries"
         },
         {
@@ -793,114 +805,9 @@
                     "refId": "A"
                 }
             ],
-            "title": "P99 Queue Time",
+            "title": "Queue wait P99 (ms)",
+            "description": "99th percentile time spent waiting in the query queue.",
             "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    }
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 16,
-                "y": 18
-            },
-            "id": 22,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_length\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => \"${scale_factor}\" == \"All\" or (exists r[\"scale_factor\"] and r[\"scale_factor\"] == \"${scale_factor}\"))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: max, createEmpty: false)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Query Queue Count",
-            "type": "timeseries"
-        },
-        {
-            "collapsed": false,
-            "gridPos": {
-                "h": 1,
-                "w": 24,
-                "x": 0,
-                "y": 26
-            },
-            "id": 23,
-            "panels": [],
-            "title": "Ingestion",
-            "type": "row"
         },
         {
             "datasource": {
@@ -966,6 +873,115 @@
             "gridPos": {
                 "h": 8,
                 "w": 8,
+                "x": 16,
+                "y": 18
+            },
+            "id": 22,
+            "options": {
+                "legend": {
+                    "calcs": [],
+                    "displayMode": "list",
+                    "placement": "bottom",
+                    "showLegend": true
+                },
+                "tooltip": {
+                    "mode": "single",
+                    "sort": "none"
+                }
+            },
+            "pluginVersion": "11.3.1",
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "influxdb",
+                        "uid": "1eox324"
+                    },
+                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_length\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => \"${scale_factor}\" == \"All\" or (exists r[\"scale_factor\"] and r[\"scale_factor\"] == \"${scale_factor}\"))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: max, createEmpty: false)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+                    "refId": "A"
+                }
+            ],
+            "title": "Queue depth (max)",
+            "description": "Maximum queued query count within each aggregation window.",
+            "type": "timeseries"
+        },
+        {
+            "collapsed": false,
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 26
+            },
+            "id": 23,
+            "panels": [],
+            "title": "Ingestion performance",
+            "description": "Dataset ingestion volume and sustained ingestion rate.",
+            "type": "row"
+        },
+        {
+            "datasource": {
+                "type": "influxdb",
+                "uid": "1eox324"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "palette-classic"
+                    },
+                    "custom": {
+                        "axisBorderShow": false,
+                        "axisCenteredZero": false,
+                        "axisColorMode": "text",
+                        "axisLabel": "",
+                        "axisPlacement": "auto",
+                        "barAlignment": 0,
+                        "barWidthFactor": 0.6,
+                        "drawStyle": "line",
+                        "fillOpacity": 0,
+                        "gradientMode": "none",
+                        "hideFrom": {
+                            "legend": false,
+                            "tooltip": false,
+                            "viz": false
+                        },
+                        "insertNulls": false,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "pointSize": 5,
+                        "scaleDistribution": {
+                            "type": "linear"
+                        },
+                        "showPoints": "auto",
+                        "spanNulls": false,
+                        "stacking": {
+                            "group": "A",
+                            "mode": "none"
+                        },
+                        "thresholdsStyle": {
+                            "mode": "off"
+                        }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    },
+                    "unit": "ops"
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 8,
+                "w": 8,
                 "x": 0,
                 "y": 27
             },
@@ -993,7 +1009,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Ingestion Rows Total",
+            "title": "Ingested rows (total)",
+            "description": "Total ingested row count over time.",
             "type": "timeseries"
         },
         {
@@ -1087,7 +1104,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Ingestion Bytes Total",
+            "title": "Ingested bytes (total)",
+            "description": "Total ingested data volume in bytes.",
             "type": "timeseries"
         },
         {
@@ -1181,7 +1199,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Ingestion Rows / Sec",
+            "title": "Ingestion rate (rows/sec)",
+            "description": "Current ingestion throughput in rows per second.",
             "type": "timeseries"
         },
         {
@@ -1194,7 +1213,8 @@
             },
             "id": 5,
             "panels": [],
-            "title": "Resource / Utilization",
+            "title": "System resource utilization",
+            "description": "CPU and memory usage reported by the system adapter.",
             "type": "row"
         },
         {
@@ -1253,7 +1273,8 @@
                                 "value": 80
                             }
                         ]
-                    }
+                    },
+                    "unit": "percent"
                 },
                 "overrides": []
             },
@@ -1287,7 +1308,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "CPU Usage",
+            "title": "CPU utilization (%)",
+            "description": "System CPU usage percentage over time.",
             "type": "timeseries"
         },
         {
@@ -1381,7 +1403,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Memory Usage - Over Time",
+            "title": "Memory usage over time (bytes)",
+            "description": "Raw memory usage sampled over time.",
             "type": "timeseries"
         },
         {
@@ -1475,7 +1498,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Memory Usage - Median",
+            "title": "Memory usage median (bytes)",
+            "description": "Median memory usage across each aggregation window.",
             "type": "timeseries"
         },
         {
@@ -1569,7 +1593,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Memory Usage - Peak",
+            "title": "Memory usage peak (bytes)",
+            "description": "Peak memory usage across each aggregation window.",
             "type": "timeseries"
         },
         {
@@ -1582,7 +1607,8 @@
             },
             "id": 10,
             "panels": [],
-            "title": "Disk Utilization",
+            "title": "Disk I/O utilization",
+            "description": "Disk throughput and IOPS characteristics.",
             "type": "row"
         },
         {
@@ -1676,7 +1702,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Disk Read - Bytes",
+            "title": "Disk read volume (bytes)",
+            "description": "Maximum observed disk read bytes.",
             "type": "timeseries"
         },
         {
@@ -1770,7 +1797,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Disk Write - Bytes",
+            "title": "Disk write volume (bytes)",
+            "description": "Maximum observed disk write bytes.",
             "type": "timeseries"
         },
         {
@@ -1829,7 +1857,8 @@
                                 "value": 80
                             }
                         ]
-                    }
+                    },
+                    "unit": "iops"
                 },
                 "overrides": []
             },
@@ -1863,7 +1892,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Disk Read - IOPS",
+            "title": "Disk read IOPS",
+            "description": "Maximum observed disk read operations per second.",
             "type": "timeseries"
         },
         {
@@ -1922,7 +1952,8 @@
                                 "value": 80
                             }
                         ]
-                    }
+                    },
+                    "unit": "iops"
                 },
                 "overrides": []
             },
@@ -1956,7 +1987,8 @@
                     "refId": "A"
                 }
             ],
-            "title": "Disk Write - IOPS",
+            "title": "Disk write IOPS",
+            "description": "Maximum observed disk write operations per second.",
             "type": "timeseries"
         }
     ],
@@ -2017,7 +2049,8 @@
     },
     "timepicker": {},
     "timezone": "browser",
-    "title": "Spicebench Benchmarks",
+    "title": "SpiceBench benchmark insights",
+    "description": "Operational benchmark dashboard for end-to-end performance, client behavior, ingestion throughput, and system resource utilization.",
     "uid": "afdqis05ydnuod",
     "version": 16,
     "weekStart": ""
