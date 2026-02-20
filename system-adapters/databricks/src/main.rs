@@ -891,6 +891,7 @@ for table, source_path in table_locations.items():
             .load(source_path)
             .writeStream
             .option("checkpointLocation", checkpoint)
+            .option("mergeSchema", "true")
             .trigger(availableNow=True)
             .toTable(target_table)
             .awaitTermination()
@@ -991,6 +992,9 @@ print("OK")
         let job_name = Self::job_name_for_scenario(scenario_slug);
 
         if let Some(existing_id) = self.find_job_id_by_name(&job_name).await? {
+            eprintln!(
+                "[databricks-adapter] sync job already exists: scenario={scenario_slug} job_name={job_name} job_id={existing_id}"
+            );
             return Ok(());
         }
 
