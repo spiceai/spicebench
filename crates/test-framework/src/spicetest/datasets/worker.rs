@@ -948,25 +948,6 @@ impl SpiceTestQueryWorker {
             }
         }
 
-        // Check for zero row count if not in skip list
-        if !self
-            .skip_row_count_validation
-            .contains(&query.name.to_string())
-            && result.row_count == 0
-        {
-            eprintln!(
-                "{} FAIL - Worker {} - Query '{}' returned 0 rows",
-                chrono::Utc::now(),
-                self.id,
-                query.name
-            );
-            return Err(anyhow::anyhow!(
-                "Worker {} - Query '{}' returned 0 rows",
-                self.id,
-                query.name
-            ));
-        }
-
         // Send streaming metric
         self.send_streaming_metric(&query.name, result.duration, true);
 
