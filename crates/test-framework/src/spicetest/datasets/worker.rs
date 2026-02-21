@@ -525,9 +525,8 @@ impl SpiceTestQueryWorker {
                             &query_sets[set_index]
                         };
 
-                        let checkpoint_validation_was_active = checkpoint_validation
-                            .as_ref()
-                            .is_some_and(|cv| cv.active);
+                        let checkpoint_validation_was_active =
+                            checkpoint_validation.as_ref().is_some_and(|cv| cv.active);
 
                         if !self
                             .run_query_set(
@@ -851,9 +850,8 @@ impl SpiceTestQueryWorker {
                             let query_name = Arc::clone(&query.name);
                             let query_durations = query_durations_for_task;
                             let mut local_row_counts = BTreeMap::new();
-                            let mut local_checkpoint_validation: Option<
-                                CheckpointValidationState,
-                            > = None;
+                            let mut local_checkpoint_validation: Option<CheckpointValidationState> =
+                                None;
                             let run_result = self
                                 .run_single_query(
                                     query,
