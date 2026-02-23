@@ -14,9 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
-use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt64Array};
+use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt32Array};
 use arrow::compute;
 use arrow::datatypes::Schema;
 use async_trait::async_trait;
@@ -27,8 +30,8 @@ use object_store::path::Path as ObjectPath;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
+use tracing::Instrument;
 
 use super::{InsertOp, Sink};
 
@@ -36,37 +39,56 @@ use super::{InsertOp, Sink};
 const DEFAULT_PARTITION_COLUMN: &str = "__created_at";
 const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 
-/// Maximum number of partition encode+upload tasks that may run concurrently
-/// across all active `write()` calls on a single [`S3HiveSink`] instance.
+/// Maximum number of concurrent encode+upload tasks allowed **per S3 table
+/// path prefix** (i.e. per `{prefix}/{table_name}`).
 ///
-/// This prevents unbounded fan-out (e.g. a TPC-H `lineitem` batch spanning
-/// hundreds of date partitions multiplied by several tables initialising in
-/// parallel) from exhausting the S3 connection pool or the blocking-thread
-/// pool on slow machines / networks.
-const MAX_CONCURRENT_UPLOADS: usize = 8;
+/// S3 rate limits are applied per-prefix, so we scope the concurrency limiter
+/// to each table-level prefix rather than each partition path.
+const MAX_CONCURRENT_UPLOADS_PER_PREFIX: usize = 8;
+
+/// Capacity of the bounded encode -> upload queue.
+const UPLOAD_QUEUE_CAPACITY: usize = 64;
+
+/// Number of background upload workers consuming from the queue.
+const MAX_UPLOAD_WORKERS: usize = 32;
 
 /// ETL sink that writes batches as hive-partitioned Parquet files in S3.
 ///
-/// Each batch is written to a path of the form:
+/// Incoming batches are partitioned by the configured columns and written
+/// to S3 immediately during each [`write()`](Sink::write) call.
+///
+/// Each partition produces a single Parquet file at:
 /// ```text
-/// {prefix}/{table_name}/{col1}={value1}/{col2}={value2}/batch-{batch_id:06}.parquet
+/// {prefix}/{table_name}/{col1}={value1}/{col2}={value2}/part-{seq:08}.parquet
 /// ```
 ///
 /// Only `Insert` operations are supported. `Update` and `Delete` operations
 /// will return an error.
 pub struct S3HiveSink {
-    store: Arc<dyn ObjectStore>,
     prefix: String,
     partition_columns: Vec<String>,
-    /// Limits how many partition encode+upload tasks run at once.
-    upload_semaphore: Arc<Semaphore>,
+    /// Per-table-prefix upload concurrency limiters. Each unique S3 table path
+    /// prefix (`{prefix}/{table}`) gets its own semaphore so that partition
+    /// fanout for a table is rate-limited together.
+    prefix_semaphores: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+    upload_tx: mpsc::Sender<QueuedUpload>,
+    pending_uploads: Arc<AtomicU64>,
+    upload_error: Arc<Mutex<Option<String>>>,
+    flush_notify: Arc<Notify>,
+    /// Monotonic counter for unique output file names.
+    file_seq: Arc<AtomicU64>,
+}
+
+struct QueuedUpload {
+    path: ObjectPath,
+    payload: Vec<u8>,
+    table_name: String,
+    seq: u64,
+    semaphore: Arc<Semaphore>,
 }
 
 impl S3HiveSink {
     /// Creates a new [`S3HiveSink`] from a [`TargetConfig`].
-    ///
-    /// The `prefix` field of the config specifies the destination bucket prefix
-    /// that tables will be placed into.
     pub fn new(config: &TargetConfig) -> anyhow::Result<Self> {
         let mut builder = AmazonS3Builder::from_env().with_bucket_name(&config.bucket);
 
@@ -100,89 +122,207 @@ impl S3HiveSink {
             }
         };
 
+        let file_seq = Arc::new(AtomicU64::new(0));
+        let prefix_semaphores: Arc<Mutex<HashMap<String, Arc<Semaphore>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_uploads = Arc::new(AtomicU64::new(0));
+        let upload_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let flush_notify = Arc::new(Notify::new());
+        let (upload_tx, upload_rx) = mpsc::channel::<QueuedUpload>(UPLOAD_QUEUE_CAPACITY);
+
+        let workers = std::thread::available_parallelism()
+            .map_or(8, |parallelism| parallelism.get())
+            .clamp(4, MAX_UPLOAD_WORKERS);
+
+        let upload_rx = Arc::new(Mutex::new(upload_rx));
+        for worker_id in 0..workers {
+            let store = Arc::clone(&store);
+            let upload_rx = Arc::clone(&upload_rx);
+            let pending_uploads = Arc::clone(&pending_uploads);
+            let upload_error = Arc::clone(&upload_error);
+            let flush_notify = Arc::clone(&flush_notify);
+            tokio::spawn(async move {
+                loop {
+                    let next_item = {
+                        let mut rx = upload_rx.lock().await;
+                        rx.recv().await
+                    };
+
+                    let Some(item) = next_item else {
+                        break;
+                    };
+
+                    let put_span = tracing::debug_span!(
+                        "etl.s3_hive.s3_put",
+                        table = %item.table_name,
+                        seq = item.seq,
+                        path = %item.path,
+                        bytes = item.payload.len(),
+                        worker = worker_id,
+                    );
+                    let put_start = Instant::now();
+
+                    let put_result = async {
+                        let _permit = item
+                            .semaphore
+                            .acquire_owned()
+                            .await
+                            .map_err(|_| anyhow::anyhow!("upload semaphore closed"))?;
+
+                        store
+                            .put(&item.path, item.payload.into())
+                            .await
+                            .map_err(|e| anyhow::anyhow!("S3 PUT failed for {}: {e}", item.path))
+                    }
+                    .instrument(put_span.clone())
+                    .await;
+
+                    match put_result {
+                        Ok(_) => {
+                            tracing::debug!(
+                                parent: &put_span,
+                                elapsed_ms = put_start.elapsed().as_secs_f64() * 1000.0,
+                                "S3 PUT completed"
+                            );
+                        }
+                        Err(err) => {
+                            let mut shared_err = upload_error.lock().await;
+                            if shared_err.is_none() {
+                                *shared_err = Some(err.to_string());
+                            }
+                            tracing::error!(
+                                parent: &put_span,
+                                error = %err,
+                                "S3 PUT failed"
+                            );
+                        }
+                    }
+
+                    pending_uploads.fetch_sub(1, Ordering::AcqRel);
+                    flush_notify.notify_waiters();
+                }
+            });
+        }
+
         Ok(Self {
-            store,
             prefix: config.prefix.clone(),
             partition_columns,
-            upload_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            prefix_semaphores,
+            upload_tx,
+            pending_uploads,
+            upload_error,
+            flush_notify,
+            file_seq,
         })
+    }
+
+    async fn check_upload_error(&self) -> anyhow::Result<()> {
+        let err = { self.upload_error.lock().await.clone() };
+        if let Some(err) = err {
+            anyhow::bail!("S3 upload worker failed: {err}");
+        }
+        Ok(())
     }
 }
 
-/// Writes a single partition batch to S3 as a Parquet file.
-///
-/// Parquet encoding (CPU-bound) is offloaded to `spawn_blocking` so that the
-/// async executor is not blocked during compression. The resulting bytes are
-/// then uploaded with a single `PUT`.
-async fn write_partition_task(
-    store: Arc<dyn ObjectStore>,
-    semaphore: Arc<Semaphore>,
-    prefix: String,
-    table_name: String,
-    batch_id: u64,
-    partition_path: String,
-    batch: RecordBatch,
-    effective_partition_columns: Vec<String>,
-    partition_idx: usize,
+/// Encode partition buffers and enqueue each as a single Parquet upload.
+async fn encode_and_queue_partitions(
+    upload_tx: &mpsc::Sender<QueuedUpload>,
+    pending_uploads: &Arc<AtomicU64>,
+    prefix_semaphores: &Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+    prefix: &str,
+    partitions: Vec<(String, RecordBatch)>,
+    table_name: &str,
+    file_seq: &Arc<AtomicU64>,
 ) -> anyhow::Result<()> {
-    // Acquire a concurrency slot before doing any work. This bounds the number
-    // of simultaneous encode+upload operations sink-wide, preventing connection
-    // pool exhaustion on slow networks when many partitions fan out at once.
-    let _permit = semaphore
-        .acquire_owned()
-        .await
-        .map_err(|_| anyhow::anyhow!("upload semaphore closed"))?;
-
-    // Strip partition columns — they are encoded in the path.
-    let batch_without_partition = strip_columns(&batch, &effective_partition_columns)?;
-
-    if batch_without_partition.num_columns() == 0 {
-        anyhow::bail!(
-            "Cannot write table '{table_name}' with partition columns {effective_partition_columns:?}: \
-             no columns would remain in parquet output"
-        );
+    if partitions.is_empty() {
+        return Ok(());
     }
 
-    let path = if prefix.is_empty() {
-        if partition_path.is_empty() {
-            ObjectPath::from(format!(
-                "{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet"
-            ))
+    let flushed_partitions = partitions.len();
+    let flushed_rows: usize = partitions.iter().map(|(_, b)| b.num_rows()).sum();
+    tracing::debug!(
+        partitions = flushed_partitions,
+        rows = flushed_rows,
+        "Encoding and queueing partition buffers"
+    );
+
+    for (partition_path, batch) in partitions {
+        let seq = file_seq.fetch_add(1, Ordering::Relaxed);
+
+        // Resolve (or create) the per-table-prefix semaphore for this table.
+        let sem_key = if prefix.is_empty() {
+            table_name.to_string()
+        } else {
+            format!("{prefix}/{table_name}")
+        };
+        let semaphore = {
+            let mut sems = prefix_semaphores.lock().await;
+            Arc::clone(
+                sems.entry(sem_key)
+                    .or_insert_with(|| Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS_PER_PREFIX))),
+            )
+        };
+
+        let path = if prefix.is_empty() {
+            if partition_path.is_empty() {
+                ObjectPath::from(format!("{table_name}/part-{seq:08}.parquet"))
+            } else {
+                ObjectPath::from(format!(
+                    "{table_name}/{partition_path}/part-{seq:08}.parquet"
+                ))
+            }
+        } else if partition_path.is_empty() {
+            ObjectPath::from(format!("{prefix}/{table_name}/part-{seq:08}.parquet",))
         } else {
             ObjectPath::from(format!(
-                "{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet"
+                "{prefix}/{table_name}/{partition_path}/part-{seq:08}.parquet",
             ))
-        }
-    } else if partition_path.is_empty() {
-        ObjectPath::from(format!(
-            "{prefix}/{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet",
-        ))
-    } else {
-        ObjectPath::from(format!(
-            "{prefix}/{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet",
-        ))
-    };
+        };
 
-    // Encode to Parquet + Snappy on a blocking thread so the async executor
-    // is not stalled during CPU-intensive compression.
-    let buf = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-        let props = WriterProperties::builder()
-            .set_compression(Compression::SNAPPY)
-            .build();
-        let mut buf = Vec::new();
-        let mut writer =
-            ArrowWriter::try_new(&mut buf, batch_without_partition.schema(), Some(props))?;
-        writer.write(&batch_without_partition)?;
-        writer.close()?;
-        Ok(buf)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("Parquet encoding task panicked: {e}"))??;
-
-    store
-        .put(&path, buf.into())
+        let encode_start = Instant::now();
+        let encode_span = tracing::debug_span!(
+            "etl.s3_hive.parquet_encode",
+            table = %table_name,
+            seq,
+            partition_path = %partition_path,
+            rows = batch.num_rows(),
+        );
+        let payload = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+            let props = WriterProperties::builder()
+                .set_compression(Compression::LZ4)
+                .build();
+            let mut buf = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props))?;
+            writer.write(&batch)?;
+            writer.close()?;
+            Ok(buf)
+        })
+        .instrument(encode_span.clone())
         .await
-        .map_err(|e| anyhow::anyhow!("S3 PUT failed for {path}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Parquet encoding task panicked: {e}"))??;
+        tracing::debug!(
+            parent: &encode_span,
+            elapsed_ms = encode_start.elapsed().as_secs_f64() * 1000.0,
+            parquet_bytes = payload.len(),
+            "Parquet encode completed"
+        );
+
+        pending_uploads.fetch_add(1, Ordering::AcqRel);
+        if let Err(send_err) = upload_tx
+            .send(QueuedUpload {
+                path,
+                payload,
+                table_name: table_name.to_string(),
+                seq,
+                semaphore,
+            })
+            .await
+        {
+            pending_uploads.fetch_sub(1, Ordering::AcqRel);
+            anyhow::bail!("Failed to queue S3 upload: {send_err}");
+        }
+    }
 
     Ok(())
 }
@@ -192,7 +332,7 @@ impl Sink for S3HiveSink {
     async fn write(
         &self,
         table_name: &str,
-        batch_id: u64,
+        _batch_id: u64,
         batch: RecordBatch,
         op: InsertOp,
         partition_columns: Vec<String>,
@@ -209,6 +349,8 @@ impl Sink for S3HiveSink {
         if batch.num_rows() == 0 {
             return Ok(());
         }
+
+        self.check_upload_error().await?;
 
         let schema = batch.schema();
         let effective_partition_columns = if partition_columns.is_empty() {
@@ -229,33 +371,54 @@ impl Sink for S3HiveSink {
             })
             .collect::<anyhow::Result<_>>()?;
 
+        let partition_index_set: std::collections::HashSet<usize> = partition_columns_with_idx
+            .iter()
+            .map(|(_, idx)| *idx)
+            .collect();
+        let projected_column_indices: Vec<usize> = (0..schema.fields().len())
+            .filter(|idx| !partition_index_set.contains(idx))
+            .collect();
+
+        if projected_column_indices.is_empty() {
+            anyhow::bail!(
+                "Cannot write table '{table_name}' with partition columns {effective_partition_columns:?}: \
+                 no columns would remain in parquet output"
+            );
+        }
+
         // Group rows by distinct partition tuples in configured column order.
-        let partitions = partition_batch(&batch, &partition_columns_with_idx)?;
+        let partitions = partition_batch(
+            &batch,
+            &partition_columns_with_idx,
+            &projected_column_indices,
+        )?;
 
-        // Spawn all partition writes concurrently. Each task owns its data
-        // so there is no contention, and S3 PUTs for different paths are
-        // fully independent.
-        let mut join_set: JoinSet<anyhow::Result<()>> = JoinSet::new();
+        // Encode all partitions and enqueue S3 uploads.
+        encode_and_queue_partitions(
+            &self.upload_tx,
+            &self.pending_uploads,
+            &self.prefix_semaphores,
+            &self.prefix,
+            partitions,
+            table_name,
+            &self.file_seq,
+        )
+        .await?;
 
-        for (idx, (partition_path, partition_batch)) in partitions.into_iter().enumerate() {
-            join_set.spawn(write_partition_task(
-                Arc::clone(&self.store),
-                Arc::clone(&self.upload_semaphore),
-                self.prefix.clone(),
-                table_name.to_string(),
-                batch_id,
-                partition_path,
-                partition_batch,
-                effective_partition_columns.clone(),
-                idx,
-            ));
+        self.check_upload_error().await?;
+
+        Ok(())
+    }
+
+    async fn flush(&self) -> anyhow::Result<()> {
+        self.check_upload_error().await?;
+
+        while self.pending_uploads.load(Ordering::Acquire) > 0 {
+            self.flush_notify.notified().await;
+            self.check_upload_error().await?;
         }
 
-        // Collect results; propagate the first error encountered.
-        while let Some(result) = join_set.join_next().await {
-            result.map_err(|e| anyhow::anyhow!("Partition write task panicked: {e}"))??;
-        }
-
+        self.check_upload_error().await?;
         Ok(())
     }
 }
@@ -266,9 +429,14 @@ impl Sink for S3HiveSink {
 fn partition_batch(
     batch: &RecordBatch,
     partition_columns_with_idx: &[(String, usize)],
+    projected_column_indices: &[usize],
 ) -> anyhow::Result<Vec<(String, RecordBatch)>> {
+    if batch.num_rows() > u32::MAX as usize {
+        anyhow::bail!("Batch row count exceeds u32 range for partition indexing");
+    }
+
     // Build a mapping from partition path → row indices.
-    let mut groups: indexmap::IndexMap<String, Vec<u64>> = indexmap::IndexMap::new();
+    let mut groups: indexmap::IndexMap<String, Vec<u32>> = indexmap::IndexMap::new();
 
     let partition_arrays: Vec<(String, PartitionColumnValues)> = partition_columns_with_idx
         .iter()
@@ -291,26 +459,38 @@ fn partition_batch(
         })
         .collect::<anyhow::Result<_>>()?;
 
-    for row in 0..batch.num_rows() {
-        let mut path_segments = Vec::with_capacity(partition_arrays.len());
-        for (name, values) in &partition_arrays {
-            let value = values.value_as_partition_key(row);
-            path_segments.push(format!("{name}={value}"));
-        }
-        let key = path_segments.join("/");
-        groups.entry(key).or_default().push(row as u64);
+    let mut key_prefixes: Vec<String> = Vec::with_capacity(partition_arrays.len());
+    for (name, _) in &partition_arrays {
+        key_prefixes.push(format!("{name}="));
     }
+
+    for row in 0..batch.num_rows() {
+        let mut key = String::new();
+        for (idx, (_, values)) in partition_arrays.iter().enumerate() {
+            if idx > 0 {
+                key.push('/');
+            }
+            key.push_str(&key_prefixes[idx]);
+            values.push_partition_key(row, &mut key);
+        }
+        groups.entry(key).or_default().push(row as u32);
+    }
+
+    let projected_fields: Vec<_> = projected_column_indices
+        .iter()
+        .map(|idx| batch.schema().field(*idx).clone())
+        .collect();
+    let projected_schema = Arc::new(Schema::new(projected_fields));
 
     let mut result = Vec::with_capacity(groups.len());
     for (partition_value, row_indices) in groups {
-        let indices = UInt64Array::from(row_indices);
-        let columns: Vec<Arc<dyn Array>> = batch
-            .columns()
+        let indices = UInt32Array::from(row_indices);
+        let columns: Vec<Arc<dyn Array>> = projected_column_indices
             .iter()
-            .map(|col| compute::take(col.as_ref(), &indices, None))
+            .map(|idx| compute::take(batch.column(*idx).as_ref(), &indices, None))
             .collect::<Result<_, _>>()
             .map_err(|e| anyhow::anyhow!("Failed to take rows for partition: {e}"))?;
-        let sub_batch = RecordBatch::try_new(batch.schema(), columns)?;
+        let sub_batch = RecordBatch::try_new(Arc::clone(&projected_schema), columns)?;
         result.push((partition_value, sub_batch));
     }
 
@@ -323,55 +503,28 @@ enum PartitionColumnValues {
 }
 
 impl PartitionColumnValues {
-    fn value_as_partition_key(&self, row: usize) -> String {
+    fn push_partition_key(&self, row: usize, out: &mut String) {
         match self {
             Self::TimestampMicrosecond(values) => {
                 if values.is_null(row) {
-                    HIVE_DEFAULT_PARTITION.to_string()
+                    out.push_str(HIVE_DEFAULT_PARTITION);
                 } else {
-                    values.value(row).to_string()
+                    // Truncate to millisecond precision so that rows sharing
+                    // the same millisecond coalesce into a single partition,
+                    // while preserving enough resolution for downstream
+                    // consumers that filter on `__created_at`.
+                    let us = values.value(row);
+                    let ms = us / 1_000;
+                    out.push_str(&ms.to_string());
                 }
             }
             Self::Utf8(values) => {
                 if values.is_null(row) {
-                    HIVE_DEFAULT_PARTITION.to_string()
+                    out.push_str(HIVE_DEFAULT_PARTITION);
                 } else {
-                    values.value(row).to_string()
+                    out.push_str(values.value(row));
                 }
             }
         }
     }
-}
-
-/// Removes named columns from a [`RecordBatch`].
-fn strip_columns(batch: &RecordBatch, column_names: &[String]) -> anyhow::Result<RecordBatch> {
-    let schema = batch.schema();
-    let indices_to_strip: std::collections::HashSet<usize> = column_names
-        .iter()
-        .filter_map(|name| schema.index_of(name).ok())
-        .collect();
-
-    if indices_to_strip.is_empty() {
-        return Ok(batch.clone());
-    }
-
-    let new_fields: Vec<_> = schema
-        .fields()
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !indices_to_strip.contains(i))
-        .map(|(_, f)| f.clone())
-        .collect();
-    let new_columns: Vec<_> = batch
-        .columns()
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !indices_to_strip.contains(i))
-        .map(|(_, c)| c.clone())
-        .collect();
-
-    Ok(RecordBatch::try_new(
-        Arc::new(Schema::new(new_fields)),
-        new_columns,
-    )?)
 }

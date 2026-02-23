@@ -30,6 +30,12 @@ pub struct ReadResult {
     pub key_columns: Vec<String>,
 }
 
+impl ReadResult {
+    pub fn num_rows(&self) -> usize {
+        self.batches.iter().map(|b| b.num_rows()).sum()
+    }
+}
+
 pub struct WriteResult {
     pub rows_written: u64,
     pub bytes_written: u64,

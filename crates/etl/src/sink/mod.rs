@@ -17,6 +17,7 @@ limitations under the License.
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
 
+pub mod adbc;
 pub mod s3_hive;
 
 #[cfg(feature = "duckdb")]
@@ -39,4 +40,13 @@ pub trait Sink: Send + Sync + 'static {
         op: InsertOp,
         partition_columns: Vec<String>,
     ) -> anyhow::Result<()>;
+
+    /// Flush any internally buffered data to the underlying storage.
+    ///
+    /// Sinks that buffer writes should implement this to ensure all data is
+    /// persisted. The default implementation is a no-op for sinks that write
+    /// immediately.
+    async fn flush(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
