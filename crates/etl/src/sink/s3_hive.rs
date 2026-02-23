@@ -15,8 +15,9 @@ limitations under the License.
 */
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt64Array};
+use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt32Array};
 use arrow::compute;
 use arrow::datatypes::Schema;
 use async_trait::async_trait;
@@ -29,6 +30,7 @@ use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tracing::Instrument;
 
 use super::{InsertOp, Sink};
 
@@ -122,9 +124,16 @@ async fn write_partition_task(
     batch_id: u64,
     partition_path: String,
     batch: RecordBatch,
-    effective_partition_columns: Vec<String>,
     partition_idx: usize,
 ) -> anyhow::Result<()> {
+    let task_span = tracing::debug_span!(
+        "etl.s3_hive.partition_write",
+        table = %table_name,
+        batch_id,
+        partition_idx,
+        partition_path = %partition_path,
+    );
+
     // Acquire a concurrency slot before doing any work. This bounds the number
     // of simultaneous encode+upload operations sink-wide, preventing connection
     // pool exhaustion on slow networks when many partitions fan out at once.
@@ -132,16 +141,6 @@ async fn write_partition_task(
         .acquire_owned()
         .await
         .map_err(|_| anyhow::anyhow!("upload semaphore closed"))?;
-
-    // Strip partition columns — they are encoded in the path.
-    let batch_without_partition = strip_columns(&batch, &effective_partition_columns)?;
-
-    if batch_without_partition.num_columns() == 0 {
-        anyhow::bail!(
-            "Cannot write table '{table_name}' with partition columns {effective_partition_columns:?}: \
-             no columns would remain in parquet output"
-        );
-    }
 
     let path = if prefix.is_empty() {
         if partition_path.is_empty() {
@@ -165,24 +164,54 @@ async fn write_partition_task(
 
     // Encode to Parquet + Snappy on a blocking thread so the async executor
     // is not stalled during CPU-intensive compression.
+    let encode_start = Instant::now();
+    let encode_span = tracing::debug_span!(
+        parent: &task_span,
+        "etl.s3_hive.parquet_encode",
+        table = %table_name,
+        batch_id,
+        partition_idx,
+    );
     let buf = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
         let props = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
             .build();
         let mut buf = Vec::new();
-        let mut writer =
-            ArrowWriter::try_new(&mut buf, batch_without_partition.schema(), Some(props))?;
-        writer.write(&batch_without_partition)?;
+        let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props))?;
+        writer.write(&batch)?;
         writer.close()?;
         Ok(buf)
     })
+    .instrument(encode_span.clone())
     .await
     .map_err(|e| anyhow::anyhow!("Parquet encoding task panicked: {e}"))??;
+    tracing::debug!(
+        parent: &encode_span,
+        elapsed_ms = encode_start.elapsed().as_secs_f64() * 1000.0,
+        parquet_bytes = buf.len(),
+        "Parquet encode completed"
+    );
 
+    let put_start = Instant::now();
+    let put_span = tracing::debug_span!(
+        parent: &task_span,
+        "etl.s3_hive.s3_put",
+        table = %table_name,
+        batch_id,
+        partition_idx,
+        path = %path,
+        bytes = buf.len(),
+    );
     store
         .put(&path, buf.into())
+        .instrument(put_span.clone())
         .await
         .map_err(|e| anyhow::anyhow!("S3 PUT failed for {path}: {e}"))?;
+    tracing::debug!(
+        parent: &put_span,
+        elapsed_ms = put_start.elapsed().as_secs_f64() * 1000.0,
+        "S3 PUT completed"
+    );
 
     Ok(())
 }
@@ -229,8 +258,43 @@ impl Sink for S3HiveSink {
             })
             .collect::<anyhow::Result<_>>()?;
 
+        let partition_index_set: std::collections::HashSet<usize> = partition_columns_with_idx
+            .iter()
+            .map(|(_, idx)| *idx)
+            .collect();
+        let projected_column_indices: Vec<usize> = (0..schema.fields().len())
+            .filter(|idx| !partition_index_set.contains(idx))
+            .collect();
+
+        if projected_column_indices.is_empty() {
+            anyhow::bail!(
+                "Cannot write table '{table_name}' with partition columns {effective_partition_columns:?}: \
+                 no columns would remain in parquet output"
+            );
+        }
+
         // Group rows by distinct partition tuples in configured column order.
-        let partitions = partition_batch(&batch, &partition_columns_with_idx)?;
+        let partitioning_span = tracing::debug_span!(
+            "etl.s3_hive.partitioning",
+            table = %table_name,
+            batch_id,
+            rows = batch.num_rows(),
+            partition_columns = effective_partition_columns.len(),
+        );
+        let partitioning_start = Instant::now();
+        let partitions = partition_batch(
+            &batch,
+            &partition_columns_with_idx,
+            &projected_column_indices,
+        )
+        .inspect(|partitions| {
+            tracing::debug!(
+                parent: &partitioning_span,
+                elapsed_ms = partitioning_start.elapsed().as_secs_f64() * 1000.0,
+                partition_count = partitions.len(),
+                "Partitioning completed"
+            );
+        })?;
 
         // Spawn all partition writes concurrently. Each task owns its data
         // so there is no contention, and S3 PUTs for different paths are
@@ -246,7 +310,6 @@ impl Sink for S3HiveSink {
                 batch_id,
                 partition_path,
                 partition_batch,
-                effective_partition_columns.clone(),
                 idx,
             ));
         }
@@ -266,9 +329,14 @@ impl Sink for S3HiveSink {
 fn partition_batch(
     batch: &RecordBatch,
     partition_columns_with_idx: &[(String, usize)],
+    projected_column_indices: &[usize],
 ) -> anyhow::Result<Vec<(String, RecordBatch)>> {
+    if batch.num_rows() > u32::MAX as usize {
+        anyhow::bail!("Batch row count exceeds u32 range for partition indexing");
+    }
+
     // Build a mapping from partition path → row indices.
-    let mut groups: indexmap::IndexMap<String, Vec<u64>> = indexmap::IndexMap::new();
+    let mut groups: indexmap::IndexMap<String, Vec<u32>> = indexmap::IndexMap::new();
 
     let partition_arrays: Vec<(String, PartitionColumnValues)> = partition_columns_with_idx
         .iter()
@@ -291,26 +359,38 @@ fn partition_batch(
         })
         .collect::<anyhow::Result<_>>()?;
 
-    for row in 0..batch.num_rows() {
-        let mut path_segments = Vec::with_capacity(partition_arrays.len());
-        for (name, values) in &partition_arrays {
-            let value = values.value_as_partition_key(row);
-            path_segments.push(format!("{name}={value}"));
-        }
-        let key = path_segments.join("/");
-        groups.entry(key).or_default().push(row as u64);
+    let mut key_prefixes: Vec<String> = Vec::with_capacity(partition_arrays.len());
+    for (name, _) in &partition_arrays {
+        key_prefixes.push(format!("{name}="));
     }
+
+    for row in 0..batch.num_rows() {
+        let mut key = String::new();
+        for (idx, (_, values)) in partition_arrays.iter().enumerate() {
+            if idx > 0 {
+                key.push('/');
+            }
+            key.push_str(&key_prefixes[idx]);
+            values.push_partition_key(row, &mut key);
+        }
+        groups.entry(key).or_default().push(row as u32);
+    }
+
+    let projected_fields: Vec<_> = projected_column_indices
+        .iter()
+        .map(|idx| batch.schema().field(*idx).clone())
+        .collect();
+    let projected_schema = Arc::new(Schema::new(projected_fields));
 
     let mut result = Vec::with_capacity(groups.len());
     for (partition_value, row_indices) in groups {
-        let indices = UInt64Array::from(row_indices);
-        let columns: Vec<Arc<dyn Array>> = batch
-            .columns()
+        let indices = UInt32Array::from(row_indices);
+        let columns: Vec<Arc<dyn Array>> = projected_column_indices
             .iter()
-            .map(|col| compute::take(col.as_ref(), &indices, None))
+            .map(|idx| compute::take(batch.column(*idx).as_ref(), &indices, None))
             .collect::<Result<_, _>>()
             .map_err(|e| anyhow::anyhow!("Failed to take rows for partition: {e}"))?;
-        let sub_batch = RecordBatch::try_new(batch.schema(), columns)?;
+        let sub_batch = RecordBatch::try_new(Arc::clone(&projected_schema), columns)?;
         result.push((partition_value, sub_batch));
     }
 
@@ -323,55 +403,22 @@ enum PartitionColumnValues {
 }
 
 impl PartitionColumnValues {
-    fn value_as_partition_key(&self, row: usize) -> String {
+    fn push_partition_key(&self, row: usize, out: &mut String) {
         match self {
             Self::TimestampMicrosecond(values) => {
                 if values.is_null(row) {
-                    HIVE_DEFAULT_PARTITION.to_string()
+                    out.push_str(HIVE_DEFAULT_PARTITION);
                 } else {
-                    values.value(row).to_string()
+                    out.push_str(&values.value(row).to_string());
                 }
             }
             Self::Utf8(values) => {
                 if values.is_null(row) {
-                    HIVE_DEFAULT_PARTITION.to_string()
+                    out.push_str(HIVE_DEFAULT_PARTITION);
                 } else {
-                    values.value(row).to_string()
+                    out.push_str(values.value(row));
                 }
             }
         }
     }
-}
-
-/// Removes named columns from a [`RecordBatch`].
-fn strip_columns(batch: &RecordBatch, column_names: &[String]) -> anyhow::Result<RecordBatch> {
-    let schema = batch.schema();
-    let indices_to_strip: std::collections::HashSet<usize> = column_names
-        .iter()
-        .filter_map(|name| schema.index_of(name).ok())
-        .collect();
-
-    if indices_to_strip.is_empty() {
-        return Ok(batch.clone());
-    }
-
-    let new_fields: Vec<_> = schema
-        .fields()
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !indices_to_strip.contains(i))
-        .map(|(_, f)| f.clone())
-        .collect();
-    let new_columns: Vec<_> = batch
-        .columns()
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !indices_to_strip.contains(i))
-        .map(|(_, c)| c.clone())
-        .collect();
-
-    Ok(RecordBatch::try_new(
-        Arc::new(Schema::new(new_fields)),
-        new_columns,
-    )?)
 }
