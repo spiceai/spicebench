@@ -1133,6 +1133,7 @@ dependencies = [
 name = "etl"
 version = "0.1.0"
 dependencies = [
+ "adbc_client",
  "anyhow",
  "arrow",
  "async-trait",

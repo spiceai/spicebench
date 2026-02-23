@@ -20,13 +20,15 @@ use clap::Parser;
 use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
+use etl::sink::adbc::AdbcSink;
 use etl::sink::s3_hive::S3HiveSink;
+use etl::sink::Sink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
-    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to S3 as hive-partitioned Parquet"
+    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to either S3 Hive Parquet or an ADBC target"
 )]
 struct Cli {
     /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
@@ -63,6 +65,27 @@ struct Cli {
     /// Example: `--partition-by __created_at,product_type`
     #[arg(long, value_delimiter = ',', default_value = "__created_at")]
     partition_by: Vec<String>,
+
+    /// ADBC driver name (for example: "databricks" or "flightsql").
+    /// Provide with `--adbc-uri` to write to an ADBC target.
+    #[arg(long)]
+    adbc_driver: Option<String>,
+
+    /// Connection URI passed as ADBC database option `uri`.
+    /// Provide with `--adbc-driver` to write to an ADBC target.
+    #[arg(long)]
+    adbc_uri: Option<String>,
+
+    /// Optional target database schema for bulk ingest
+    #[arg(long)]
+    adbc_schema: Option<String>,
+
+    /// Additional ADBC database options as `key=value`.
+    ///
+    /// May be specified multiple times.
+    /// Example: `--adbc-option username=token --adbc-option password=...`
+    #[arg(long = "adbc-option")]
+    adbc_options: Vec<String>,
 }
 
 impl Cli {
@@ -103,33 +126,80 @@ async fn main() -> anyhow::Result<()> {
     let dataset_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
 
-    let hive_prefix = if cli.target_prefix.is_empty() {
-        format!(
-            "{}/{}/{}",
-            cli.prefix.trim_matches('/'),
-            cli.scenario,
-            cli.version
-        )
-    } else {
-        format!(
-            "{}/{}/{}",
-            cli.target_prefix.trim_matches('/'),
-            cli.scenario,
-            cli.version
-        )
-    };
-    let hive_config = TargetConfig {
-        bucket: cli.bucket.clone(),
-        prefix: hive_prefix.clone(),
-        region: cli.region.clone(),
-        endpoint: cli.endpoint.clone(),
-        partition_columns: cli.partition_by.clone(),
-    };
-    let target = Arc::new(S3HiveSink::new(&hive_config)?);
+    let (target, target_config, target_kind): (Arc<dyn Sink>, Option<TargetConfig>, String) =
+        match (&cli.adbc_driver, &cli.adbc_uri) {
+            (Some(driver), Some(uri)) => {
+                let mut db_kwargs = std::collections::HashMap::new();
+                db_kwargs.insert("uri".to_string(), serde_json::Value::String(uri.clone()));
 
-    let mut pipeline =
-        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?
-            .with_target_config(hive_config.clone());
+                for option in &cli.adbc_options {
+                    let (key, value) = option.split_once('=').ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Invalid --adbc-option '{option}'. Expected key=value"
+                        )
+                    })?;
+
+                    let key = key.trim();
+                    if key.is_empty() {
+                        anyhow::bail!(
+                            "Invalid --adbc-option '{option}'. Option key cannot be empty"
+                        );
+                    }
+
+                    db_kwargs.insert(
+                        key.to_string(),
+                        serde_json::Value::String(value.to_string()),
+                    );
+                }
+
+                (
+                    Arc::new(AdbcSink::new(driver, db_kwargs, cli.adbc_schema.clone())?),
+                    None,
+                    "adbc".to_string(),
+                )
+            }
+            (None, None) => {
+                let hive_prefix = if cli.target_prefix.is_empty() {
+                    format!(
+                        "{}/{}/{}",
+                        cli.prefix.trim_matches('/'),
+                        cli.scenario,
+                        cli.version
+                    )
+                } else {
+                    format!(
+                        "{}/{}/{}",
+                        cli.target_prefix.trim_matches('/'),
+                        cli.scenario,
+                        cli.version
+                    )
+                };
+
+                let hive_config = TargetConfig {
+                    bucket: cli.bucket.clone(),
+                    prefix: hive_prefix,
+                    region: cli.region.clone(),
+                    endpoint: cli.endpoint.clone(),
+                    partition_columns: cli.partition_by.clone(),
+                };
+
+                (
+                    Arc::new(S3HiveSink::new(&hive_config)?),
+                    Some(hive_config),
+                    "s3-hive".to_string(),
+                )
+            }
+            _ => {
+                anyhow::bail!(
+                    "ADBC target requires both --adbc-driver and --adbc-uri. Omit both to use the S3 Hive sink."
+                );
+            }
+        };
+
+    let mut pipeline = ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
+    if let Some(target_config) = target_config {
+        pipeline = pipeline.with_target_config(target_config);
+    }
 
     tracing::info!(
         scenario = %cli.scenario,
@@ -137,7 +207,11 @@ async fn main() -> anyhow::Result<()> {
         dataset = %version_metadata.dataset_type,
         bucket = %cli.bucket,
         prefix = %cli.prefix,
-        target_prefix = %hive_prefix,
+        target = %target_kind,
+        adbc_driver = ?cli.adbc_driver,
+        adbc_schema = ?cli.adbc_schema,
+        target_prefix = %cli.target_prefix,
+        partition_by = ?cli.partition_by,
         scale_factor = version_metadata.scale_factor,
         num_steps = version_metadata.num_steps,
         "Starting ETL pipeline"

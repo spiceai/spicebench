@@ -17,6 +17,7 @@ name = "etl"
 path = "src/main.rs"
 
 [dependencies]
+adbc_client = { path = "../adbc_client" }
 anyhow.workspace = true
 arrow.workspace = true
 async-trait.workspace = true

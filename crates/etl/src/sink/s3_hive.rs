@@ -14,7 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt32Array};
@@ -26,10 +28,9 @@ use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectPath;
 use parquet::arrow::ArrowWriter;
-use parquet::basic::Compression;
+use parquet::basic::{Compression};
 use parquet::file::properties::WriterProperties;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
 use tracing::Instrument;
 
 use super::{InsertOp, Sink};
@@ -38,37 +39,56 @@ use super::{InsertOp, Sink};
 const DEFAULT_PARTITION_COLUMN: &str = "__created_at";
 const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
 
-/// Maximum number of partition encode+upload tasks that may run concurrently
-/// across all active `write()` calls on a single [`S3HiveSink`] instance.
+/// Maximum number of concurrent encode+upload tasks allowed **per S3 table
+/// path prefix** (i.e. per `{prefix}/{table_name}`).
 ///
-/// This prevents unbounded fan-out (e.g. a TPC-H `lineitem` batch spanning
-/// hundreds of date partitions multiplied by several tables initialising in
-/// parallel) from exhausting the S3 connection pool or the blocking-thread
-/// pool on slow machines / networks.
-const MAX_CONCURRENT_UPLOADS: usize = 8;
+/// S3 rate limits are applied per-prefix, so we scope the concurrency limiter
+/// to each table-level prefix rather than each partition path.
+const MAX_CONCURRENT_UPLOADS_PER_PREFIX: usize = 8;
+
+/// Capacity of the bounded encode -> upload queue.
+const UPLOAD_QUEUE_CAPACITY: usize = 64;
+
+/// Number of background upload workers consuming from the queue.
+const MAX_UPLOAD_WORKERS: usize = 32;
 
 /// ETL sink that writes batches as hive-partitioned Parquet files in S3.
 ///
-/// Each batch is written to a path of the form:
+/// Incoming batches are partitioned by the configured columns and written
+/// to S3 immediately during each [`write()`](Sink::write) call.
+///
+/// Each partition produces a single Parquet file at:
 /// ```text
-/// {prefix}/{table_name}/{col1}={value1}/{col2}={value2}/batch-{batch_id:06}.parquet
+/// {prefix}/{table_name}/{col1}={value1}/{col2}={value2}/part-{seq:08}.parquet
 /// ```
 ///
 /// Only `Insert` operations are supported. `Update` and `Delete` operations
 /// will return an error.
 pub struct S3HiveSink {
-    store: Arc<dyn ObjectStore>,
     prefix: String,
     partition_columns: Vec<String>,
-    /// Limits how many partition encode+upload tasks run at once.
-    upload_semaphore: Arc<Semaphore>,
+    /// Per-table-prefix upload concurrency limiters. Each unique S3 table path
+    /// prefix (`{prefix}/{table}`) gets its own semaphore so that partition
+    /// fanout for a table is rate-limited together.
+    prefix_semaphores: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+    upload_tx: mpsc::Sender<QueuedUpload>,
+    pending_uploads: Arc<AtomicU64>,
+    upload_error: Arc<Mutex<Option<String>>>,
+    flush_notify: Arc<Notify>,
+    /// Monotonic counter for unique output file names.
+    file_seq: Arc<AtomicU64>,
+}
+
+struct QueuedUpload {
+    path: ObjectPath,
+    payload: Vec<u8>,
+    table_name: String,
+    seq: u64,
+    semaphore: Arc<Semaphore>,
 }
 
 impl S3HiveSink {
     /// Creates a new [`S3HiveSink`] from a [`TargetConfig`].
-    ///
-    /// The `prefix` field of the config specifies the destination bucket prefix
-    /// that tables will be placed into.
     pub fn new(config: &TargetConfig) -> anyhow::Result<Self> {
         let mut builder = AmazonS3Builder::from_env().with_bucket_name(&config.bucket);
 
@@ -102,116 +122,205 @@ impl S3HiveSink {
             }
         };
 
+        let file_seq = Arc::new(AtomicU64::new(0));
+        let prefix_semaphores: Arc<Mutex<HashMap<String, Arc<Semaphore>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_uploads = Arc::new(AtomicU64::new(0));
+        let upload_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let flush_notify = Arc::new(Notify::new());
+        let (upload_tx, upload_rx) = mpsc::channel::<QueuedUpload>(UPLOAD_QUEUE_CAPACITY);
+
+        let workers = std::thread::available_parallelism()
+            .map_or(8, |parallelism| parallelism.get())
+            .clamp(4, MAX_UPLOAD_WORKERS);
+
+        let upload_rx = Arc::new(Mutex::new(upload_rx));
+        for worker_id in 0..workers {
+            let store = Arc::clone(&store);
+            let upload_rx = Arc::clone(&upload_rx);
+            let pending_uploads = Arc::clone(&pending_uploads);
+            let upload_error = Arc::clone(&upload_error);
+            let flush_notify = Arc::clone(&flush_notify);
+            tokio::spawn(async move {
+                loop {
+                    let next_item = {
+                        let mut rx = upload_rx.lock().await;
+                        rx.recv().await
+                    };
+
+                    let Some(item) = next_item else {
+                        break;
+                    };
+
+                    let put_span = tracing::debug_span!(
+                        "etl.s3_hive.s3_put",
+                        table = %item.table_name,
+                        seq = item.seq,
+                        path = %item.path,
+                        bytes = item.payload.len(),
+                        worker = worker_id,
+                    );
+                    let put_start = Instant::now();
+
+                    let put_result = async {
+                        let _permit = item
+                            .semaphore
+                            .acquire_owned()
+                            .await
+                            .map_err(|_| anyhow::anyhow!("upload semaphore closed"))?;
+
+                        store
+                            .put(&item.path, item.payload.into())
+                            .await
+                            .map_err(|e| anyhow::anyhow!("S3 PUT failed for {}: {e}", item.path))
+                    }
+                    .instrument(put_span.clone())
+                    .await;
+
+                    match put_result {
+                        Ok(_) => {
+                            tracing::debug!(
+                                parent: &put_span,
+                                elapsed_ms = put_start.elapsed().as_secs_f64() * 1000.0,
+                                "S3 PUT completed"
+                            );
+                        }
+                        Err(err) => {
+                            let mut shared_err = upload_error.lock().await;
+                            if shared_err.is_none() {
+                                *shared_err = Some(err.to_string());
+                            }
+                            tracing::error!(
+                                parent: &put_span,
+                                error = %err,
+                                "S3 PUT failed"
+                            );
+                        }
+                    }
+
+                    pending_uploads.fetch_sub(1, Ordering::AcqRel);
+                    flush_notify.notify_waiters();
+                }
+            });
+        }
+
         Ok(Self {
-            store,
             prefix: config.prefix.clone(),
             partition_columns,
-            upload_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            prefix_semaphores,
+            upload_tx,
+            pending_uploads,
+            upload_error,
+            flush_notify,
+            file_seq,
         })
+    }
+
+    async fn check_upload_error(&self) -> anyhow::Result<()> {
+        let err = { self.upload_error.lock().await.clone() };
+        if let Some(err) = err {
+            anyhow::bail!("S3 upload worker failed: {err}");
+        }
+        Ok(())
     }
 }
 
-/// Writes a single partition batch to S3 as a Parquet file.
-///
-/// Parquet encoding (CPU-bound) is offloaded to `spawn_blocking` so that the
-/// async executor is not blocked during compression. The resulting bytes are
-/// then uploaded with a single `PUT`.
-async fn write_partition_task(
-    store: Arc<dyn ObjectStore>,
-    semaphore: Arc<Semaphore>,
-    prefix: String,
-    table_name: String,
-    batch_id: u64,
-    partition_path: String,
-    batch: RecordBatch,
-    partition_idx: usize,
+/// Encode partition buffers and enqueue each as a single Parquet upload.
+async fn encode_and_queue_partitions(
+    upload_tx: &mpsc::Sender<QueuedUpload>,
+    pending_uploads: &Arc<AtomicU64>,
+    prefix_semaphores: &Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+    prefix: &str,
+    partitions: Vec<(String, RecordBatch)>,
+    table_name: &str,
+    file_seq: &Arc<AtomicU64>,
 ) -> anyhow::Result<()> {
-    let task_span = tracing::debug_span!(
-        "etl.s3_hive.partition_write",
-        table = %table_name,
-        batch_id,
-        partition_idx,
-        partition_path = %partition_path,
+    if partitions.is_empty() {
+        return Ok(());
+    }
+
+    let flushed_partitions = partitions.len();
+    let flushed_rows: usize = partitions.iter().map(|(_, b)| b.num_rows()).sum();
+    tracing::debug!(
+        partitions = flushed_partitions,
+        rows = flushed_rows,
+        "Encoding and queueing partition buffers"
     );
 
-    // Acquire a concurrency slot before doing any work. This bounds the number
-    // of simultaneous encode+upload operations sink-wide, preventing connection
-    // pool exhaustion on slow networks when many partitions fan out at once.
-    let _permit = semaphore
-        .acquire_owned()
-        .await
-        .map_err(|_| anyhow::anyhow!("upload semaphore closed"))?;
+    for (partition_path, batch) in partitions {
+        let seq = file_seq.fetch_add(1, Ordering::Relaxed);
 
-    let path = if prefix.is_empty() {
-        if partition_path.is_empty() {
-            ObjectPath::from(format!(
-                "{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet"
-            ))
+        // Resolve (or create) the per-table-prefix semaphore for this table.
+        let sem_key = if prefix.is_empty() {
+            table_name.to_string()
+        } else {
+            format!("{prefix}/{table_name}")
+        };
+        let semaphore = {
+            let mut sems = prefix_semaphores.lock().await;
+            Arc::clone(
+                sems.entry(sem_key)
+                    .or_insert_with(|| Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS_PER_PREFIX))),
+            )
+        };
+
+        let path = if prefix.is_empty() {
+            if partition_path.is_empty() {
+                ObjectPath::from(format!("{table_name}/part-{seq:08}.parquet"))
+            } else {
+                ObjectPath::from(format!("{table_name}/{partition_path}/part-{seq:08}.parquet"))
+            }
+        } else if partition_path.is_empty() {
+            ObjectPath::from(format!("{prefix}/{table_name}/part-{seq:08}.parquet",))
         } else {
             ObjectPath::from(format!(
-                "{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet"
+                "{prefix}/{table_name}/{partition_path}/part-{seq:08}.parquet",
             ))
-        }
-    } else if partition_path.is_empty() {
-        ObjectPath::from(format!(
-            "{prefix}/{table_name}/batch-{batch_id:06}-{partition_idx:04}.parquet",
-        ))
-    } else {
-        ObjectPath::from(format!(
-            "{prefix}/{table_name}/{partition_path}/batch-{batch_id:06}-{partition_idx:04}.parquet",
-        ))
-    };
+        };
 
-    // Encode to Parquet + Snappy on a blocking thread so the async executor
-    // is not stalled during CPU-intensive compression.
-    let encode_start = Instant::now();
-    let encode_span = tracing::debug_span!(
-        parent: &task_span,
-        "etl.s3_hive.parquet_encode",
-        table = %table_name,
-        batch_id,
-        partition_idx,
-    );
-    let buf = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-        let props = WriterProperties::builder()
-            .set_compression(Compression::SNAPPY)
-            .build();
-        let mut buf = Vec::new();
-        let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props))?;
-        writer.write(&batch)?;
-        writer.close()?;
-        Ok(buf)
-    })
-    .instrument(encode_span.clone())
-    .await
-    .map_err(|e| anyhow::anyhow!("Parquet encoding task panicked: {e}"))??;
-    tracing::debug!(
-        parent: &encode_span,
-        elapsed_ms = encode_start.elapsed().as_secs_f64() * 1000.0,
-        parquet_bytes = buf.len(),
-        "Parquet encode completed"
-    );
-
-    let put_start = Instant::now();
-    let put_span = tracing::debug_span!(
-        parent: &task_span,
-        "etl.s3_hive.s3_put",
-        table = %table_name,
-        batch_id,
-        partition_idx,
-        path = %path,
-        bytes = buf.len(),
-    );
-    store
-        .put(&path, buf.into())
-        .instrument(put_span.clone())
+        let encode_start = Instant::now();
+        let encode_span = tracing::debug_span!(
+            "etl.s3_hive.parquet_encode",
+            table = %table_name,
+            seq,
+            partition_path = %partition_path,
+            rows = batch.num_rows(),
+        );
+        let payload = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+            let props = WriterProperties::builder()
+                .set_compression(Compression::LZ4)
+                .build();
+            let mut buf = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props))?;
+            writer.write(&batch)?;
+            writer.close()?;
+            Ok(buf)
+        })
+        .instrument(encode_span.clone())
         .await
-        .map_err(|e| anyhow::anyhow!("S3 PUT failed for {path}: {e}"))?;
-    tracing::debug!(
-        parent: &put_span,
-        elapsed_ms = put_start.elapsed().as_secs_f64() * 1000.0,
-        "S3 PUT completed"
-    );
+        .map_err(|e| anyhow::anyhow!("Parquet encoding task panicked: {e}"))??;
+        tracing::debug!(
+            parent: &encode_span,
+            elapsed_ms = encode_start.elapsed().as_secs_f64() * 1000.0,
+            parquet_bytes = payload.len(),
+            "Parquet encode completed"
+        );
+
+        pending_uploads.fetch_add(1, Ordering::AcqRel);
+        if let Err(send_err) = upload_tx
+            .send(QueuedUpload {
+                path,
+                payload,
+                table_name: table_name.to_string(),
+                seq,
+                semaphore,
+            })
+            .await
+        {
+            pending_uploads.fetch_sub(1, Ordering::AcqRel);
+            anyhow::bail!("Failed to queue S3 upload: {send_err}");
+        }
+    }
 
     Ok(())
 }
@@ -221,7 +330,7 @@ impl Sink for S3HiveSink {
     async fn write(
         &self,
         table_name: &str,
-        batch_id: u64,
+        _batch_id: u64,
         batch: RecordBatch,
         op: InsertOp,
         partition_columns: Vec<String>,
@@ -238,6 +347,8 @@ impl Sink for S3HiveSink {
         if batch.num_rows() == 0 {
             return Ok(());
         }
+
+        self.check_upload_error().await?;
 
         let schema = batch.schema();
         let effective_partition_columns = if partition_columns.is_empty() {
@@ -274,51 +385,38 @@ impl Sink for S3HiveSink {
         }
 
         // Group rows by distinct partition tuples in configured column order.
-        let partitioning_span = tracing::debug_span!(
-            "etl.s3_hive.partitioning",
-            table = %table_name,
-            batch_id,
-            rows = batch.num_rows(),
-            partition_columns = effective_partition_columns.len(),
-        );
-        let partitioning_start = Instant::now();
         let partitions = partition_batch(
             &batch,
             &partition_columns_with_idx,
             &projected_column_indices,
+        )?;
+
+        // Encode all partitions and enqueue S3 uploads.
+        encode_and_queue_partitions(
+            &self.upload_tx,
+            &self.pending_uploads,
+            &self.prefix_semaphores,
+            &self.prefix,
+            partitions,
+            table_name,
+            &self.file_seq,
         )
-        .inspect(|partitions| {
-            tracing::debug!(
-                parent: &partitioning_span,
-                elapsed_ms = partitioning_start.elapsed().as_secs_f64() * 1000.0,
-                partition_count = partitions.len(),
-                "Partitioning completed"
-            );
-        })?;
+        .await?;
 
-        // Spawn all partition writes concurrently. Each task owns its data
-        // so there is no contention, and S3 PUTs for different paths are
-        // fully independent.
-        let mut join_set: JoinSet<anyhow::Result<()>> = JoinSet::new();
+        self.check_upload_error().await?;
 
-        for (idx, (partition_path, partition_batch)) in partitions.into_iter().enumerate() {
-            join_set.spawn(write_partition_task(
-                Arc::clone(&self.store),
-                Arc::clone(&self.upload_semaphore),
-                self.prefix.clone(),
-                table_name.to_string(),
-                batch_id,
-                partition_path,
-                partition_batch,
-                idx,
-            ));
+        Ok(())
+    }
+
+    async fn flush(&self) -> anyhow::Result<()> {
+        self.check_upload_error().await?;
+
+        while self.pending_uploads.load(Ordering::Acquire) > 0 {
+            self.flush_notify.notified().await;
+            self.check_upload_error().await?;
         }
 
-        // Collect results; propagate the first error encountered.
-        while let Some(result) = join_set.join_next().await {
-            result.map_err(|e| anyhow::anyhow!("Partition write task panicked: {e}"))??;
-        }
-
+        self.check_upload_error().await?;
         Ok(())
     }
 }
@@ -409,7 +507,13 @@ impl PartitionColumnValues {
                 if values.is_null(row) {
                     out.push_str(HIVE_DEFAULT_PARTITION);
                 } else {
-                    out.push_str(&values.value(row).to_string());
+                    // Truncate to millisecond precision so that rows sharing
+                    // the same millisecond coalesce into a single partition,
+                    // while preserving enough resolution for downstream
+                    // consumers that filter on `__created_at`.
+                    let us = values.value(row);
+                    let ms = us / 1_000;
+                    out.push_str(&ms.to_string());
                 }
             }
             Self::Utf8(values) => {

@@ -47,6 +47,15 @@ const CREATED_AT_COLUMN: &str = "__created_at";
 /// Internal columns that must be stripped before writing to the sink.
 const INTERNAL_COLUMNS: &[&str] = &["_op", "_op_index"];
 
+/// Minimum number of rows an input batch should contain before being
+/// processed and sent to the sink. Smaller batches from a [`ReadResult`]
+/// are concatenated together until this threshold is met.
+const MIN_BATCH_ROWS: usize = 8_192 * 4;
+
+/// Maximum number of in-flight sink writes allowed per table task when the
+/// current segment set is insert-only.
+const MAX_IN_FLIGHT_TABLE_WRITES: usize = 4;
+
 /// Returns a new schema with the `__created_at` timestamp column appended.
 fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
     let mut fields: Vec<_> = schema.fields().iter().cloned().collect();
@@ -58,20 +67,29 @@ fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-/// Appends a `__created_at` column (current wall-clock time, microsecond UTC)
-/// to the given batch and stores the value in `last_created_at`.
-fn append_created_at(
-    batch: &RecordBatch,
-    last_created_at: &AtomicI64,
-) -> anyhow::Result<RecordBatch> {
-    let now_us = SystemTime::now()
+/// Returns the current wall-clock time as microseconds since the UNIX epoch.
+///
+/// Call this **once per input batch** and pass the result to every
+/// [`append_created_at`] invocation for that batch so that all segments
+/// (splits by `_op`) share the same timestamp.
+fn now_micros() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time before UNIX epoch")
-        .as_micros() as i64;
-    last_created_at.store(now_us, Ordering::Relaxed);
+        .as_micros() as i64
+}
+
+/// Appends a `__created_at` column with the supplied `created_at_us` timestamp
+/// (microsecond UTC) to every row in the batch and stores the value in
+/// `last_created_at`.
+fn append_created_at(
+    batch: &RecordBatch,
+    created_at_us: i64,
+) -> anyhow::Result<RecordBatch> {
 
     let timestamps =
-        TimestampMicrosecondArray::from(vec![Some(now_us); batch.num_rows()]).with_timezone("UTC");
+        TimestampMicrosecondArray::from(vec![Some(created_at_us); batch.num_rows()])
+            .with_timezone("UTC");
 
     let new_schema = schema_with_created_at(&batch.schema());
     let mut columns: Vec<_> = batch.columns().to_vec();
@@ -92,6 +110,167 @@ fn build_partition_columns(dataset_columns: Vec<String>) -> Vec<String> {
     }
 
     columns
+}
+
+/// Concatenates small input batches so each resulting batch has at least
+/// [`MIN_BATCH_ROWS`] rows (except possibly the last one).
+///
+/// This reduces per-batch overhead in downstream partitioning and S3 writes.
+fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>> {
+    if batches.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let schema = batches[0].schema();
+    let mut result = Vec::new();
+    let mut pending: Vec<RecordBatch> = Vec::new();
+    let mut pending_rows: usize = 0;
+
+    for batch in batches {
+        pending_rows += batch.num_rows();
+        pending.push(batch.clone());
+
+        if pending_rows >= MIN_BATCH_ROWS {
+            let merged = if pending.len() == 1 {
+                pending.remove(0)
+            } else {
+                arrow::compute::concat_batches(&schema, &pending)
+                    .map_err(|e| anyhow::anyhow!("Failed to concat input batches: {e}"))?
+            };
+            result.push(merged);
+            pending.clear();
+            pending_rows = 0;
+        }
+    }
+
+    // Flush any remainder (below the threshold).
+    if !pending.is_empty() {
+        let merged = if pending.len() == 1 {
+            pending.remove(0)
+        } else {
+            arrow::compute::concat_batches(&schema, &pending)
+                .map_err(|e| anyhow::anyhow!("Failed to concat trailing input batches: {e}"))?
+        };
+        result.push(merged);
+    }
+
+    Ok(result)
+}
+
+/// Removes and returns the next batch ID (greater than `after_batch_id`) that
+/// still has pending work for `table_name`.
+///
+/// This is used by the ETL runner to coalesce very small reads across multiple
+/// source batch IDs for the same table while ensuring consumed IDs are not
+/// replayed in later steps.
+fn reserve_next_batch_id_for_table(
+    steps: &mut BTreeMap<u64, Vec<String>>,
+    table_name: &str,
+    after_batch_id: u64,
+) -> Option<u64> {
+    let mut found: Option<(u64, bool)> = None;
+    let start = after_batch_id.saturating_add(1);
+
+    for (candidate_batch_id, tables) in steps.range_mut(start..) {
+        if let Some(pos) = tables.iter().position(|t| t == table_name) {
+            tables.remove(pos);
+            found = Some((*candidate_batch_id, tables.is_empty()));
+            break;
+        }
+    }
+
+    if let Some((batch_id, remove_entry)) = found {
+        if remove_entry {
+            steps.remove(&batch_id);
+        }
+        Some(batch_id)
+    } else {
+        None
+    }
+}
+
+/// Reads source data for `table_name` starting at `start_batch_id`, then keeps
+/// reserving and reading subsequent batch IDs for that table until at least
+/// [`MIN_BATCH_ROWS`] rows have been accumulated (or no further work exists).
+///
+/// Returns `(raw_batches, key_columns, table_finished, consumed_work_units, rows_read)` where
+/// `table_finished=true` means a read returned `None` and the table should be
+/// marked as fully consumed. `consumed_work_units` counts how many table+batch
+/// work items were consumed from the shared plan (including coalesced reserve
+/// pulls), and `rows_read` is the total source rows read for this task.
+async fn read_batches_until_min_rows(
+    data_storage: &Arc<dyn DataStorage>,
+    work_state: &Arc<StdMutex<PipelineWorkState>>,
+    table_name: &str,
+    start_batch_id: u64,
+) -> Result<(Vec<RecordBatch>, Vec<String>, bool, u64, u64), String> {
+    let mut all_batches: Vec<RecordBatch> = Vec::new();
+    let mut total_rows: usize = 0;
+    let mut key_columns: Option<Vec<String>> = None;
+    let mut current_batch_id = start_batch_id;
+    let mut table_finished = false;
+    let mut read_any = false;
+    let mut consumed_work_units: u64 = 1;
+    let mut rows_read: u64 = 0;
+
+    loop {
+        let read_result = data_storage
+            .read_batch(table_name, current_batch_id)
+            .await
+            .map_err(|e| format!("read {table_name} batch {current_batch_id}: {e}"))?;
+
+        match read_result {
+            Some(result) => {
+                if let Some(existing_keys) = &key_columns {
+                    if existing_keys != &result.key_columns {
+                        warn!(
+                            table = %table_name,
+                            batch_id = current_batch_id,
+                            "Key columns changed across source batches while coalescing; using keys from first read"
+                        );
+                    }
+                } else {
+                    key_columns = Some(result.key_columns.clone());
+                }
+
+                total_rows += result.num_rows();
+                rows_read += result.num_rows() as u64;
+                all_batches.extend(result.batches);
+                read_any = true;
+
+                if total_rows >= MIN_BATCH_ROWS {
+                    break;
+                }
+            }
+            None => {
+                if !read_any {
+                    return Ok((Vec::new(), Vec::new(), true, consumed_work_units, rows_read));
+                }
+
+                table_finished = true;
+                break;
+            }
+        }
+
+        let next_batch_id = {
+            let mut state = work_state.lock().expect("work_state lock poisoned");
+            reserve_next_batch_id_for_table(&mut state.steps, table_name, current_batch_id)
+        };
+
+        let Some(next_batch_id) = next_batch_id else {
+            break;
+        };
+        consumed_work_units += 1;
+        current_batch_id = next_batch_id;
+    }
+
+    Ok((
+        all_batches,
+        key_columns.unwrap_or_default(),
+        table_finished,
+        consumed_work_units,
+        rows_read,
+    ))
 }
 
 /// Removes internal bookkeeping columns (`_op`, `_op_index`) from a
@@ -227,6 +406,91 @@ fn op_str_to_insert_op(op: &str, key_columns: &[String]) -> InsertOp {
         // "c" and anything else default to Insert.
         _ => InsertOp::Insert,
     }
+}
+
+async fn write_segments_for_batch(
+    data_sink: Arc<dyn Sink>,
+    table_name: &str,
+    batch_id: u64,
+    batch_ts: i64,
+    segments: Vec<OpSegment>,
+    partition_columns: &[String],
+) -> Result<(), String> {
+    let table_name_owned = table_name.to_string();
+
+    let insert_only = segments
+        .iter()
+        .all(|segment| matches!(segment.op, InsertOp::Insert));
+
+    if !insert_only {
+        for segment in segments {
+            let output_batch = append_created_at(&segment.batch, batch_ts).map_err(|e| {
+                format!("append __created_at to {table_name_owned} batch {batch_id}: {e}")
+            })?;
+
+            data_sink
+                .write(
+                    &table_name_owned,
+                    batch_id,
+                    output_batch,
+                    segment.op,
+                    partition_columns.to_vec(),
+                )
+                .await
+                .map_err(|e| format!("write {table_name_owned} batch {batch_id}: {e}"))?;
+        }
+
+        return Ok(());
+    }
+
+    let mut join_set: JoinSet<Result<(), String>> = JoinSet::new();
+    for segment in segments {
+        while join_set.len() >= MAX_IN_FLIGHT_TABLE_WRITES {
+            let result = join_set
+                .join_next()
+                .await
+                .ok_or_else(|| {
+                    format!("No in-flight write task available for {table_name_owned}")
+                })
+                .and_then(|r| {
+                    r.map_err(|e| {
+                        format!(
+                            "Sink write task panicked for {table_name_owned} batch {batch_id}: {e}"
+                        )
+                    })
+                })?;
+            result?;
+        }
+
+        let data_sink = Arc::clone(&data_sink);
+        let table_name = table_name_owned.clone();
+        let partition_columns = partition_columns.to_vec();
+
+        join_set.spawn(async move {
+            let output_batch = append_created_at(&segment.batch, batch_ts)
+                .map_err(|e| format!("append __created_at to {table_name} batch {batch_id}: {e}"))?;
+
+            data_sink
+                .write(
+                    &table_name,
+                    batch_id,
+                    output_batch,
+                    segment.op,
+                    partition_columns,
+                )
+                .await
+                .map_err(|e| format!("write {table_name} batch {batch_id}: {e}"))
+        });
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        let inner = result.map_err(|e| {
+            format!("Sink write task panicked for {table_name_owned} batch {batch_id}: {e}")
+        })?;
+        inner?;
+    }
+
+    Ok(())
 }
 
 /// Specifies which dataset implementation to use for the ETL pipeline.
@@ -585,35 +849,30 @@ impl ETLPipeline {
                     })?;
 
                 let key_columns = &read_result.key_columns;
+                let batch_ts = now_micros();
 
-                for batch in &read_result.batches {
+                let coalesced = coalesce_batches(&read_result.batches).map_err(|e| {
+                    format!("coalesce batches for {table_name} batch {first_batch_id}: {e}")
+                })?;
+                for batch in &coalesced {
                     let segments = split_batch_by_op(batch, key_columns).map_err(|e| {
                         format!("split batch by op for {table_name} batch {first_batch_id}: {e}")
                     })?;
 
-                    for segment in segments {
-                        let tracker = last_created_at
-                            .get(&table_name)
-                            .expect("table missing from last_created_at map");
-                        let output_batch = append_created_at(&segment.batch, tracker).map_err(|e| {
-                                format!(
-                                    "append __created_at to {table_name} batch {first_batch_id}: {e}"
-                                )
-                        })?;
+                    write_segments_for_batch(
+                        Arc::clone(&target),
+                        &table_name,
+                        first_batch_id,
+                        batch_ts,
+                        segments,
+                        &partition_columns,
+                    )
+                    .await?;
 
-                        target
-                            .write(
-                                &table_name,
-                                first_batch_id,
-                                output_batch,
-                                segment.op,
-                                partition_columns.clone(),
-                            )
-                            .await
-                            .map_err(|e| {
-                                format!("write {table_name} batch {first_batch_id}: {e}")
-                            })?;
-                    }
+                    let tracker = last_created_at
+                        .get(&table_name)
+                        .expect("table missing from last_created_at map");
+                    tracker.store(batch_ts, Ordering::Relaxed);
                 }
 
                 debug!(
@@ -649,6 +908,16 @@ impl ETLPipeline {
         }
 
         progress_logger.abort();
+
+        // Flush any buffered partition data accumulated during initialization.
+        if let Err(e) = self.data_sink.flush().await {
+            let msg = format!("Failed to flush sink after initialization: {e}");
+            let _ = self
+                .state_tx
+                .send(PipelineState::Stopped(StopReason::Error(msg.clone())));
+            anyhow::bail!("{msg}");
+        }
+
         let elapsed = init_start.elapsed();
         info!(
             elapsed = ?elapsed,
@@ -872,6 +1141,7 @@ async fn run_pipeline(
     // Shared progress counters for periodic logging.
     let steps_completed = StdArc::new(AtomicU64::new(0));
     let batches_processed = StdArc::new(AtomicU64::new(0));
+    let rows_processed = StdArc::new(AtomicU64::new(0));
     let tables_finished_counter = StdArc::new(AtomicU64::new(0));
     let pipeline_start = Instant::now();
 
@@ -879,6 +1149,7 @@ async fn run_pipeline(
     let progress_logger = {
         let steps_completed = StdArc::clone(&steps_completed);
         let batches_processed = StdArc::clone(&batches_processed);
+        let rows_processed = StdArc::clone(&rows_processed);
         let tables_finished_counter = StdArc::clone(&tables_finished_counter);
         let cancel = cancel.clone();
         tokio::spawn(async move {
@@ -893,6 +1164,7 @@ async fn run_pipeline(
                         }
                         let steps_done = steps_completed.load(Ordering::Relaxed);
                         let batches_done = batches_processed.load(Ordering::Relaxed);
+                        let rows_done = rows_processed.load(Ordering::Relaxed);
                         let tables_done = tables_finished_counter.load(Ordering::Relaxed);
                         info!(
                             elapsed_secs = format!("{secs:.1}"),
@@ -900,6 +1172,8 @@ async fn run_pipeline(
                             batches = format!("{batches_done}/{total_batches}"),
                             tables_finished = tables_done,
                             batches_per_sec = format!("{:.1}", batches_done as f64 / secs),
+                            rows_processed = rows_done,
+                            rows_per_sec = format!("{:.1}", rows_done as f64 / secs),
                             "ETL progress"
                         );
                     }
@@ -918,6 +1192,13 @@ async fn run_pipeline(
         {
             info!(steps_processed, "Step limit reached, pausing pipeline");
             progress_logger.abort();
+            // Flush buffered partition data before pausing so downstream
+            // consumers see all data written during this run segment.
+            if let Err(e) = data_sink.flush().await {
+                return PipelineState::Stopped(StopReason::Error(format!(
+                    "Failed to flush sink at pause: {e}"
+                )));
+            }
             return PipelineState::Paused;
         }
 
@@ -934,22 +1215,32 @@ async fn run_pipeline(
                 let batch_id = *entry.key();
                 let tables = entry.remove();
                 // Filter out already-finished tables.
+                let total_tables = tables.len();
                 let active: Vec<String> = tables
                     .into_iter()
                     .filter(|t| !state.finished_tables.contains(t))
                     .collect();
-                Some((batch_id, active))
+                let skipped = (total_tables - active.len()) as u64;
+                Some((batch_id, active, skipped))
             } else {
                 None
             }
         };
 
         let (batch_id, active_tables) = match next_step {
-            Some((_bid, tables)) if tables.is_empty() => {
+            Some((_bid, tables, skipped_work_units)) if tables.is_empty() => {
                 // All tables in this step are already finished, skip it.
+                if skipped_work_units > 0 {
+                    batches_processed.fetch_add(skipped_work_units, Ordering::Relaxed);
+                }
                 continue;
             }
-            Some((bid, tables)) => (bid, tables),
+            Some((bid, tables, skipped_work_units)) => {
+                if skipped_work_units > 0 {
+                    batches_processed.fetch_add(skipped_work_units, Ordering::Relaxed);
+                }
+                (bid, tables)
+            }
             None => {
                 // No more work — pipeline is done.
                 break;
@@ -957,10 +1248,11 @@ async fn run_pipeline(
         };
 
         // Process all tables for this batch_id concurrently.
-        let mut join_set: JoinSet<Result<(String, bool), String>> = JoinSet::new();
+        let mut join_set: JoinSet<Result<(String, bool, u64, u64), String>> = JoinSet::new();
         for table_name in active_tables {
             let data_storage = Arc::clone(&data_storage);
             let data_sink = Arc::clone(&data_sink);
+            let work_state = Arc::clone(&work_state);
             let last_created_at = Arc::clone(&last_created_at_us);
             let partition_columns = table_partition_columns
                 .get(&table_name)
@@ -968,33 +1260,56 @@ async fn run_pipeline(
                 .unwrap_or_else(|| vec![CREATED_AT_COLUMN.to_string()]);
 
             join_set.spawn(async move {
-                // 1. Read from source
-                let read_result = match data_storage.read_batch(&table_name, batch_id).await {
-                    Ok(Some(r)) => r,
-                    Ok(None) => {
-                        debug!(
-                            table = %table_name,
-                            batch_id,
-                            "No more batches for table, marking as finished"
-                        );
-                        return Ok((table_name, true)); // mark as finished
-                    }
+                // 1. Read from source; keep reading subsequent table batches
+                // until we accumulate enough rows for efficient downstream work.
+                let (source_batches, key_columns, table_finished, consumed_work_units, rows_read) =
+                    match read_batches_until_min_rows(
+                        &data_storage,
+                        &work_state,
+                        &table_name,
+                        batch_id,
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(err_msg) => {
+                            error!(
+                                table = %table_name,
+                                batch_id,
+                                error = %err_msg,
+                                "Failed to read coalesced source batches"
+                            );
+                            return Err(err_msg);
+                        }
+                    };
+
+                if source_batches.is_empty() {
+                    debug!(
+                        table = %table_name,
+                        batch_id,
+                        "No more batches for table, marking as finished"
+                    );
+                    return Ok((table_name, true, consumed_work_units, rows_read));
+                }
+
+                // 2. Split by _op, strip internal columns, append __created_at, and write to target
+                let batch_ts = now_micros();
+                let coalesced = match coalesce_batches(&source_batches) {
+                    Ok(c) => c,
                     Err(e) => {
                         error!(
                             table = %table_name,
                             batch_id,
                             error = %e,
-                            "Failed to read batch from source"
+                            "Failed to coalesce input batches"
                         );
-                        return Err(format!("read {table_name} batch {batch_id}: {e}"));
+                        return Err(format!(
+                            "coalesce batches for {table_name} batch {batch_id}: {e}"
+                        ));
                     }
                 };
-
-                let key_columns = &read_result.key_columns;
-
-                // 2. Split by _op, strip internal columns, append __created_at, and write to target
-                for batch in &read_result.batches {
-                    let segments = match split_batch_by_op(batch, key_columns) {
+                for batch in &coalesced {
+                    let segments = match split_batch_by_op(batch, &key_columns) {
                         Ok(s) => s,
                         Err(e) => {
                             error!(
@@ -1009,45 +1324,28 @@ async fn run_pipeline(
                         }
                     };
 
-                    for segment in segments {
-                        let tracker = last_created_at
-                            .get(&table_name)
-                            .expect("table missing from last_created_at map");
-                        let output_batch = match append_created_at(&segment.batch, tracker) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                error!(
-                                    table = %table_name,
-                                    batch_id,
-                                    error = %e,
-                                    "Failed to append __created_at column"
-                                );
-                                return Err(format!(
-                                    "append __created_at to {table_name} batch {batch_id}: {e}"
-                                ));
-                            }
-                        };
-
-                        // 3. Write to sink
-                        if let Err(e) = data_sink
-                            .write(
-                                &table_name,
-                                batch_id,
-                                output_batch,
-                                segment.op,
-                                partition_columns.clone(),
-                            )
-                            .await
-                        {
-                            error!(
-                                table = %table_name,
-                                batch_id,
-                                error = %e,
-                                "Failed to write batch to target"
-                            );
-                            return Err(format!("write {table_name} batch {batch_id}: {e}"));
-                        }
+                    if let Err(err_msg) = write_segments_for_batch(
+                        Arc::clone(&data_sink),
+                        &table_name,
+                        batch_id,
+                        batch_ts,
+                        segments,
+                        &partition_columns,
+                    )
+                    .await
+                    {
+                        error!(
+                            table = %table_name,
+                            batch_id,
+                            error = %err_msg,
+                            "Failed to write batch to target"
+                        );
+                        return Err(err_msg);
                     }
+                    let tracker = last_created_at
+                        .get(&table_name)
+                        .expect("table missing from last_created_at map");
+                    tracker.store(batch_ts, Ordering::Relaxed);
                 }
 
                 debug!(
@@ -1055,16 +1353,18 @@ async fn run_pipeline(
                     batch_id,
                     "Table batch processed"
                 );
-                Ok((table_name, false)) // not finished
+                Ok((table_name, table_finished, consumed_work_units, rows_read))
             });
         }
 
         // Collect results from all concurrent table tasks in this step.
         let mut step_batch_count: u64 = 0;
+        let mut step_rows_count: u64 = 0;
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok(Ok((table_name, is_finished))) => {
-                    step_batch_count += 1;
+                Ok(Ok((table_name, is_finished, consumed_work_units, rows_read))) => {
+                    step_batch_count += consumed_work_units;
+                    step_rows_count += rows_read;
                     if is_finished {
                         let mut state = work_state.lock().expect("work_state lock poisoned");
                         state.finished_tables.insert(table_name);
@@ -1087,11 +1387,20 @@ async fn run_pipeline(
         steps_processed += 1;
         steps_completed.fetch_add(1, Ordering::Relaxed);
         batches_processed.fetch_add(step_batch_count, Ordering::Relaxed);
+        rows_processed.fetch_add(step_rows_count, Ordering::Relaxed);
 
         debug!(batch_id, steps_processed, "Step completed");
     }
 
     progress_logger.abort();
+
+    // Flush any remaining buffered partition data before marking complete.
+    if let Err(e) = data_sink.flush().await {
+        return PipelineState::Stopped(StopReason::Error(format!(
+            "Failed to flush sink after pipeline completion: {e}"
+        )));
+    }
+
     info!(
         elapsed = ?pipeline_start.elapsed(),
         steps_processed,
