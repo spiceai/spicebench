@@ -84,11 +84,7 @@ fn now_micros() -> i64 {
 /// Appends a `__created_at` column with the supplied `created_at_us` timestamp
 /// (microsecond UTC) to every row in the batch and stores the value in
 /// `last_created_at`.
-fn append_created_at(
-    batch: &RecordBatch,
-    created_at_us: i64,
-) -> anyhow::Result<RecordBatch> {
-
+fn append_created_at(batch: &RecordBatch, created_at_us: i64) -> anyhow::Result<RecordBatch> {
     let timestamps = TimestampMicrosecondArray::from(vec![Some(created_at_us); batch.num_rows()]);
 
     let new_schema = schema_with_created_at(&batch.schema());
@@ -480,9 +476,7 @@ async fn write_segments_for_batch(
             let result = join_set
                 .join_next()
                 .await
-                .ok_or_else(|| {
-                    format!("No in-flight write task available for {table_name_owned}")
-                })
+                .ok_or_else(|| format!("No in-flight write task available for {table_name_owned}"))
                 .and_then(|r| {
                     r.map_err(|e| {
                         format!(
@@ -498,8 +492,9 @@ async fn write_segments_for_batch(
         let partition_columns = partition_columns.to_vec();
 
         join_set.spawn(async move {
-            let output_batch = append_created_at(&segment.batch, batch_ts)
-                .map_err(|e| format!("append __created_at to {table_name} batch {batch_id}: {e}"))?;
+            let output_batch = append_created_at(&segment.batch, batch_ts).map_err(|e| {
+                format!("append __created_at to {table_name} batch {batch_id}: {e}")
+            })?;
 
             data_sink
                 .write(

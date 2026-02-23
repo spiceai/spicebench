@@ -41,13 +41,13 @@ pub struct AdbcSink {
 }
 
 impl AdbcSink {
-        fn max_ingest_batch_bytes() -> usize {
-            std::env::var(MAX_ADBC_INGEST_BATCH_BYTES_ENV)
-                .ok()
-                .and_then(|raw| raw.parse::<usize>().ok())
-                .filter(|value| *value > 0)
-                .unwrap_or(MAX_ADBC_INGEST_BATCH_BYTES)
-        }
+    fn max_ingest_batch_bytes() -> usize {
+        std::env::var(MAX_ADBC_INGEST_BATCH_BYTES_ENV)
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(MAX_ADBC_INGEST_BATCH_BYTES)
+    }
 
     /// Creates a new [`AdbcSink`] backed by a single ADBC connection.
     pub fn new(
@@ -165,8 +165,9 @@ impl AdbcSink {
     fn serialized_batch_size(batch: &RecordBatch) -> anyhow::Result<usize> {
         let mut buf = Vec::new();
         {
-            let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &batch.schema())
-                .map_err(|e| anyhow::anyhow!("Failed to create Arrow stream writer: {e}"))?;
+            let mut writer =
+                arrow::ipc::writer::StreamWriter::try_new(&mut buf, &batch.schema())
+                    .map_err(|e| anyhow::anyhow!("Failed to create Arrow stream writer: {e}"))?;
             writer
                 .write(batch)
                 .map_err(|e| anyhow::anyhow!("Failed to serialize batch for size estimate: {e}"))?;

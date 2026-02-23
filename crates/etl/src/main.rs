@@ -20,9 +20,9 @@ use clap::Parser;
 use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
+use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
 use etl::sink::s3_hive::S3HiveSink;
-use etl::sink::Sink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use tracing_subscriber::EnvFilter;
 
@@ -136,9 +136,7 @@ async fn main() -> anyhow::Result<()> {
     let mutations = version_metadata.mutation_config();
 
     if cli.adbc_create_tables && (cli.adbc_driver.is_none() || cli.adbc_uri.is_none()) {
-        anyhow::bail!(
-            "--adbc-create-tables requires both --adbc-driver and --adbc-uri"
-        );
+        anyhow::bail!("--adbc-create-tables requires both --adbc-driver and --adbc-uri");
     }
 
     let (target, target_config, target_kind, adbc_sink): (
@@ -147,89 +145,84 @@ async fn main() -> anyhow::Result<()> {
         String,
         Option<Arc<AdbcSink>>,
     ) = match (&cli.adbc_driver, &cli.adbc_uri) {
-            (Some(driver), Some(uri)) => {
-                let mut db_kwargs = std::collections::HashMap::new();
-                db_kwargs.insert("uri".to_string(), serde_json::Value::String(uri.clone()));
+        (Some(driver), Some(uri)) => {
+            let mut db_kwargs = std::collections::HashMap::new();
+            db_kwargs.insert("uri".to_string(), serde_json::Value::String(uri.clone()));
 
-                for option in &cli.adbc_options {
-                    let (key, value) = option.split_once('=').ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Invalid --adbc-option '{option}'. Expected key=value"
-                        )
-                    })?;
+            for option in &cli.adbc_options {
+                let (key, value) = option.split_once('=').ok_or_else(|| {
+                    anyhow::anyhow!("Invalid --adbc-option '{option}'. Expected key=value")
+                })?;
 
-                    let key = key.trim();
-                    if key.is_empty() {
-                        anyhow::bail!(
-                            "Invalid --adbc-option '{option}'. Option key cannot be empty"
-                        );
-                    }
-
-                    db_kwargs.insert(
-                        key.to_string(),
-                        serde_json::Value::String(value.to_string()),
-                    );
+                let key = key.trim();
+                if key.is_empty() {
+                    anyhow::bail!("Invalid --adbc-option '{option}'. Option key cannot be empty");
                 }
 
-                if driver.eq_ignore_ascii_case("flightsql") {
-                    db_kwargs
-                        .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
-                        .or_insert_with(|| {
-                            serde_json::Value::String(
-                                DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string(),
-                            )
-                        });
-                }
-
-                let adbc_sink = Arc::new(AdbcSink::new(driver, db_kwargs, cli.adbc_schema.clone())?);
-
-                (
-                    adbc_sink.clone() as Arc<dyn Sink>,
-                    None,
-                    "adbc".to_string(),
-                    Some(adbc_sink),
-                )
-            }
-            (None, None) => {
-                let hive_prefix = if cli.target_prefix.is_empty() {
-                    format!(
-                        "{}/{}/{}",
-                        cli.prefix.trim_matches('/'),
-                        cli.scenario,
-                        cli.version
-                    )
-                } else {
-                    format!(
-                        "{}/{}/{}",
-                        cli.target_prefix.trim_matches('/'),
-                        cli.scenario,
-                        cli.version
-                    )
-                };
-
-                let hive_config = TargetConfig {
-                    bucket: cli.bucket.clone(),
-                    prefix: hive_prefix,
-                    region: cli.region.clone(),
-                    endpoint: cli.endpoint.clone(),
-                    partition_columns: cli.partition_by.clone(),
-                };
-
-                (
-                    Arc::new(S3HiveSink::new(&hive_config)?),
-                    Some(hive_config),
-                    "s3-hive".to_string(),
-                    None,
-                )
-            }
-            _ => {
-                anyhow::bail!(
-                    "ADBC target requires both --adbc-driver and --adbc-uri. Omit both to use the S3 Hive sink."
+                db_kwargs.insert(
+                    key.to_string(),
+                    serde_json::Value::String(value.to_string()),
                 );
             }
-        };
 
-    let mut pipeline = ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
+            if driver.eq_ignore_ascii_case("flightsql") {
+                db_kwargs
+                    .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
+                    .or_insert_with(|| {
+                        serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
+                    });
+            }
+
+            let adbc_sink = Arc::new(AdbcSink::new(driver, db_kwargs, cli.adbc_schema.clone())?);
+
+            (
+                adbc_sink.clone() as Arc<dyn Sink>,
+                None,
+                "adbc".to_string(),
+                Some(adbc_sink),
+            )
+        }
+        (None, None) => {
+            let hive_prefix = if cli.target_prefix.is_empty() {
+                format!(
+                    "{}/{}/{}",
+                    cli.prefix.trim_matches('/'),
+                    cli.scenario,
+                    cli.version
+                )
+            } else {
+                format!(
+                    "{}/{}/{}",
+                    cli.target_prefix.trim_matches('/'),
+                    cli.scenario,
+                    cli.version
+                )
+            };
+
+            let hive_config = TargetConfig {
+                bucket: cli.bucket.clone(),
+                prefix: hive_prefix,
+                region: cli.region.clone(),
+                endpoint: cli.endpoint.clone(),
+                partition_columns: cli.partition_by.clone(),
+            };
+
+            (
+                Arc::new(S3HiveSink::new(&hive_config)?),
+                Some(hive_config),
+                "s3-hive".to_string(),
+                None,
+            )
+        }
+        _ => {
+            anyhow::bail!(
+                "ADBC target requires both --adbc-driver and --adbc-uri. Omit both to use the S3 Hive sink."
+            );
+        }
+    };
+
+    let mut pipeline =
+        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
     if let Some(target_config) = target_config {
         pipeline = pipeline.with_target_config(target_config);
     }

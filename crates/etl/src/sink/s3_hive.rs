@@ -28,7 +28,7 @@ use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectPath;
 use parquet::arrow::ArrowWriter;
-use parquet::basic::{Compression};
+use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
 use tracing::Instrument;
@@ -268,7 +268,9 @@ async fn encode_and_queue_partitions(
             if partition_path.is_empty() {
                 ObjectPath::from(format!("{table_name}/part-{seq:08}.parquet"))
             } else {
-                ObjectPath::from(format!("{table_name}/{partition_path}/part-{seq:08}.parquet"))
+                ObjectPath::from(format!(
+                    "{table_name}/{partition_path}/part-{seq:08}.parquet"
+                ))
             }
         } else if partition_path.is_empty() {
             ObjectPath::from(format!("{prefix}/{table_name}/part-{seq:08}.parquet",))
