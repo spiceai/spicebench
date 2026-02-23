@@ -38,6 +38,11 @@ cargo run -p etl -- \
 - `--adbc-driver`: ADBC driver name (for example `databricks` or `flightsql`).
 - `--adbc-uri`: Connection URI passed as ADBC database option `uri`.
 - `--adbc-option key=value`: Additional ADBC database option (repeatable).
+- `--adbc-create-tables`: Send PostgreSQL-compatible `CREATE TABLE IF NOT EXISTS` statements before ETL starts, using dataset table schemas (including `__created_at`).
+
+When `--adbc-driver flightsql` is used, ETL defaults
+`adbc.flight.sql.client_option.with_max_msg_size` to `78643200` (75 MiB)
+unless you explicitly provide that option via `--adbc-option`.
 
 When using ADBC output, provide both `--adbc-driver` and `--adbc-uri`.
 
@@ -52,6 +57,7 @@ cargo run -p etl -- \
 	--region us-west-2 \
 	--adbc-driver databricks \
 	--adbc-uri "databricks://token:${DATABRICKS_TOKEN}@${DATABRICKS_ENDPOINT}:443/${DATABRICKS_HTTP_PATH}" \
+	--adbc-create-tables \
 	--adbc-option some_driver_specific_option=some_value \
 	--adbc-schema tpch
 ```
@@ -66,6 +72,7 @@ cargo run -p etl -- \
 	--prefix raw \
 	--adbc-driver flightsql \
 	--adbc-uri "grpcs://${SPICE_CLOUD_FLIGHTSQL_HOST}:443" \
+	--adbc-create-tables \
 	--adbc-option username="" \
 	--adbc-option password="${SPICE_CLOUD_API_KEY}"
 ```

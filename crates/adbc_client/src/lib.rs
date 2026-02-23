@@ -121,6 +121,21 @@ impl AdbcConnection {
             .context(ReadBatchSnafu)
     }
 
+    /// Execute a SQL data-modification statement and return the affected row count when provided by the driver.
+    pub fn execute_update(&mut self, sql: &str) -> Result<Option<i64>> {
+        let mut stmt = self.conn.new_statement().map_err(|e| Error::ExecuteQuery {
+            reason: e.to_string(),
+        })?;
+
+        stmt.set_sql_query(sql).map_err(|e| Error::ExecuteQuery {
+            reason: e.to_string(),
+        })?;
+
+        stmt.execute_update().map_err(|e| Error::ExecuteQuery {
+            reason: e.to_string(),
+        })
+    }
+
     /// Bulk-ingest a [`RecordBatch`] into a target table using the ADBC bulk
     /// ingest API.
     ///

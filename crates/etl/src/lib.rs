@@ -47,10 +47,12 @@ const CREATED_AT_COLUMN: &str = "__created_at";
 /// Internal columns that must be stripped before writing to the sink.
 const INTERNAL_COLUMNS: &[&str] = &["_op", "_op_index"];
 
-/// Minimum number of rows an input batch should contain before being
-/// processed and sent to the sink. Smaller batches from a [`ReadResult`]
-/// are concatenated together until this threshold is met.
-const MIN_BATCH_ROWS: usize = 8_192 * 4;
+/// Target and maximum number of rows per output batch.
+///
+/// Smaller input batches from a [`ReadResult`] are concatenated together until
+/// this threshold is reached, and larger input batches are split so no output
+/// batch exceeds this size.
+const TARGET_BATCH_ROWS: usize = 8_192 * 2;
 
 /// Maximum number of in-flight sink writes allowed per table task when the
 /// current segment set is insert-only.
@@ -61,7 +63,7 @@ fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
     let mut fields: Vec<_> = schema.fields().iter().cloned().collect();
     fields.push(Arc::new(Field::new(
         CREATED_AT_COLUMN,
-        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        DataType::Timestamp(TimeUnit::Microsecond, None),
         true,
     )));
     Arc::new(Schema::new(fields))
@@ -87,9 +89,7 @@ fn append_created_at(
     created_at_us: i64,
 ) -> anyhow::Result<RecordBatch> {
 
-    let timestamps =
-        TimestampMicrosecondArray::from(vec![Some(created_at_us); batch.num_rows()])
-            .with_timezone("UTC");
+    let timestamps = TimestampMicrosecondArray::from(vec![Some(created_at_us); batch.num_rows()]);
 
     let new_schema = schema_with_created_at(&batch.schema());
     let mut columns: Vec<_> = batch.columns().to_vec();
@@ -112,8 +112,8 @@ fn build_partition_columns(dataset_columns: Vec<String>) -> Vec<String> {
     columns
 }
 
-/// Concatenates small input batches so each resulting batch has at least
-/// [`MIN_BATCH_ROWS`] rows (except possibly the last one).
+/// Concatenates small input batches and splits large input batches so each
+/// resulting batch has at most [`TARGET_BATCH_ROWS`] rows.
 ///
 /// This reduces per-batch overhead in downstream partitioning and S3 writes.
 fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>> {
@@ -127,19 +127,50 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
     let mut pending_rows: usize = 0;
 
     for batch in batches {
-        pending_rows += batch.num_rows();
-        pending.push(batch.clone());
+        let mut offset = 0usize;
+        let total_rows = batch.num_rows();
 
-        if pending_rows >= MIN_BATCH_ROWS {
-            let merged = if pending.len() == 1 {
-                pending.remove(0)
+        while offset < total_rows {
+            let chunk_rows = std::cmp::min(TARGET_BATCH_ROWS, total_rows - offset);
+            let chunk = if offset == 0 && chunk_rows == total_rows {
+                batch.clone()
             } else {
-                arrow::compute::concat_batches(&schema, &pending)
-                    .map_err(|e| anyhow::anyhow!("Failed to concat input batches: {e}"))?
+                batch.slice(offset, chunk_rows)
             };
-            result.push(merged);
-            pending.clear();
-            pending_rows = 0;
+            offset += chunk_rows;
+
+            if pending_rows > 0 && pending_rows + chunk_rows > TARGET_BATCH_ROWS {
+                let merged = if pending.len() == 1 {
+                    pending.remove(0)
+                } else {
+                    arrow::compute::concat_batches(&schema, &pending)
+                        .map_err(|e| anyhow::anyhow!("Failed to concat input batches: {e}"))?
+                };
+                result.push(merged);
+                pending.clear();
+                pending_rows = 0;
+            }
+
+            if chunk_rows == TARGET_BATCH_ROWS && pending_rows == 0 {
+                result.push(chunk);
+                continue;
+            }
+
+            pending_rows += chunk_rows;
+            pending.push(chunk);
+
+            if pending_rows == TARGET_BATCH_ROWS {
+                let merged = if pending.len() == 1 {
+                    pending.remove(0)
+                } else {
+                    arrow::compute::concat_batches(&schema, &pending).map_err(|e| {
+                        anyhow::anyhow!("Failed to concat input batches at threshold: {e}")
+                    })?
+                };
+                result.push(merged);
+                pending.clear();
+                pending_rows = 0;
+            }
         }
     }
 
@@ -191,7 +222,7 @@ fn reserve_next_batch_id_for_table(
 
 /// Reads source data for `table_name` starting at `start_batch_id`, then keeps
 /// reserving and reading subsequent batch IDs for that table until at least
-/// [`MIN_BATCH_ROWS`] rows have been accumulated (or no further work exists).
+/// [`TARGET_BATCH_ROWS`] rows have been accumulated (or no further work exists).
 ///
 /// Returns `(raw_batches, key_columns, table_finished, consumed_work_units, rows_read)` where
 /// `table_finished=true` means a read returned `None` and the table should be
@@ -238,7 +269,7 @@ async fn read_batches_until_min_rows(
                 all_batches.extend(result.batches);
                 read_any = true;
 
-                if total_rows >= MIN_BATCH_ROWS {
+                if total_rows >= TARGET_BATCH_ROWS {
                     break;
                 }
             }

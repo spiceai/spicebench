@@ -1136,6 +1136,7 @@ dependencies = [
  "adbc_client",
  "anyhow",
  "arrow",
+ "arrow-cast",
  "async-trait",
  "chrono",
  "clap",

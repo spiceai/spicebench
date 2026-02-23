@@ -26,6 +26,9 @@ use etl::sink::Sink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use tracing_subscriber::EnvFilter;
 
+const FLIGHTSQL_MAX_MSG_SIZE_OPTION: &str = "adbc.flight.sql.client_option.with_max_msg_size";
+const DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES: &str = "78643200";
+
 #[derive(Parser)]
 #[command(
     about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to either S3 Hive Parquet or an ADBC target"
@@ -80,6 +83,12 @@ struct Cli {
     #[arg(long)]
     adbc_schema: Option<String>,
 
+    /// When writing to an ADBC target, send PostgreSQL-compatible CREATE TABLE
+    /// statements before ETL starts, based on dataset table schemas (including
+    /// `__created_at`).
+    #[arg(long, default_value_t = false)]
+    adbc_create_tables: bool,
+
     /// Additional ADBC database options as `key=value`.
     ///
     /// May be specified multiple times.
@@ -126,8 +135,18 @@ async fn main() -> anyhow::Result<()> {
     let dataset_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
 
-    let (target, target_config, target_kind): (Arc<dyn Sink>, Option<TargetConfig>, String) =
-        match (&cli.adbc_driver, &cli.adbc_uri) {
+    if cli.adbc_create_tables && (cli.adbc_driver.is_none() || cli.adbc_uri.is_none()) {
+        anyhow::bail!(
+            "--adbc-create-tables requires both --adbc-driver and --adbc-uri"
+        );
+    }
+
+    let (target, target_config, target_kind, adbc_sink): (
+        Arc<dyn Sink>,
+        Option<TargetConfig>,
+        String,
+        Option<Arc<AdbcSink>>,
+    ) = match (&cli.adbc_driver, &cli.adbc_uri) {
             (Some(driver), Some(uri)) => {
                 let mut db_kwargs = std::collections::HashMap::new();
                 db_kwargs.insert("uri".to_string(), serde_json::Value::String(uri.clone()));
@@ -152,10 +171,23 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
 
+                if driver.eq_ignore_ascii_case("flightsql") {
+                    db_kwargs
+                        .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
+                        .or_insert_with(|| {
+                            serde_json::Value::String(
+                                DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string(),
+                            )
+                        });
+                }
+
+                let adbc_sink = Arc::new(AdbcSink::new(driver, db_kwargs, cli.adbc_schema.clone())?);
+
                 (
-                    Arc::new(AdbcSink::new(driver, db_kwargs, cli.adbc_schema.clone())?),
+                    adbc_sink.clone() as Arc<dyn Sink>,
                     None,
                     "adbc".to_string(),
+                    Some(adbc_sink),
                 )
             }
             (None, None) => {
@@ -187,6 +219,7 @@ async fn main() -> anyhow::Result<()> {
                     Arc::new(S3HiveSink::new(&hive_config)?),
                     Some(hive_config),
                     "s3-hive".to_string(),
+                    None,
                 )
             }
             _ => {
@@ -201,6 +234,13 @@ async fn main() -> anyhow::Result<()> {
         pipeline = pipeline.with_target_config(target_config);
     }
 
+    if cli.adbc_create_tables {
+        let datasets = pipeline.create_tables_request_datasets();
+        if let Some(adbc_sink) = adbc_sink {
+            adbc_sink.create_tables_from_dataset_configs(&datasets)?;
+        }
+    }
+
     tracing::info!(
         scenario = %cli.scenario,
         version = %cli.version,
@@ -210,6 +250,7 @@ async fn main() -> anyhow::Result<()> {
         target = %target_kind,
         adbc_driver = ?cli.adbc_driver,
         adbc_schema = ?cli.adbc_schema,
+        adbc_create_tables = cli.adbc_create_tables,
         target_prefix = %cli.target_prefix,
         partition_by = ?cli.partition_by,
         scale_factor = version_metadata.scale_factor,

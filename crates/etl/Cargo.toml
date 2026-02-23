@@ -20,6 +20,7 @@ path = "src/main.rs"
 adbc_client = { path = "../adbc_client" }
 anyhow.workspace = true
 arrow.workspace = true
+arrow-cast = "57"
 async-trait.workspace = true
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
