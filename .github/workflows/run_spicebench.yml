@@ -50,6 +50,11 @@ on:
         required: false
         default: '8'
         type: string
+      validate_checkpoint_results:
+        description: 'Enable checkpoint-based result validation (maps to spicebench --validate-results)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   run-spicebench:
@@ -210,6 +215,7 @@ jobs:
           ETL_VERSION: ${{ github.event.inputs.etl_version }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_SINK: ${{ github.event.inputs.etl_sink || 'hive' }}
+          VALIDATE_CHECKPOINT_RESULTS: ${{ github.event.inputs.validate_checkpoint_results || 'false' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -239,6 +245,11 @@ jobs:
             :
           fi
 
+          VALIDATION_ARGS=""
+          if [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ]; then
+            VALIDATION_ARGS="--validate-results"
+          fi
+
           if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
@@ -263,6 +274,7 @@ jobs:
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
             ${ETL_SINK_ARGS} \
+            ${VALIDATION_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS}
