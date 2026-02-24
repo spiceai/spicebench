@@ -18,7 +18,6 @@ limitations under the License.
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
 use arrow::{
     array::{Array, RecordBatch, TimestampMicrosecondArray},
-    util::pretty::pretty_format_batches,
 };
 use etl::{ETLPipeline, PipelineState, StopReason};
 use std::collections::HashMap;
@@ -105,7 +104,31 @@ fn spawn_sut_metrics_scraper(
                     let metrics_result = adapter.lock().await.metrics(run_id).await;
                     match metrics_result {
                         Ok(resp) => {
-                            println!("Metrics={:?}", resp);
+                            let cpu_pct = resp
+                                .resource
+                                .cpu_usage_percent
+                                .map(|v| format!("{v:.2}%"))
+                                .unwrap_or_else(|| "n/a".to_string());
+                            let mem_mb = resp
+                                .resource
+                                .memory_usage_bytes
+                                .map(|v| format!("{:.2}", v as f64 / (1024.0 * 1024.0)))
+                                .unwrap_or_else(|| "n/a".to_string());
+                            let rows_per_sec = resp
+                                .ingestion
+                                .rows_per_sec
+                                .map(|v| format!("{v:.2}"))
+                                .unwrap_or_else(|| "n/a".to_string());
+                            let active_connections = resp
+                                .ingestion
+                                .active_connections
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "n/a".to_string());
+
+                            println!(
+                                "SUT metrics: cpu={} mem_mb={} rows_per_sec={} active_connections={}",
+                                cpu_pct, mem_mb, rows_per_sec, active_connections
+                            );
                             record_sut_metrics(&resp, &attributes);
                             last_response = Some(resp);
                         }
@@ -140,7 +163,7 @@ fn spawn_e2e_latency_check(
     last_created_at_us: Arc<HashMap<String, AtomicI64>>,
 ) -> tokio::task::JoinHandle<HashMap<String, Vec<f64>>> {
     tokio::spawn(async move {
-        println!("[spawn_e2e_latency_check] Starting...");
+        println!("E2E latency checker started (interval={}s)", interval.as_secs());
         let mut samples_by_table: HashMap<String, Vec<f64>> = table_names
             .iter()
             .map(|t| (t.clone(), Vec::new()))
@@ -151,18 +174,16 @@ fn spawn_e2e_latency_check(
                 _ = ticker.tick() => {}
                 () = token.cancelled() => break,
             }
-            println!("[spawn_e2e_latency_check] after tick.");
 
             let conn = Arc::clone(&conn);
             let tables = table_names.clone();
             let timestamps = Arc::clone(&last_created_at_us);
             let results = tokio::task::spawn_blocking(move || {
-                println!("[spawn_e2e_latency_check] spawn_blocking.");
                 let mut out: Vec<(String, Option<f64>)> = Vec::new();
                 let mut guard = match conn.lock() {
                     Ok(g) => g,
                     Err(e) => {
-                        println!("E2E latency scraper: lock poisoned: {e}");
+                        eprintln!("E2E latency checker: lock poisoned: {e}");
                         return out;
                     }
                 };
@@ -175,14 +196,8 @@ fn spawn_e2e_latency_check(
                         continue;
                     }
                     let sql = format!("SELECT MAX(__created_at) FROM {table}");
-                    println!("[spawn_e2e_latency_check] sql={sql}");
                     match guard.query(&sql) {
                         Ok(batches) => {
-                            if let Ok(v) = pretty_format_batches(&batches) {
-                                println!("[Spicebench] pretty formatted batches:\n{v}");
-                            } else {
-                                println!("[Spicebench] failed to pretty format batches");
-                            };
                             let sample = batches.first().and_then(|batch| {
                                 let col = batch.column(0);
                                 let ts_array =
@@ -193,10 +208,6 @@ fn spawn_e2e_latency_check(
                                 let max_ts_us = ts_array.value(0);
                                 Some((last_written_us - max_ts_us) as f64 / 1000.0)
                             });
-                            println!(
-                                "E2E latency checker: table={table}, freshness_ms={:?}",
-                                sample
-                            );
                             out.push((table.clone(), sample));
                         }
                         Err(e) => {
@@ -210,10 +221,40 @@ fn spawn_e2e_latency_check(
             .await;
 
             if let Ok(results) = results {
+                let mut sampled_count = 0usize;
+                let mut missing_count = 0usize;
+                let mut min_ms = f64::INFINITY;
+                let mut max_ms = f64::NEG_INFINITY;
+                let mut sum_ms = 0.0;
+
                 for (table, sample) in results {
                     if let Some(ms) = sample {
                         samples_by_table.entry(table).or_default().push(ms);
+                        sampled_count += 1;
+                        sum_ms += ms;
+                        min_ms = min_ms.min(ms);
+                        max_ms = max_ms.max(ms);
+                    } else {
+                        missing_count += 1;
                     }
+                }
+
+                if sampled_count > 0 {
+                    println!(
+                        "E2E latency checker: tables={} sampled={} missing={} min_ms={:.2} avg_ms={:.2} max_ms={:.2}",
+                        sampled_count + missing_count,
+                        sampled_count,
+                        missing_count,
+                        min_ms,
+                        sum_ms / sampled_count as f64,
+                        max_ms
+                    );
+                } else {
+                    println!(
+                        "E2E latency checker: tables={} sampled=0 missing={}",
+                        missing_count,
+                        missing_count
+                    );
                 }
             }
         }
