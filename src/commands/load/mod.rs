@@ -16,9 +16,7 @@ limitations under the License.
 #![allow(dead_code)]
 
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
-use arrow::{
-    array::{Array, RecordBatch, TimestampMicrosecondArray},
-};
+use arrow::array::{Array, RecordBatch, TimestampMicrosecondArray};
 use etl::{ETLPipeline, PipelineState, StopReason};
 use std::collections::HashMap;
 use std::path::Path;
@@ -163,7 +161,10 @@ fn spawn_e2e_latency_check(
     last_created_at_us: Arc<HashMap<String, AtomicI64>>,
 ) -> tokio::task::JoinHandle<HashMap<String, Vec<f64>>> {
     tokio::spawn(async move {
-        println!("E2E latency checker started (interval={}s)", interval.as_secs());
+        println!(
+            "E2E latency checker started (interval={}s)",
+            interval.as_secs()
+        );
         let mut samples_by_table: HashMap<String, Vec<f64>> = table_names
             .iter()
             .map(|t| (t.clone(), Vec::new()))
@@ -252,8 +253,7 @@ fn spawn_e2e_latency_check(
                 } else {
                     println!(
                         "E2E latency checker: tables={} sampled=0 missing={}",
-                        missing_count,
-                        missing_count
+                        missing_count, missing_count
                     );
                 }
             }
