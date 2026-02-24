@@ -37,20 +37,14 @@ on:
         required: false
         default: 'us-east-1'
         type: string
-      etl_endpoint:
-        description: 'S3 endpoint URL for ETL bucket (for MinIO/LocalStack)'
+      etl_sink:
+        description: 'ETL sink (hive or adbc)'
         required: false
-        type: string
-      table_format:
-        description: 'Table format across generation and adapter setup (iceberg, parquet, delta)'
-        required: false
-        default: 'parquet'
-        type: string
-      executor_instance_type:
-        description: 'Executor instance type label for benchmark comparison and dashboarding'
-        required: false
-        default: 'github-hosted-ubuntu-latest'
-        type: string
+        default: 'hive'
+        type: choice
+        options:
+          - hive
+          - adbc
       num_query_clients:
         description: 'Number of query clients to run (maps to spicebench --concurrency)'
         required: false
@@ -126,7 +120,6 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-          DATABRICKS_TABLE_FORMAT: ${{ github.event.inputs.table_format || 'parquet' }}
         run: |
           set -euo pipefail
           SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
@@ -187,12 +180,10 @@ jobs:
           esac
 
       - name: Install ADBC driver
-        env:
-          SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          EXECUTOR_INSTANCE_TYPE: ${{ github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
+          SYSTEM_UNDER_TEST="${{ github.event.inputs.system_under_test || 'spice_cloud' }}"
           SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
 
           if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
@@ -211,23 +202,26 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-          DATABRICKS_TABLE_FORMAT: ${{ github.event.inputs.table_format || 'parquet' }}
-          SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          EXECUTOR_INSTANCE_TYPE: ${{ github.event.inputs.executor_instance_type || 'github-hosted-ubuntu-latest' }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '8' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
           ETL_VERSION: ${{ github.event.inputs.etl_version }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
-          ETL_ENDPOINT: ${{ github.event.inputs.etl_endpoint }}
+          ETL_SINK: ${{ github.event.inputs.etl_sink || 'hive' }}
+          SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: 'info'
         run: |
+          set -euo pipefail
+          TABLE_FORMAT="parquet"
+          EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
+          ETL_ENDPOINT=""
+          DATABRICKS_TABLE_FORMAT="${TABLE_FORMAT}"
           SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-version ${ETL_VERSION}"
           if [ -n "${ETL_PREFIX}" ]; then
@@ -236,8 +230,13 @@ jobs:
           if [ -n "${ETL_REGION}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"
           fi
-          if [ -n "${ETL_ENDPOINT}" ]; then
+          if [ -n "${ETL_ENDPOINT:-}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
+          fi
+
+          ETL_SINK_ARGS="--etl-sink ${ETL_SINK} --table-format ${TABLE_FORMAT}"
+          if [ "${ETL_SINK}" = "adbc" ]; then
+            :
           fi
 
           if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
@@ -245,11 +244,11 @@ jobs:
             ADAPTER_ARGS="stdio"
             ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
 
-            if [ -n "${DATABRICKS_CATALOG}" ]; then
+            if [ -n "${DATABRICKS_CATALOG:-}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"
             fi
 
-            if [ -n "${DATABRICKS_SCHEMA}" ]; then
+            if [ -n "${DATABRICKS_SCHEMA:-}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
             fi
           else
@@ -263,6 +262,7 @@ jobs:
             --scenario "${SCENARIO}" \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
+            ${ETL_SINK_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS}

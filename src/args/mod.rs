@@ -27,6 +27,13 @@ pub enum TableFormat {
     Delta,
 }
 
+#[derive(Clone, Debug, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum EtlSink {
+    Hive,
+    Adbc,
+}
+
 impl std::fmt::Display for TableFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
@@ -119,6 +126,10 @@ pub struct CommonArgs {
     /// A random suffix is appended automatically to create a unique destination per run.
     #[arg(long, default_value = "")]
     pub(crate) etl_target_base_prefix: String,
+
+    /// ETL sink implementation used for loading generated data.
+    #[arg(long, value_enum, default_value = "hive")]
+    pub(crate) etl_sink: EtlSink,
 
     /// AWS region for the ETL S3 bucket
     #[arg(long, default_value = "us-east-1")]
