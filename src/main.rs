@@ -422,7 +422,10 @@ async fn main() -> anyhow::Result<()> {
             );
             setup_metadata.insert(
                 "etl_s3_hive_uri".to_string(),
-                serde_json::Value::String(format!("s3://{}/{}", cli.common.etl_bucket, hive_prefix)),
+                serde_json::Value::String(format!(
+                    "s3://{}/{}",
+                    cli.common.etl_bucket, hive_prefix
+                )),
             );
         }
     }

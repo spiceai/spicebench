@@ -82,7 +82,7 @@ fn tpch_max_rows_per_file() -> usize {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|v| *v > 0)
-    .map(|v| v.clamp(MIN_TPCH_ROWS_PER_FILE, MAX_TPCH_ROWS_PER_FILE))
+        .map(|v| v.clamp(MIN_TPCH_ROWS_PER_FILE, MAX_TPCH_ROWS_PER_FILE))
         .unwrap_or(DEFAULT_TPCH_MAX_ROWS_PER_FILE)
 }
 
@@ -434,10 +434,7 @@ impl TpchDataset {
 
         let max_rows_per_file = tpch_max_rows_per_file();
 
-        info!(
-            max_rows_per_file,
-            "Configured TPCH maximum rows per file"
-        );
+        info!(max_rows_per_file, "Configured TPCH maximum rows per file");
 
         Ok(Self {
             scale_factor: config.scale_factor,
