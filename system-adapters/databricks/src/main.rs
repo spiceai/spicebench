@@ -25,7 +25,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, Handler, Server, SetupResponse, TeardownResponse,
+    AdbcDriver, DatasetConfig, EtlSinkType, Handler, Server, SetupResponse, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -1707,7 +1707,9 @@ impl Handler for DatabricksAdapter {
         run_id: Uuid,
         metadata: HashMap<String, Value>,
         datasets: HashMap<String, DatasetConfig>,
+        etl_sink_type: Option<EtlSinkType>,
     ) -> std::result::Result<SetupResponse, String> {
+        let _ = etl_sink_type;
         eprintln!("[databricks-adapter] setup: run_id={run_id}");
         eprintln!("[databricks-adapter] endpoint={}", self.config.endpoint);
 
@@ -1838,6 +1840,7 @@ impl Handler for DatabricksAdapter {
                 Ok(SetupResponse {
                     driver: AdbcDriver::Postgresql,
                     db_kwargs: HashMap::from([("uri".to_string(), Value::String(pg_uri))]),
+                    catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
                 })
             }
             _ => Ok(SetupResponse {
@@ -1846,6 +1849,7 @@ impl Handler for DatabricksAdapter {
                     "uri".to_string(),
                     Value::String(self.databricks_uri()),
                 )]),
+                catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
             }),
         }
     }

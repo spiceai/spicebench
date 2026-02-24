@@ -181,11 +181,13 @@ impl Client {
         run_id: uuid::Uuid,
         metadata: std::collections::HashMap<String, serde_json::Value>,
         datasets: std::collections::HashMap<String, crate::DatasetConfig>,
+        etl_sink_type: Option<crate::EtlSinkType>,
     ) -> Result<crate::SetupResponse> {
         let request = crate::SetupRequest {
             run_id,
             metadata,
             datasets,
+            etl_sink_type,
         };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::SETUP, request);
         let response = self.call_typed(rpc_request).await?;
