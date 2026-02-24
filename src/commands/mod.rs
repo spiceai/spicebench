@@ -95,29 +95,6 @@ pub(crate) async fn build_test_with_validation(
     Ok((query_set, test_builder))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rewrite_queries_with_catalog_namespace() {
-        let queries = vec![test_framework::queries::Query::new(
-            "q1".into(),
-            "SELECT * FROM customer".into(),
-            false,
-        )];
-
-        let rewritten = rewrite_queries_with_catalog_namespace(queries, Some("catalog.schema"))
-            .expect("rewrite should succeed");
-
-        assert_eq!(rewritten.len(), 1);
-        assert_eq!(
-            rewritten[0].sql.as_ref(),
-            "SELECT * FROM catalog.schema.customer"
-        );
-    }
-}
-
 /// Connect to a system adapter based on command-line arguments
 ///
 /// All validation is handled by clap:
@@ -159,4 +136,27 @@ macro_rules! wait_test_and_memory {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rewrite_queries_with_catalog_namespace() {
+        let queries = vec![test_framework::queries::Query::new(
+            "q1".into(),
+            "SELECT * FROM customer".into(),
+            false,
+        )];
+
+        let rewritten = rewrite_queries_with_catalog_namespace(queries, Some("catalog.schema"))
+            .expect("rewrite should succeed");
+
+        assert_eq!(rewritten.len(), 1);
+        assert_eq!(
+            rewritten[0].sql.as_ref(),
+            "SELECT * FROM catalog.schema.customer"
+        );
+    }
 }
