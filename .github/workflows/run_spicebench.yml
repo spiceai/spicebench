@@ -179,18 +179,36 @@ jobs:
               ;;
           esac
 
-      - name: Install ADBC driver
+      - name: Setup Go
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Checkout adbc-databricks Go driver
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
+        uses: actions/checkout@v6
+        with:
+          repository: spiceai/adbc-databricks
+          ref: viktor/improve-databricks-bulk-insert/go
+          path: adbc-databricks-go
+
+      - name: Build databricks Go ADBC driver
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
+        run: |
+          cd adbc-databricks-go
+          go build -tags driverlib -buildmode=c-shared \
+            -o build/libadbc_driver_databricks.so \
+            ./pkg/
+          sudo install -m 755 build/libadbc_driver_databricks.so /usr/local/lib/libdatabricks.so
+          sudo ldconfig
+
+      - name: Install ADBC FlightSQL driver
+        if: ${{ !startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          SYSTEM_UNDER_TEST="${{ github.event.inputs.system_under_test || 'spice_cloud' }}"
-          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
-
-          if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
-            dbc install databricks
-          else
-            dbc install flightsql
-          fi
+          dbc install flightsql
 
       - name: Run spicebench
         env:
