@@ -17,8 +17,8 @@ limitations under the License.
 //! Server implementations for system adapter JSON-RPC protocol.
 
 use crate::{
-    DatasetConfig, JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse, SetupRequest,
-    SetupResponse, TeardownRequest, TeardownResponse, error_codes, methods,
+    DatasetConfig, EtlSinkType, JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse,
+    SetupRequest, SetupResponse, TeardownRequest, TeardownResponse, error_codes, methods,
 };
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -76,6 +76,7 @@ pub trait Handler: Send + Sync {
         run_id: Uuid,
         metadata: HashMap<String, serde_json::Value>,
         datasets: HashMap<String, DatasetConfig>,
+        etl_sink_type: Option<EtlSinkType>,
     ) -> std::result::Result<SetupResponse, String>;
 
     /// Teardown a benchmark run
@@ -235,7 +236,7 @@ impl<H: Handler> Server<H> {
         };
         Self::handler_response(
             self.handler
-                .setup(req.run_id, req.metadata, req.datasets)
+                .setup(req.run_id, req.metadata, req.datasets, req.etl_sink_type)
                 .await,
             id,
         )
@@ -285,6 +286,7 @@ mod tests {
             _run_id: Uuid,
             _metadata: HashMap<String, serde_json::Value>,
             _datasets: HashMap<String, DatasetConfig>,
+            _etl_sink_type: Option<EtlSinkType>,
         ) -> std::result::Result<SetupResponse, String> {
             Ok(SetupResponse {
                 driver: crate::AdbcDriver::Flightsql,

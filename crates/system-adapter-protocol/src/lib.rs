@@ -41,7 +41,9 @@ limitations under the License.
 //!
 //! // Setup a benchmark run
 //! let run_id = Uuid::new_v4();
-//! let setup_response = client.setup(run_id, HashMap::new(), HashMap::new()).await?;
+//! let setup_response = client
+//!     .setup(run_id, HashMap::new(), HashMap::new(), None)
+//!     .await?;
 //!
 //! println!("Driver: {:?}", setup_response.driver);
 //!
@@ -57,7 +59,7 @@ limitations under the License.
 //! # #[cfg(feature = "server")]
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! use system_adapter_protocol::{
-//!     AdbcDriver, DatasetConfig, Handler, Server, SetupResponse, TeardownResponse,
+//!     AdbcDriver, DatasetConfig, EtlSinkType, Handler, Server, SetupResponse, TeardownResponse,
 //! };
 //! use async_trait::async_trait;
 //! use std::collections::HashMap;
@@ -72,8 +74,9 @@ limitations under the License.
 //!         run_id: Uuid,
 //!         metadata: HashMap<String, serde_json::Value>,
 //!         datasets: HashMap<String, DatasetConfig>,
+//!         etl_sink_type: Option<EtlSinkType>,
 //!     ) -> Result<SetupResponse, String> {
-//!         let _ = (metadata, datasets);
+//!         let _ = (metadata, datasets, etl_sink_type);
 //!         Ok(SetupResponse {
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
@@ -122,6 +125,17 @@ pub enum AdbcDriver {
     Postgresql,
 }
 
+/// ETL sink type used by spicebench for this run.
+///
+/// This is provided to adapters in [`SetupRequest`] so they can optionally
+/// adjust setup behavior based on how data is loaded.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EtlSinkType {
+    Hive,
+    Adbc,
+}
+
 impl std::fmt::Display for AdbcDriver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -161,6 +175,9 @@ pub struct SetupRequest {
     pub metadata: HashMap<String, serde_json::Value>,
     /// Map of dataset name to dataset definition
     pub datasets: HashMap<String, DatasetConfig>,
+    /// Optional ETL sink type selected by spicebench.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub etl_sink_type: Option<EtlSinkType>,
 }
 
 /// Response from setup request containing ADBC connection information

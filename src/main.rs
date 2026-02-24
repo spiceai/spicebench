@@ -127,6 +127,10 @@ async fn run_benchmark(
     let data_source: Arc<dyn DataStorage> = source.clone();
 
     let mut setup_response_for_run: Option<system_adapter_protocol::SetupResponse> = None;
+    let etl_sink_type = match common.etl_sink {
+        EtlSink::Hive => system_adapter_protocol::EtlSinkType::Hive,
+        EtlSink::Adbc => system_adapter_protocol::EtlSinkType::Adbc,
+    };
 
     let (target, target_config, target_kind, adbc_sink): (
         Arc<dyn Sink>,
@@ -177,6 +181,7 @@ async fn run_benchmark(
                     run_id,
                     setup_metadata.clone(),
                     setup_pipeline.create_tables_request_datasets(),
+                    Some(etl_sink_type),
                 )
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
@@ -245,6 +250,7 @@ async fn run_benchmark(
                 run_id,
                 setup_metadata,
                 pipeline.create_tables_request_datasets(),
+                Some(etl_sink_type),
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?
