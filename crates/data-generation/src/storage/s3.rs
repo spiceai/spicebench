@@ -234,7 +234,7 @@ impl DataStorage for S3Storage {
 
         // Serialize RecordBatch to Parquet bytes in memory
         let props = WriterProperties::builder()
-            .set_compression(Compression::SNAPPY)
+            .set_compression(Compression::LZ4)
             .build();
 
         let mut buf = Vec::new();
