@@ -290,6 +290,7 @@ pub(crate) async fn run(
     etl_pipeline: &mut ETLPipeline,
     checkpoint_steps: Option<usize>,
     checkpoint_dir: Option<&Path>,
+    query_catalog_namespace: Option<String>,
 ) -> anyhow::Result<()> {
     let metric_attributes = run_metric_attributes(common_args);
 
@@ -378,8 +379,12 @@ pub(crate) async fn run(
     let has_checkpoint_validation =
         common_args.validate_results && checkpoint_steps.is_some() && checkpoint_dir.is_some();
 
-    let (query_set, test_builder) =
-        super::build_test_with_validation(scenario, test_builder).await?;
+    let (query_set, test_builder) = super::build_test_with_validation(
+        scenario,
+        test_builder,
+        query_catalog_namespace.as_deref(),
+    )
+    .await?;
 
     // Build ordered query names for mapping checkpoint query_idx → query name.
     let queries = query_set.get_queries(None, None, None).await?;

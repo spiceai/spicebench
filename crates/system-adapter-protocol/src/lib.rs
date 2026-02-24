@@ -77,6 +77,7 @@ limitations under the License.
 //!         Ok(SetupResponse {
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
+//!             catalog_namespace: None,
 //!         })
 //!     }
 //!
@@ -169,6 +170,10 @@ pub struct SetupResponse {
     pub driver: AdbcDriver,
     /// Driver-specific connection parameters
     pub db_kwargs: HashMap<String, serde_json::Value>,
+    /// Optional catalog/namespace path where benchmark tables were created
+    /// (e.g. "catalog.schema").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_namespace: Option<String>,
 }
 /// Request to teardown a benchmark run
 ///

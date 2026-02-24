@@ -225,6 +225,10 @@ impl Query {
     /// becomes:
     ///   `SELECT * FROM arrow.customer WHERE c_custkey = 1`
     ///
+    /// Multi-part namespaces are also supported. For example, if `reference_schema`
+    /// is `catalog.schema`, the query becomes:
+    ///   `SELECT * FROM catalog.schema.customer WHERE c_custkey = 1`
+    ///
     /// Uses `DataFusion`'s SQL parser to parse the query, rewrite all table references,
     /// and unparse back to SQL. This works with any valid SQL query.
     ///
@@ -236,6 +240,12 @@ impl Query {
         use sqlparser::ast::{Ident, ObjectNamePart, visit_relations_mut};
         use sqlparser::parser::Parser;
         use std::ops::ControlFlow;
+
+        let namespace_parts: Vec<ObjectNamePart> = reference_schema
+            .split('.')
+            .filter(|part| !part.is_empty())
+            .map(|part| ObjectNamePart::Identifier(Ident::new(part)))
+            .collect();
 
         // Parse the SQL query using sqlparser
         let dialect = sqlparser::dialect::PostgreSqlDialect {};
@@ -262,10 +272,9 @@ impl Query {
         let _ = visit_relations_mut(statement, |table_name| {
             // Only rewrite if the table doesn't already have a schema prefix (single-part name)
             if table_name.0.len() == 1 {
-                // Prepend the reference schema to the table name
-                table_name
-                    .0
-                    .insert(0, ObjectNamePart::Identifier(Ident::new(reference_schema)));
+                for namespace_part in namespace_parts.iter().rev() {
+                    table_name.0.insert(0, namespace_part.clone());
+                }
             }
             ControlFlow::<()>::Continue(())
         });
@@ -990,6 +999,23 @@ mod tests {
             rewritten.sql.as_ref(),
             "SELECT * FROM ref_schema.customer AS c JOIN ref_schema.orders AS o ON c.c_custkey = o.o_custkey"
         );
+    }
+
+    #[test]
+    fn test_rewrite_with_multi_part_namespace() {
+        let query = Query::new(
+            "test_multi_part".into(),
+            "SELECT * FROM customer JOIN orders ON customer.c_custkey = orders.o_custkey".into(),
+            false,
+        );
+
+        let rewritten = query
+            .rewrite_with_reference_schema("main.catalog")
+            .expect("Failed to rewrite query with multi-part namespace");
+
+        let sql = rewritten.sql.as_ref();
+        assert!(sql.contains("main.catalog.customer"));
+        assert!(sql.contains("main.catalog.orders"));
     }
 
     #[test]

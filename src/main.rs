@@ -251,6 +251,7 @@ async fn run_benchmark(
     };
 
     let driver_name = setup_response.driver.to_string();
+    let query_catalog_namespace = setup_response.catalog_namespace.clone();
     let db_kwargs = setup_response.db_kwargs;
 
     let load_conn = match AdbcConnection::create(&driver_name, db_kwargs) {
@@ -273,6 +274,7 @@ async fn run_benchmark(
         &mut pipeline,
         checkpoint_steps,
         Some(checkpoint_dir.path()),
+        query_catalog_namespace,
     )
     .await?;
 

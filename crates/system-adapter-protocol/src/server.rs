@@ -289,6 +289,7 @@ mod tests {
             Ok(SetupResponse {
                 driver: crate::AdbcDriver::Flightsql,
                 db_kwargs: HashMap::new(),
+                catalog_namespace: None,
             })
         }
 

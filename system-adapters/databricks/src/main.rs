@@ -1838,6 +1838,7 @@ impl Handler for DatabricksAdapter {
                 Ok(SetupResponse {
                     driver: AdbcDriver::Postgresql,
                     db_kwargs: HashMap::from([("uri".to_string(), Value::String(pg_uri))]),
+                    catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
                 })
             }
             _ => Ok(SetupResponse {
@@ -1846,6 +1847,7 @@ impl Handler for DatabricksAdapter {
                     "uri".to_string(),
                     Value::String(self.databricks_uri()),
                 )]),
+                catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
             }),
         }
     }

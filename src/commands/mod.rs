@@ -50,6 +50,22 @@ pub(crate) fn create_telemetry_with_resource(common: &CommonArgs, resource: Reso
     Telemetry::new_with_resource(&resource, "SPICEAI_BENCHMARK_METRICS_KEY")
 }
 
+fn rewrite_queries_with_catalog_namespace(
+    queries: Vec<test_framework::queries::Query>,
+    query_catalog_namespace: Option<&str>,
+) -> anyhow::Result<Vec<test_framework::queries::Query>> {
+    if let Some(catalog_namespace) = query_catalog_namespace
+        && !catalog_namespace.trim().is_empty()
+    {
+        return queries
+            .into_iter()
+            .map(|query| query.rewrite_with_reference_schema(catalog_namespace))
+            .collect::<anyhow::Result<Vec<_>>>();
+    }
+
+    Ok(queries)
+}
+
 /// Build a test configuration with validation data if applicable
 ///
 /// This is a common helper for bench, throughput, and load tests that:
@@ -64,15 +80,42 @@ pub(crate) fn create_telemetry_with_resource(common: &CommonArgs, resource: Reso
 pub(crate) async fn build_test_with_validation(
     scenario: &Scenario,
     test_builder: NotStarted,
+    query_catalog_namespace: Option<&str>,
 ) -> anyhow::Result<(QuerySet, NotStarted)> {
     let query_set = scenario.load_query_set()?;
-    let queries = query_set.get_queries(None, None, None).await?;
+    let queries = rewrite_queries_with_catalog_namespace(
+        query_set.get_queries(None, None, None).await?,
+        query_catalog_namespace,
+    )?;
 
     let test_builder = test_builder
         .with_query_set(queries)
         .with_query_set_type(query_set.clone());
 
     Ok((query_set, test_builder))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rewrite_queries_with_catalog_namespace() {
+        let queries = vec![test_framework::queries::Query::new(
+            "q1".into(),
+            "SELECT * FROM customer".into(),
+            false,
+        )];
+
+        let rewritten = rewrite_queries_with_catalog_namespace(queries, Some("catalog.schema"))
+            .expect("rewrite should succeed");
+
+        assert_eq!(rewritten.len(), 1);
+        assert_eq!(
+            rewritten[0].sql.as_ref(),
+            "SELECT * FROM catalog.schema.customer"
+        );
+    }
 }
 
 /// Connect to a system adapter based on command-line arguments
