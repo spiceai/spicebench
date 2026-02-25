@@ -19,8 +19,6 @@ pub mod spiceai;
 
 pub use adbc_core::options::IngestMode;
 
-use std::collections::HashMap;
-use std::sync::Arc;
 use adbc_core::options::{self, AdbcVersion, OptionDatabase, OptionValue};
 use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Optionable, Statement};
 use adbc_driver_manager::ManagedDriver;
@@ -29,6 +27,8 @@ use arrow::datatypes::{DataType, Schema};
 use arrow_array::RecordBatch;
 use arrow_schema::Field;
 use snafu::prelude::*;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -224,7 +224,11 @@ fn downcast_utf8view(batch: &RecordBatch) -> RecordBatch {
     for (i, field) in schema.fields().iter().enumerate() {
         match field.data_type() {
             DataType::Utf8View => {
-                fields.push(Arc::new(Field::new(field.name(), DataType::Utf8, field.is_nullable())));
+                fields.push(Arc::new(Field::new(
+                    field.name(),
+                    DataType::Utf8,
+                    field.is_nullable(),
+                )));
                 columns.push(cast(batch.column(i), &DataType::Utf8).unwrap());
             }
             _ => {

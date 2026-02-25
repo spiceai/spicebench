@@ -30,7 +30,7 @@ use etl::sink::s3_hive::S3HiveSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tokio::sync::Mutex;
-use tracing::{trace, Level};
+use tracing::{Level, trace};
 use tracing_subscriber::EnvFilter;
 mod args;
 mod commands;
@@ -141,8 +141,8 @@ async fn run_benchmark(
                 endpoint: common.etl_endpoint.clone(),
                 partition_columns: common.etl_partition_by.clone(),
             })
-        },
-        EtlSink::Adbc => None
+        }
+        EtlSink::Adbc => None,
     };
 
     let datasets = ETLPipeline::create_tables_request_datasets(
@@ -180,14 +180,10 @@ async fn run_benchmark(
             } else {
                 Err(anyhow::anyhow!("Target config is missing for Hive sink"))
             }?
-
         }
         EtlSink::Adbc => {
             let adbc_sink = Arc::new(AdbcSink::new(&driver_name, db_kwargs.clone(), None)?);
-            (
-                adbc_sink.clone() as Arc<dyn Sink>,
-                None,
-            )
+            (adbc_sink.clone() as Arc<dyn Sink>, None)
         }
     };
 

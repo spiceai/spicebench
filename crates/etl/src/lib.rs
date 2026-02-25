@@ -757,7 +757,7 @@ impl ETLPipeline {
         config: &GenerationDatasetConfig,
         data_storage: Arc<dyn DataStorage>,
         mutations: &MutationConfig,
-        target_config: Option<TargetConfig>
+        target_config: Option<TargetConfig>,
     ) -> anyhow::Result<HashMap<String, ProtocolDatasetConfig>> {
         let dataset = dataset_source.create(config, mutations, Arc::clone(&data_storage))?;
 
@@ -1057,7 +1057,11 @@ impl ETLPipeline {
 
         for name in tables.keys() {
             let ids = dataset.clone().batch_ids(name).await;
-            let initialized_id = if skip_first { ids.front().copied() } else { None };
+            let initialized_id = if skip_first {
+                ids.front().copied()
+            } else {
+                None
+            };
             let mut seen_ids = HashSet::new();
 
             for id in ids {

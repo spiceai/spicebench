@@ -1561,6 +1561,42 @@ print("OK")
         }
     }
 
+    async fn delete_lakebase_pg_tables(
+        &self,
+        table_names: &[String],
+        lakebase_config: &LakebaseConfig,
+    ) -> Result<()> {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| anyhow!("Failed to configure TLS: {e}"))?
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+
+        let pg_uri = self.lakebase_pg_uri()?;
+        let (client, connection) = tokio_postgres::connect(&pg_uri, tls)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to Lakebase PG: {e}"))?;
+        tokio::spawn(connection);
+
+        for table_name in table_names {
+            let sql = format!(
+                "DROP TABLE IF EXISTS \"{}\".\"{}\"",
+                lakebase_config.schema, table_name,
+            );
+            client.execute(&sql, &[]).await.map_err(|e| {
+                anyhow!("Failed to drop Lakebase PG table '{table_name}': {e}")
+            })?;
+            eprintln!("[databricks-adapter] dropped Lakebase PG table '{table_name}'");
+        }
+
+        Ok(())
+    }
+
     async fn delete_synced_table(&self, table_name: &str) -> Result<()> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
@@ -1840,8 +1876,8 @@ impl Handler for DatabricksAdapter {
             DatabricksVariant::Databricks => {
             }
             DatabricksVariant::Lakebase => {
-                eprintln!("[databricks-adapter] Waiting 1 minute for schema to initialize");
-                std::thread::sleep(Duration::from_secs(60));
+                eprintln!("[databricks-adapter] Waiting 2 minutes for schema to initialize");
+                std::thread::sleep(Duration::from_secs(120));
 
                 let lakebase_config = match &self.config.compute_target {
                     ComputeTarget::Lakebase(cfg) => cfg,
@@ -1918,7 +1954,6 @@ impl Handler for DatabricksAdapter {
                         "databricks.staging.volume_path".to_string(),
                         Value::String(lakebase_config.staging_volume_path.clone()),
                     )]),
-                    // catalog_namespace: Some(format!("{}.{}", self.config.catalog, lakebase_config.schema)),
                     catalog_namespace: None,
                     read_driver: Some((AdbcDriver::Postgresql, HashMap::from([("uri".to_string(), Value::String(pg_uri))])))
                 })
@@ -2021,6 +2056,16 @@ impl Handler for DatabricksAdapter {
                         format!("Failed to drop managed table '{table_name}': {e}")
                     })?;
                 }
+
+                // Drop tables directly from Lakebase PG.
+                self.delete_lakebase_pg_tables(
+                    &state.created_tables,
+                    lakebase_config,
+                )
+                .await
+                .map_err(|e| {
+                    format!("Failed to delete Lakebase PG tables: {e}")
+                })?;
 
                 eprintln!(
                     "[databricks-adapter] cleaned up {} table(s)",

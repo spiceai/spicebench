@@ -419,6 +419,13 @@ pub(crate) async fn run(
 
     let has_checkpoint_validation =
         common_args.validate_results && checkpoint_steps.is_some() && checkpoint_dir.is_some();
+    println!("has_checkpoint_validation: {}", has_checkpoint_validation);
+    println!(
+        "common_args.validate_results: {}",
+        common_args.validate_results
+    );
+    println!("checkpoint_steps: {:?}", checkpoint_steps);
+    println!("checkpoint_dir: {:?}", checkpoint_dir);
 
     let (query_set, test_builder) = super::build_test_with_validation(
         scenario,
