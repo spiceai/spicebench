@@ -129,7 +129,7 @@ impl AdbcSink {
             .join(", ");
 
         Ok(format!(
-            "CREATE TABLE IF NOT EXISTS {} ({columns})",
+            "CREATE TABLE IF NOT EXISTS spicebench.bench.{} ({columns})",
             self.target_table_identifier(table_name)
         ))
     }
