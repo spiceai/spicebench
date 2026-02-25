@@ -3,7 +3,8 @@
 `etl` reads raw batches from S3, rehydrates records (for example adding a time column), and writes to either:
 
 - S3 as hive-partitioned Parquet (default), or
-- an ADBC target via bulk ingest (when ADBC flags are provided).
+- an ADBC target via bulk ingest, or
+- a null sink that discards writes for throughput benchmarking.
 
 Dataset configuration (dataset type, scale factor, number of steps, mutations) is read automatically from the `version.json` metadata written by the data generation tool.
 
@@ -16,7 +17,7 @@ Dataset configuration (dataset type, scale factor, number of steps, mutations) i
 
 ## S3 Hive sink (default)
 
-If `--adbc-driver` and `--adbc-uri` are omitted, ETL writes to S3 hive-partitioned Parquet.
+Use `--sink s3-hive` (default) to write hive-partitioned Parquet to S3.
 
 - `--target-prefix`: Base S3 key prefix for ETL output (defaults to `--prefix`).
 - `--partition-by`: Comma-separated partition columns (default: `__created_at`).
@@ -35,6 +36,8 @@ cargo run -p etl -- \
 
 ## ADBC sink (optional)
 
+Use `--sink adbc` to write via ADBC bulk ingest.
+
 - `--adbc-driver`: ADBC driver name (for example `databricks` or `flightsql`).
 - `--adbc-uri`: Connection URI passed as ADBC database option `uri`.
 - `--adbc-option key=value`: Additional ADBC database option (repeatable).
@@ -45,6 +48,21 @@ When `--adbc-driver flightsql` is used, ETL defaults
 unless you explicitly provide that option via `--adbc-option`.
 
 When using ADBC output, provide both `--adbc-driver` and `--adbc-uri`.
+
+## Null sink (throughput benchmark)
+
+Use `--sink null` to discard all ETL writes (`/dev/null` style). This is useful for measuring source + ETL pipeline throughput without sink/storage overhead.
+
+### Null sink example
+
+```bash
+cargo run -p etl -- \
+	--scenario tpch \
+	--version 1 \
+	--bucket peasee-indexes \
+	--prefix raw \
+	--sink null
+```
 
 ### Databricks example
 

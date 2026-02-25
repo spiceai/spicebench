@@ -16,12 +16,13 @@ limitations under the License.
 
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use data_generation::config::{TargetConfig, build_version_prefix};
 use data_generation::storage::DataStorage;
 use data_generation::storage::s3::S3Storage;
 use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
+use etl::sink::null::NullSink;
 use etl::sink::s3_hive::S3HiveSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use tracing_subscriber::EnvFilter;
@@ -29,9 +30,20 @@ use tracing_subscriber::EnvFilter;
 const FLIGHTSQL_MAX_MSG_SIZE_OPTION: &str = "adbc.flight.sql.client_option.with_max_msg_size";
 const DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES: &str = "78643200";
 
+#[derive(Clone, Debug, Default, ValueEnum)]
+enum SinkType {
+    #[default]
+    #[value(name = "s3-hive")]
+    S3Hive,
+    #[value(name = "adbc")]
+    Adbc,
+    #[value(name = "null")]
+    Null,
+}
+
 #[derive(Parser)]
 #[command(
-    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to either S3 Hive Parquet or an ADBC target"
+    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to S3 Hive, ADBC, or a null sink"
 )]
 struct Cli {
     /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
@@ -68,6 +80,14 @@ struct Cli {
     /// Example: `--partition-by __created_at,product_type`
     #[arg(long, value_delimiter = ',', default_value = "__created_at")]
     partition_by: Vec<String>,
+
+    /// ETL sink target.
+    ///
+    /// - s3-hive: write hive-partitioned parquet to S3
+    /// - adbc: write via ADBC bulk ingest
+    /// - null: discard all writes (throughput benchmark mode)
+    #[arg(long, value_enum, default_value_t = SinkType::S3Hive)]
+    sink: SinkType,
 
     /// ADBC driver name (for example: "databricks" or "flightsql").
     /// Provide with `--adbc-uri` to write to an ADBC target.
@@ -139,8 +159,8 @@ async fn main() -> anyhow::Result<()> {
     let dataset_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
 
-    if cli.adbc_create_tables && (cli.adbc_driver.is_none() || cli.adbc_uri.is_none()) {
-        anyhow::bail!("--adbc-create-tables requires both --adbc-driver and --adbc-uri");
+    if cli.adbc_create_tables && !matches!(cli.sink, SinkType::Adbc) {
+        anyhow::bail!("--adbc-create-tables requires --sink adbc");
     }
 
     let (target, target_config, target_kind, adbc_sink): (
@@ -148,10 +168,19 @@ async fn main() -> anyhow::Result<()> {
         Option<TargetConfig>,
         String,
         Option<Arc<AdbcSink>>,
-    ) = match (&cli.adbc_driver, &cli.adbc_uri) {
-        (Some(driver), Some(uri)) => {
+    ) = match cli.sink {
+        SinkType::Adbc => {
+            let driver = cli
+                .adbc_driver
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--sink adbc requires --adbc-driver"))?;
+            let uri = cli
+                .adbc_uri
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--sink adbc requires --adbc-uri"))?;
+
             let mut db_kwargs = std::collections::HashMap::new();
-            db_kwargs.insert("uri".to_string(), serde_json::Value::String(uri.clone()));
+            db_kwargs.insert("uri".to_string(), serde_json::Value::String(uri.to_string()));
 
             for option in &cli.adbc_options {
                 let (key, value) = option.split_once('=').ok_or_else(|| {
@@ -191,7 +220,19 @@ async fn main() -> anyhow::Result<()> {
                 Some(adbc_sink),
             )
         }
-        (None, None) => {
+        SinkType::S3Hive => {
+            if cli.adbc_driver.is_some()
+                || cli.adbc_uri.is_some()
+                || !cli.adbc_options.is_empty()
+                || cli.adbc_catalog.is_some()
+                || cli.adbc_schema.is_some()
+                || cli.adbc_create_tables
+            {
+                anyhow::bail!(
+                    "ADBC options are only valid with --sink adbc. Remove ADBC flags or set --sink adbc."
+                );
+            }
+
             let hive_prefix = if cli.target_prefix.is_empty() {
                 format!(
                     "{}/{}/{}",
@@ -223,10 +264,25 @@ async fn main() -> anyhow::Result<()> {
                 None,
             )
         }
-        _ => {
-            anyhow::bail!(
-                "ADBC target requires both --adbc-driver and --adbc-uri. Omit both to use the S3 Hive sink."
-            );
+        SinkType::Null => {
+            if cli.adbc_driver.is_some()
+                || cli.adbc_uri.is_some()
+                || !cli.adbc_options.is_empty()
+                || cli.adbc_catalog.is_some()
+                || cli.adbc_schema.is_some()
+                || cli.adbc_create_tables
+            {
+                anyhow::bail!(
+                    "ADBC options are only valid with --sink adbc. Remove ADBC flags when using --sink null."
+                );
+            }
+
+            (
+                Arc::new(NullSink::new()),
+                None,
+                "null".to_string(),
+                None,
+            )
         }
     };
 
