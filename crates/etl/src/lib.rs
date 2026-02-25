@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,7 +25,7 @@ use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
 use data_generation::dataset::{Dataset, MutationConfig};
 use data_generation::storage::{DataStorage, ReadResult};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -56,7 +55,13 @@ const TARGET_BATCH_ROWS: usize = 8_192 * 4;
 
 /// Maximum number of in-flight sink writes allowed per table task when the
 /// current segment set is insert-only.
-const MAX_IN_FLIGHT_TABLE_WRITES: usize = 4;
+const MAX_IN_FLIGHT_TABLE_WRITES: usize = 2;
+
+/// Maximum number of concurrent source logical-batch reads per ETL table task.
+const MAX_IN_FLIGHT_SOURCE_BATCH_READS: usize = 2;
+
+/// Maximum number of concurrent split-part downloads per logical source batch.
+const MAX_IN_FLIGHT_SOURCE_PART_READS: usize = 2;
 
 /// Returns a new schema with the `__created_at` timestamp column appended.
 fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
@@ -191,14 +196,14 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
 /// source batch IDs for the same table while ensuring consumed IDs are not
 /// replayed in later steps.
 fn reserve_next_batch_id_for_table(
-    steps: &mut BTreeMap<u64, Vec<String>>,
+    work_state: &mut PipelineWorkState,
     table_name: &str,
     after_batch_id: u64,
-) -> Option<u64> {
+) -> Option<(u64, bool)> {
     let mut found: Option<(u64, bool)> = None;
     let start = after_batch_id.saturating_add(1);
 
-    for (candidate_batch_id, tables) in steps.range_mut(start..) {
+    for (candidate_batch_id, tables) in work_state.steps.range_mut(start..) {
         if let Some(pos) = tables.iter().position(|t| t == table_name) {
             tables.remove(pos);
             found = Some((*candidate_batch_id, tables.is_empty()));
@@ -208,9 +213,9 @@ fn reserve_next_batch_id_for_table(
 
     if let Some((batch_id, remove_entry)) = found {
         if remove_entry {
-            steps.remove(&batch_id);
+            work_state.steps.remove(&batch_id);
         }
-        Some(batch_id)
+        Some((batch_id, remove_entry))
     } else {
         None
     }
@@ -235,38 +240,71 @@ async fn read_logical_batch(
 
     part_ids.sort_unstable();
 
+    let table_name_owned = table_name.to_string();
+    let mut join_set: JoinSet<(usize, Result<ReadResult, String>)> = JoinSet::new();
+    let mut scheduled_part_ids: VecDeque<usize> = VecDeque::new();
+    let mut completed_parts: HashMap<usize, ReadResult> = HashMap::new();
+    let mut part_iter = part_ids.into_iter();
+    let max_in_flight = MAX_IN_FLIGHT_SOURCE_PART_READS.max(1);
+
     let mut merged_batches: Vec<RecordBatch> = Vec::new();
     let mut rows_read: u64 = 0;
     let mut bytes_read: u64 = 0;
     let mut key_columns: Option<Vec<String>> = None;
 
-    for part_id in part_ids {
-        let read_result = data_storage
-            .read_batch(table_name, batch_id, Some(part_id))
-            .await
-            .map_err(|e| format!("read {table_name} batch {batch_id} part {part_id}: {e}"))?
-            .ok_or_else(|| {
-                format!(
-                    "Missing object for {table_name} batch {batch_id} part {part_id} listed in metadata"
-                )
-            })?;
+    while !join_set.is_empty() || part_iter.len() > 0 {
+        while join_set.len() < max_in_flight {
+            let Some(part_id) = part_iter.next() else {
+                break;
+            };
 
-        if let Some(existing_keys) = &key_columns {
-            if existing_keys != &read_result.key_columns {
-                warn!(
-                    table = %table_name,
-                    batch_id,
-                    part_id,
-                    "Key columns changed across split parts; using keys from first part"
-                );
-            }
-        } else {
-            key_columns = Some(read_result.key_columns.clone());
+            scheduled_part_ids.push_back(part_id);
+            let data_storage = Arc::clone(data_storage);
+            let table_name = table_name_owned.clone();
+            join_set.spawn(async move {
+                let read_result = match data_storage.read_batch(&table_name, batch_id, Some(part_id)).await {
+                    Ok(Some(result)) => Ok(result),
+                    Ok(None) => Err(format!(
+                        "Missing object for {table_name} batch {batch_id} part {part_id} listed in metadata"
+                    )),
+                    Err(e) => Err(format!("read {table_name} batch {batch_id} part {part_id}: {e}")),
+                };
+                (part_id, read_result)
+            });
         }
 
-        rows_read += read_result.rows_read;
-        bytes_read += read_result.bytes_read;
-        merged_batches.extend(read_result.batches);
+        let Some(joined) = join_set.join_next().await else {
+            break;
+        };
+
+        let (part_id, read_result) = joined
+            .map_err(|e| format!("join error reading {table_name} batch {batch_id} part: {e}"))?;
+        let read_result = read_result?;
+        completed_parts.insert(part_id, read_result);
+
+        while let Some(next_part_id) = scheduled_part_ids.front().copied() {
+            let Some(next_result) = completed_parts.remove(&next_part_id) else {
+                break;
+            };
+            scheduled_part_ids.pop_front();
+
+            if let Some(existing_keys) = &key_columns {
+                if existing_keys != &next_result.key_columns {
+                    warn!(
+                        table = %table_name,
+                        batch_id,
+                        part_id = next_part_id,
+                        "Key columns changed across split parts; using keys from first part"
+                    );
+                }
+            } else {
+                key_columns = Some(next_result.key_columns.clone());
+            }
+
+            rows_read += next_result.rows_read;
+            bytes_read += next_result.bytes_read;
+            merged_batches.extend(next_result.batches);
+        }
     }
 
     Ok(Some(ReadResult {
@@ -289,64 +327,164 @@ async fn read_logical_batch(
 async fn read_batches_until_min_rows(
     data_storage: &Arc<dyn DataStorage>,
     work_state: &Arc<StdMutex<PipelineWorkState>>,
+    logical_steps_consumed: &StdArc<AtomicU64>,
     table_name: &str,
     start_batch_id: u64,
 ) -> Result<(Vec<RecordBatch>, Vec<String>, bool, u64, u64), String> {
     let mut all_batches: Vec<RecordBatch> = Vec::new();
     let mut total_rows: usize = 0;
     let mut key_columns: Option<Vec<String>> = None;
-    let mut current_batch_id = start_batch_id;
+    let mut reserve_cursor = start_batch_id;
     let mut table_finished = false;
     let mut read_any = false;
     let mut consumed_work_units: u64 = 1;
     let mut rows_read: u64 = 0;
 
-    loop {
-        let read_result = read_logical_batch(data_storage, table_name, current_batch_id).await?;
+    let table_name_owned = table_name.to_string();
+    let mut can_reserve_more = true;
+    let mut join_set: JoinSet<(u64, Result<Option<ReadResult>, String>)> = JoinSet::new();
+    let mut scheduled_batch_ids: VecDeque<u64> = VecDeque::new();
+    let mut completed_batches: HashMap<u64, Option<ReadResult>> = HashMap::new();
+    let mut reserved_removed_step: HashMap<u64, bool> = HashMap::new();
 
-        match read_result {
-            Some(result) => {
-                if let Some(existing_keys) = &key_columns {
-                    if existing_keys != &result.key_columns {
-                        warn!(
-                            table = %table_name,
-                            batch_id = current_batch_id,
-                            "Key columns changed across source batches while coalescing; using keys from first read"
-                        );
-                    }
-                } else {
-                    key_columns = Some(result.key_columns.clone());
-                }
-
-                total_rows += result.num_rows();
-                rows_read += result.num_rows() as u64;
-                all_batches.extend(result.batches);
-                read_any = true;
-
-                if total_rows >= TARGET_BATCH_ROWS {
-                    break;
-                }
+    let restore_unconsumed_reservations =
+        |scheduled_batch_ids: &VecDeque<u64>,
+         reserved_removed_step: &HashMap<u64, bool>,
+         consumed_work_units: &mut u64| {
+            if scheduled_batch_ids.is_empty() {
+                return;
             }
-            None => {
-                if !read_any {
-                    return Ok((Vec::new(), Vec::new(), true, consumed_work_units, rows_read));
+
+            let mut restored_removed_steps = 0u64;
+            let mut state = work_state.lock().expect("work_state lock poisoned");
+            for &batch_id in scheduled_batch_ids {
+                let tables = state.steps.entry(batch_id).or_default();
+                if !tables.iter().any(|t| t == table_name) {
+                    tables.push(table_name.to_string());
                 }
 
-                table_finished = true;
+                if reserved_removed_step
+                    .get(&batch_id)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    restored_removed_steps += 1;
+                }
+
+                *consumed_work_units = consumed_work_units.saturating_sub(1);
+            }
+
+            if restored_removed_steps > 0 {
+                logical_steps_consumed.fetch_sub(restored_removed_steps, Ordering::Relaxed);
+            }
+        };
+
+    scheduled_batch_ids.push_back(start_batch_id);
+    reserved_removed_step.insert(start_batch_id, false);
+    {
+        let data_storage = Arc::clone(data_storage);
+        let table_name = table_name_owned.clone();
+        join_set.spawn(async move {
+            let result = read_logical_batch(&data_storage, &table_name, start_batch_id).await;
+            (start_batch_id, result)
+        });
+    }
+
+    'read_loop: while !join_set.is_empty() || !completed_batches.is_empty() {
+        while can_reserve_more
+            && join_set.len() < MAX_IN_FLIGHT_SOURCE_BATCH_READS.max(1)
+            && total_rows < TARGET_BATCH_ROWS
+            && !table_finished
+        {
+            let reservation = {
+                let mut state = work_state.lock().expect("work_state lock poisoned");
+                reserve_next_batch_id_for_table(&mut state, table_name, reserve_cursor)
+            };
+
+            let Some((next_batch_id, removed_step_entry)) = reservation else {
+                can_reserve_more = false;
                 break;
+            };
+
+            if removed_step_entry {
+                logical_steps_consumed.fetch_add(1, Ordering::Relaxed);
             }
+
+            reserve_cursor = next_batch_id;
+            consumed_work_units += 1;
+            scheduled_batch_ids.push_back(next_batch_id);
+            reserved_removed_step.insert(next_batch_id, removed_step_entry);
+
+            let data_storage = Arc::clone(data_storage);
+            let table_name = table_name_owned.clone();
+            join_set.spawn(async move {
+                let result = read_logical_batch(&data_storage, &table_name, next_batch_id).await;
+                (next_batch_id, result)
+            });
         }
 
-        let next_batch_id = {
-            let mut state = work_state.lock().expect("work_state lock poisoned");
-            reserve_next_batch_id_for_table(&mut state.steps, table_name, current_batch_id)
-        };
-
-        let Some(next_batch_id) = next_batch_id else {
+        let Some(joined) = join_set.join_next().await else {
             break;
         };
-        consumed_work_units += 1;
-        current_batch_id = next_batch_id;
+
+        let (batch_id, read_result) =
+            joined.map_err(|e| format!("join error reading {table_name} batch: {e}"))?;
+        let read_result = read_result?;
+        completed_batches.insert(batch_id, read_result);
+
+        while let Some(next_batch_id) = scheduled_batch_ids.front().copied() {
+            let Some(next_read_result) = completed_batches.remove(&next_batch_id) else {
+                break;
+            };
+            scheduled_batch_ids.pop_front();
+            reserved_removed_step.remove(&next_batch_id);
+
+            match next_read_result {
+                Some(result) => {
+                    if let Some(existing_keys) = &key_columns {
+                        if existing_keys != &result.key_columns {
+                            warn!(
+                                table = %table_name,
+                                batch_id = next_batch_id,
+                                "Key columns changed across source batches while coalescing; using keys from first read"
+                            );
+                        }
+                    } else {
+                        key_columns = Some(result.key_columns.clone());
+                    }
+
+                    total_rows += result.num_rows();
+                    rows_read += result.num_rows() as u64;
+                    all_batches.extend(result.batches);
+                    read_any = true;
+
+                    if total_rows >= TARGET_BATCH_ROWS {
+                        join_set.abort_all();
+                        restore_unconsumed_reservations(
+                            &scheduled_batch_ids,
+                            &reserved_removed_step,
+                            &mut consumed_work_units,
+                        );
+                        break 'read_loop;
+                    }
+                }
+                None => {
+                    if !read_any {
+                        join_set.abort_all();
+                        restore_unconsumed_reservations(
+                            &scheduled_batch_ids,
+                            &reserved_removed_step,
+                            &mut consumed_work_units,
+                        );
+                        return Ok((Vec::new(), Vec::new(), true, consumed_work_units, rows_read));
+                    }
+
+                    table_finished = true;
+                    join_set.abort_all();
+                    break 'read_loop;
+                }
+            }
+        }
     }
 
     Ok((
@@ -1041,13 +1179,15 @@ impl ETLPipeline {
         Ok(())
     }
 
-    /// Starts the ETL pipeline and processes at most `step_count` steps (batch
-    /// ID groups) before transitioning to [`PipelineState::Paused`].
+    /// Starts the ETL pipeline and processes at most `step_count` logical
+    /// steps before transitioning to [`PipelineState::Paused`].
     ///
-    /// Each step processes all active tables for a single batch ID
-    /// concurrently. After `step_count` steps the pipeline pauses and can be
-    /// resumed by calling [`continue_pipeline`](ETLPipeline::continue_pipeline),
-    /// which will process another `step_count` steps.
+    /// A logical step corresponds to a batch ID group from the work plan,
+    /// including groups that may be consumed via coalesced prefetch from
+    /// subsequent IDs. After `step_count` logical steps the pipeline pauses and
+    /// can be resumed by calling
+    /// [`continue_pipeline`](ETLPipeline::continue_pipeline), which will process
+    /// another `step_count` logical steps.
     ///
     /// If there are fewer remaining steps than `step_count`, all remaining
     /// steps are processed and the pipeline transitions directly to
@@ -1189,10 +1329,10 @@ impl ETLPipeline {
 
 /// Core loop executed inside the spawned task.
 ///
-/// Processes steps from the shared work state, removing each step as it is
-/// consumed. If `step_limit` is `Some(n)`, at most `n` steps are processed
-/// before the function returns [`PipelineState::Paused`]. Unconsumed steps
-/// remain in the shared work state for a subsequent call.
+/// Processes logical steps from the shared work state, removing each step as
+/// it is consumed. If `step_limit` is `Some(n)`, at most `n` logical steps are
+/// consumed before the function returns [`PipelineState::Paused`]. Unconsumed
+/// steps remain in the shared work state for a subsequent call.
 async fn run_pipeline(
     data_storage: Arc<dyn DataStorage>,
     data_sink: Arc<dyn Sink>,
@@ -1221,7 +1361,7 @@ async fn run_pipeline(
     );
 
     // Shared progress counters for periodic logging.
-    let steps_completed = StdArc::new(AtomicU64::new(0));
+    let logical_steps_consumed = StdArc::new(AtomicU64::new(0));
     let batches_processed = StdArc::new(AtomicU64::new(0));
     let rows_processed = StdArc::new(AtomicU64::new(0));
     let tables_finished_counter = StdArc::new(AtomicU64::new(0));
@@ -1229,7 +1369,7 @@ async fn run_pipeline(
 
     // Spawn periodic progress logger (every 5 seconds).
     let progress_logger = {
-        let steps_completed = StdArc::clone(&steps_completed);
+        let logical_steps_consumed = StdArc::clone(&logical_steps_consumed);
         let batches_processed = StdArc::clone(&batches_processed);
         let rows_processed = StdArc::clone(&rows_processed);
         let tables_finished_counter = StdArc::clone(&tables_finished_counter);
@@ -1244,7 +1384,7 @@ async fn run_pipeline(
                         if secs < 0.001 {
                             continue;
                         }
-                        let steps_done = steps_completed.load(Ordering::Relaxed);
+                        let steps_done = logical_steps_consumed.load(Ordering::Relaxed);
                         let batches_done = batches_processed.load(Ordering::Relaxed);
                         let rows_done = rows_processed.load(Ordering::Relaxed);
                         let tables_done = tables_finished_counter.load(Ordering::Relaxed);
@@ -1265,14 +1405,17 @@ async fn run_pipeline(
         })
     };
 
-    let mut steps_processed: usize = 0;
+    let mut outer_steps_processed: usize = 0;
 
     loop {
         // Check step budget.
         if let Some(limit) = step_limit
-            && steps_processed >= limit
+            && logical_steps_consumed.load(Ordering::Relaxed) >= limit as u64
         {
-            info!(steps_processed, "Step limit reached, pausing pipeline");
+            info!(
+                steps_processed = logical_steps_consumed.load(Ordering::Relaxed),
+                "Step limit reached, pausing pipeline"
+            );
             progress_logger.abort();
             // Flush buffered partition data before pausing so downstream
             // consumers see all data written during this run segment.
@@ -1285,7 +1428,10 @@ async fn run_pipeline(
         }
 
         if cancel.is_cancelled() {
-            warn!("ETL pipeline cancelled after {steps_processed} steps");
+            warn!(
+                steps_processed = logical_steps_consumed.load(Ordering::Relaxed),
+                "ETL pipeline cancelled"
+            );
             progress_logger.abort();
             return PipelineState::Stopped(StopReason::Cancelled);
         }
@@ -1335,6 +1481,7 @@ async fn run_pipeline(
             let data_storage = Arc::clone(&data_storage);
             let data_sink = Arc::clone(&data_sink);
             let work_state = Arc::clone(&work_state);
+            let logical_steps_consumed = StdArc::clone(&logical_steps_consumed);
             let last_created_at = Arc::clone(&last_created_at_us);
             let partition_columns = table_partition_columns
                 .get(&table_name)
@@ -1348,6 +1495,7 @@ async fn run_pipeline(
                     match read_batches_until_min_rows(
                         &data_storage,
                         &work_state,
+                        &logical_steps_consumed,
                         &table_name,
                         batch_id,
                     )
@@ -1466,12 +1614,17 @@ async fn run_pipeline(
             }
         }
 
-        steps_processed += 1;
-        steps_completed.fetch_add(1, Ordering::Relaxed);
+        outer_steps_processed += 1;
+        logical_steps_consumed.fetch_add(1, Ordering::Relaxed);
         batches_processed.fetch_add(step_batch_count, Ordering::Relaxed);
         rows_processed.fetch_add(step_rows_count, Ordering::Relaxed);
 
-        debug!(batch_id, steps_processed, "Step completed");
+        debug!(
+            batch_id,
+            outer_steps_processed,
+            steps_processed = logical_steps_consumed.load(Ordering::Relaxed),
+            "Step completed"
+        );
     }
 
     progress_logger.abort();
@@ -1483,9 +1636,21 @@ async fn run_pipeline(
         )));
     }
 
+    let elapsed = pipeline_start.elapsed();
+    let elapsed_secs = elapsed.as_secs_f64();
+    let total_rows_processed = rows_processed.load(Ordering::Relaxed);
+    let avg_rows_per_sec = if elapsed_secs > 0.0 {
+        total_rows_processed as f64 / elapsed_secs
+    } else {
+        0.0
+    };
+
     info!(
-        elapsed = ?pipeline_start.elapsed(),
-        steps_processed,
+        elapsed = ?elapsed,
+        steps_processed = logical_steps_consumed.load(Ordering::Relaxed),
+        outer_steps_processed,
+        rows_processed_total = total_rows_processed,
+        avg_rows_per_sec = format!("{avg_rows_per_sec:.1}"),
         "ETL pipeline completed successfully"
     );
     PipelineState::Stopped(StopReason::Completed)

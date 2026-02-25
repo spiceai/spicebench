@@ -36,6 +36,7 @@ use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
 use std::env;
 use std::time::{Duration, Instant};
+use tokio::sync::{OnceCell, RwLock};
 
 use super::{ReadResult, WriteResult};
 
@@ -87,6 +88,8 @@ pub struct S3Storage {
     /// `{prefix}/{scenario}/{version}`
     pub(crate) prefix: String,
     pub(crate) region: Option<String>,
+    key_columns_cache: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    version_metadata_cache: Arc<OnceCell<Option<VersionMetadata>>>,
 }
 
 impl S3Storage {
@@ -157,6 +160,8 @@ impl S3Storage {
             bucket: config.bucket.clone(),
             prefix: config.prefix.clone(),
             region: config.region.clone(),
+            key_columns_cache: Arc::new(RwLock::new(HashMap::new())),
+            version_metadata_cache: Arc::new(OnceCell::new()),
         })
     }
 
@@ -222,6 +227,42 @@ impl S3Storage {
                 self.prefix
             ))
         }
+    }
+
+    async fn cached_key_columns(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
+        if let Some(cached) = self.key_columns_cache.read().await.get(table_name).cloned() {
+            return Ok(cached);
+        }
+
+        let key_columns = self.read_key_columns(table_name).await?;
+
+        let mut cache = self.key_columns_cache.write().await;
+        let cached = cache
+            .entry(table_name.to_string())
+            .or_insert_with(|| key_columns.clone())
+            .clone();
+
+        Ok(cached)
+    }
+
+    async fn cached_version_metadata(&self) -> anyhow::Result<Option<&VersionMetadata>> {
+        let cached = self
+            .version_metadata_cache
+            .get_or_try_init(|| async {
+                let path = self.version_metadata_object_path();
+                let get_result = match self.store.get(&path).await {
+                    Ok(r) => r,
+                    Err(object_store::Error::NotFound { .. }) => return Ok(None),
+                    Err(e) => return Err(anyhow::anyhow!(e)),
+                };
+
+                let bytes = get_result.bytes().await?;
+                let metadata: VersionMetadata = serde_json::from_slice(&bytes)?;
+                Ok(Some(metadata))
+            })
+            .await?;
+
+        Ok(cached.as_ref())
     }
 }
 
@@ -367,20 +408,52 @@ impl DataStorage for S3Storage {
         let path = self.version_metadata_object_path();
         let bytes = serde_json::to_vec_pretty(metadata)?;
         self.store.put(&path, PutPayload::from(bytes)).await?;
+        let _ = self.version_metadata_cache.set(Some(metadata.clone()));
         Ok(())
     }
 
     async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
-        let path = self.version_metadata_object_path();
-        let get_result = match self.store.get(&path).await {
-            Ok(r) => r,
-            Err(object_store::Error::NotFound { .. }) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
+        Ok(self.cached_version_metadata().await?.cloned())
+    }
 
-        let bytes = get_result.bytes().await?;
-        let metadata: VersionMetadata = serde_json::from_slice(&bytes)?;
-        Ok(Some(metadata))
+    async fn read_key_columns(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
+        if let Some(metadata) = self.cached_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+        {
+            return Ok(table_meta.key_columns.clone());
+        }
+        Ok(Vec::new())
+    }
+
+    async fn read_batch_ids(
+        &self,
+        table_name: &str,
+    ) -> anyhow::Result<std::collections::VecDeque<u64>> {
+        if let Some(metadata) = self.cached_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+        {
+            let mut ids = table_meta.batch_ids.clone();
+            ids.sort_unstable();
+            return Ok(std::collections::VecDeque::from(ids));
+        }
+        Ok(std::collections::VecDeque::new())
+    }
+
+    async fn read_batch_parts(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+    ) -> anyhow::Result<Vec<usize>> {
+        if let Some(metadata) = self.cached_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+            && let Some(part_ids) = table_meta.batch_parts.get(&batch_id)
+        {
+            let mut sorted = part_ids.clone();
+            sorted.sort_unstable();
+            return Ok(sorted);
+        }
+
+        Ok(Vec::new())
     }
 
     async fn list_batches(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
@@ -426,7 +499,7 @@ impl DataStorage for S3Storage {
             batches.push(batch);
         }
 
-        let key_columns = self.read_key_columns(table_name).await?;
+        let key_columns = self.cached_key_columns(table_name).await?;
 
         Ok(Some(ReadResult {
             batches,
