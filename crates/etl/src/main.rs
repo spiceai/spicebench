@@ -79,6 +79,10 @@ struct Cli {
     #[arg(long)]
     adbc_uri: Option<String>,
 
+    /// Optional target database catalog for ADBC bulk ingest inserts
+    #[arg(long)]
+    adbc_catalog: Option<String>,
+
     /// Optional target database schema for bulk ingest
     #[arg(long)]
     adbc_schema: Option<String>,
@@ -173,7 +177,12 @@ async fn main() -> anyhow::Result<()> {
                     });
             }
 
-            let adbc_sink = Arc::new(AdbcSink::new(driver, db_kwargs, cli.adbc_schema.clone())?);
+            let adbc_sink = Arc::new(AdbcSink::new(
+                driver,
+                db_kwargs,
+                cli.adbc_catalog.clone(),
+                cli.adbc_schema.clone(),
+            )?);
 
             (
                 adbc_sink.clone() as Arc<dyn Sink>,
@@ -242,6 +251,7 @@ async fn main() -> anyhow::Result<()> {
         prefix = %cli.prefix,
         target = %target_kind,
         adbc_driver = ?cli.adbc_driver,
+        adbc_catalog = ?cli.adbc_catalog,
         adbc_schema = ?cli.adbc_schema,
         adbc_create_tables = cli.adbc_create_tables,
         target_prefix = %cli.target_prefix,

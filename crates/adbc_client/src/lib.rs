@@ -145,12 +145,14 @@ impl AdbcConnection {
     pub fn bulk_ingest(
         &mut self,
         target_table: &str,
+        target_db_catalog: Option<&str>,
         target_db_schema: Option<&str>,
         mode: options::IngestMode,
         batch: RecordBatch,
     ) -> Result<Option<i64>> {
         self.bulk_ingest_stream(
             target_table,
+            target_db_catalog,
             target_db_schema,
             mode,
             Box::new(arrow_array::RecordBatchIterator::new(
@@ -168,6 +170,7 @@ impl AdbcConnection {
     pub fn bulk_ingest_stream(
         &mut self,
         target_table: &str,
+        target_db_catalog: Option<&str>,
         target_db_schema: Option<&str>,
         mode: options::IngestMode,
         reader: Box<dyn arrow_array::RecordBatchReader + Send>,
@@ -183,6 +186,16 @@ impl AdbcConnection {
         .map_err(|e| Error::ExecuteQuery {
             reason: format!("Failed to set target table: {e}"),
         })?;
+
+        if let Some(catalog) = target_db_catalog {
+            stmt.set_option(
+                options::OptionStatement::TargetCatalog,
+                OptionValue::from(catalog),
+            )
+            .map_err(|e| Error::ExecuteQuery {
+                reason: format!("Failed to set target db catalog: {e}"),
+            })?;
+        }
 
         if let Some(schema) = target_db_schema {
             stmt.set_option(
@@ -204,7 +217,9 @@ impl AdbcConnection {
         })?;
 
         stmt.execute_update().map_err(|e| Error::ExecuteQuery {
-            reason: format!("Bulk ingest execution failed: {e}"),
+            reason: format!(
+                "Bulk ingest execution failed for target_table='{target_table}', target_db_catalog={target_db_catalog:?}, target_db_schema={target_db_schema:?}: {e}"
+            ),
         })
     }
 }

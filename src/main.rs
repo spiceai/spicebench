@@ -64,6 +64,20 @@ fn s3_hive_target_prefix(common: &CommonArgs, scenario_name: &str, run_id: uuid:
     format!("{target_prefix}/{scenario_name}/{run_id}")
 }
 
+fn infer_adbc_target_namespace(
+    catalog_namespace: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let Some(namespace) = catalog_namespace.map(str::trim).filter(|ns| !ns.is_empty()) else {
+        return (None, None);
+    };
+
+    let mut parts = namespace.rsplitn(2, '.');
+    let schema = parts.next().map(str::trim).filter(|v| !v.is_empty());
+    let catalog = parts.next().map(str::trim).filter(|v| !v.is_empty());
+
+    (catalog.map(str::to_string), schema.map(str::to_string))
+}
+
 async fn run_benchmark(
     common: &CommonArgs,
     system_adapter_client: Arc<Mutex<system_adapter_protocol::Client>>,
@@ -203,7 +217,15 @@ async fn run_benchmark(
                     });
             }
 
-            let adbc_sink = Arc::new(AdbcSink::new(&driver_name, db_kwargs, None)?);
+            let (target_db_catalog, target_db_schema) =
+                infer_adbc_target_namespace(setup_response.catalog_namespace.as_deref());
+
+            let adbc_sink = Arc::new(AdbcSink::new(
+                &driver_name,
+                db_kwargs,
+                target_db_catalog,
+                target_db_schema,
+            )?);
 
             setup_response_for_run = Some(setup_response);
 
