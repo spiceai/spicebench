@@ -80,9 +80,10 @@ impl DataGenerator {
             }
         });
 
-        // Track which batch IDs were successfully written per table so we can
-        // persist them in the table metadata at the end of the run.
-        let written_batch_ids: Arc<std::sync::Mutex<HashMap<String, Vec<u64>>>> =
+        // Track which logical batch IDs were successfully written per table,
+        // plus any split part IDs for each logical batch, so we can persist
+        // both in table metadata at the end of the run.
+        let written_batches: Arc<std::sync::Mutex<HashMap<String, HashMap<u64, Vec<usize>>>>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
 
         // For each table, spawn a generator task and an uploader task connected
@@ -124,7 +125,7 @@ impl DataGenerator {
             // --- Uploader task ---
             let target = self.target.clone();
             let metrics_up = self.metrics.clone();
-            let written_ids = Arc::clone(&written_batch_ids);
+            let written_ids = Arc::clone(&written_batches);
             join_set.spawn(async move {
                 while let Some((batch_id, batch)) = rx.recv().await {
                     let start = Instant::now();
@@ -133,10 +134,10 @@ impl DataGenerator {
                             metrics_up.record_write(&result, start.elapsed());
                             written_ids
                                 .lock()
-                                .expect("written_batch_ids lock poisoned")
+                                .expect("written_batches lock poisoned")
                                 .entry(table_name.clone())
                                 .or_default()
-                                .push(batch_id);
+                                .insert(batch_id, result.part_ids.clone());
                         }
                         Err(e) => {
                             metrics_up.record_error();
@@ -166,15 +167,26 @@ impl DataGenerator {
         logger_handle.abort();
 
         // Build and persist the consolidated version metadata (version.json).
-        let written = Arc::try_unwrap(written_batch_ids)
+        let written = Arc::try_unwrap(written_batches)
             .expect("all tasks should be finished")
             .into_inner()
             .expect("mutex should not be poisoned");
 
         let dataset_tables = self.dataset.tables();
         let mut tables_metadata = HashMap::new();
-        for (table_name, mut ids) in written {
+        for (table_name, batch_parts) in written {
+            let mut ids: Vec<u64> = batch_parts.keys().copied().collect();
             ids.sort_unstable();
+
+            let mut normalized_batch_parts: HashMap<u64, Vec<usize>> = HashMap::new();
+            for (batch_id, mut part_ids) in batch_parts {
+                if part_ids.is_empty() {
+                    continue;
+                }
+                part_ids.sort_unstable();
+                normalized_batch_parts.insert(batch_id, part_ids);
+            }
+
             let key_columns = self.dataset.primary_key(&table_name);
             let dataset_table = dataset_tables.get(&table_name);
             let schema_json = dataset_table
@@ -192,6 +204,7 @@ impl DataGenerator {
                     time_column,
                     key_columns,
                     batch_ids: ids.clone(),
+                    batch_parts: normalized_batch_parts,
                 },
             );
 
@@ -400,6 +413,7 @@ mod tests {
             &self,
             _table_name: &str,
             _batch_id: u64,
+            _part_id: Option<usize>,
         ) -> anyhow::Result<Option<ReadResult>> {
             Ok(None)
         }
@@ -430,6 +444,7 @@ mod tests {
             Ok(WriteResult {
                 rows_written: batch.num_rows() as u64,
                 bytes_written: 0,
+                part_ids: Vec::new(),
             })
         }
 

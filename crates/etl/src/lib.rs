@@ -25,7 +25,7 @@ use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetCo
 use data_generation::dataset::simple_sequence::SimpleSequenceDataset;
 use data_generation::dataset::tpch::TpchDataset;
 use data_generation::dataset::{Dataset, MutationConfig};
-use data_generation::storage::DataStorage;
+use data_generation::storage::{DataStorage, ReadResult};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
@@ -216,6 +216,67 @@ fn reserve_next_batch_id_for_table(
     }
 }
 
+async fn read_logical_batch(
+    data_storage: &Arc<dyn DataStorage>,
+    table_name: &str,
+    batch_id: u64,
+) -> Result<Option<ReadResult>, String> {
+    let mut part_ids = data_storage
+        .read_batch_parts(table_name, batch_id)
+        .await
+        .map_err(|e| format!("read {table_name} batch {batch_id} parts: {e}"))?;
+
+    if part_ids.is_empty() {
+        return data_storage
+            .read_batch(table_name, batch_id, None)
+            .await
+            .map_err(|e| format!("read {table_name} batch {batch_id}: {e}"));
+    }
+
+    part_ids.sort_unstable();
+
+    let mut merged_batches: Vec<RecordBatch> = Vec::new();
+    let mut rows_read: u64 = 0;
+    let mut bytes_read: u64 = 0;
+    let mut key_columns: Option<Vec<String>> = None;
+
+    for part_id in part_ids {
+        let read_result = data_storage
+            .read_batch(table_name, batch_id, Some(part_id))
+            .await
+            .map_err(|e| format!("read {table_name} batch {batch_id} part {part_id}: {e}"))?
+            .ok_or_else(|| {
+                format!(
+                    "Missing object for {table_name} batch {batch_id} part {part_id} listed in metadata"
+                )
+            })?;
+
+        if let Some(existing_keys) = &key_columns {
+            if existing_keys != &read_result.key_columns {
+                warn!(
+                    table = %table_name,
+                    batch_id,
+                    part_id,
+                    "Key columns changed across split parts; using keys from first part"
+                );
+            }
+        } else {
+            key_columns = Some(read_result.key_columns.clone());
+        }
+
+        rows_read += read_result.rows_read;
+        bytes_read += read_result.bytes_read;
+        merged_batches.extend(read_result.batches);
+    }
+
+    Ok(Some(ReadResult {
+        batches: merged_batches,
+        rows_read,
+        bytes_read,
+        key_columns: key_columns.unwrap_or_default(),
+    }))
+}
+
 /// Reads source data for `table_name` starting at `start_batch_id`, then keeps
 /// reserving and reading subsequent batch IDs for that table until at least
 /// [`TARGET_BATCH_ROWS`] rows have been accumulated (or no further work exists).
@@ -241,10 +302,7 @@ async fn read_batches_until_min_rows(
     let mut rows_read: u64 = 0;
 
     loop {
-        let read_result = data_storage
-            .read_batch(table_name, current_batch_id)
-            .await
-            .map_err(|e| format!("read {table_name} batch {current_batch_id}: {e}"))?;
+        let read_result = read_logical_batch(data_storage, table_name, current_batch_id).await?;
 
         match read_result {
             Some(result) => {
@@ -866,10 +924,8 @@ impl ETLPipeline {
                 .unwrap_or_else(|| vec![CREATED_AT_COLUMN.to_string()]);
 
             join_set.spawn(async move {
-                let read_result = source
-                    .read_batch(&table_name, first_batch_id)
-                    .await
-                    .map_err(|e| format!("read {table_name} batch {first_batch_id}: {e}"))?
+                let read_result = read_logical_batch(&source, &table_name, first_batch_id)
+                    .await?
                     .ok_or_else(|| {
                         format!("No data for table {table_name} at batch {first_batch_id}")
                     })?;

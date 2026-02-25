@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -72,34 +71,6 @@ const SF1_ROW_COUNTS: &[(&str, u64)] = &[
     ("orders", 1_500_000),
     ("lineitem", 6_001_215),
 ];
-
-const MIN_TPCH_ROWS_PER_FILE: usize = 32_000;
-const MAX_TPCH_ROWS_PER_FILE: usize = 64_000;
-const DEFAULT_TPCH_MAX_ROWS_PER_FILE: usize = 48_000;
-
-fn tpch_max_rows_per_file() -> usize {
-    std::env::var("SPICEBENCH_TPCH_MAX_ROWS_PER_FILE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|v| *v > 0)
-        .map(|v| v.clamp(MIN_TPCH_ROWS_PER_FILE, MAX_TPCH_ROWS_PER_FILE))
-        .unwrap_or(DEFAULT_TPCH_MAX_ROWS_PER_FILE)
-}
-
-fn split_record_batch(batch: RecordBatch, max_rows: usize) -> VecDeque<RecordBatch> {
-    if batch.num_rows() <= max_rows {
-        return VecDeque::from([batch]);
-    }
-
-    let mut out = VecDeque::new();
-    let mut offset = 0usize;
-    while offset < batch.num_rows() {
-        let len = std::cmp::min(max_rows, batch.num_rows() - offset);
-        out.push_back(batch.slice(offset, len));
-        offset += len;
-    }
-    out
-}
 
 /// Returns the expected total number of rows for a given table at the
 /// specified scale factor.
@@ -393,16 +364,12 @@ pub struct TpchDataset {
     mutations: MutationConfig,
     /// Per-table step counter tracking which part to generate next (0-indexed).
     table_steps: HashMap<String, AtomicU16>,
-    /// Per-table queue of already-generated chunks waiting to be emitted.
-    pending_batches: HashMap<String, Mutex<VecDeque<RecordBatch>>>,
     /// Per-table primary key tracking for update/delete targeting.
     key_sets: HashMap<String, Mutex<IndexedKeySet<PrimaryKeyValue>>>,
     /// Global monotonically increasing operation counter for replay ordering.
     op_counter: AtomicI64,
     /// The storage backend for reading/writing table metadata.
     storage: Arc<dyn DataStorage>,
-    /// Maximum number of rows per emitted batch/file.
-    max_rows_per_file: usize,
 }
 
 impl TpchDataset {
@@ -427,25 +394,14 @@ impl TpchDataset {
             .map(|(name, _)| (name.to_string(), AtomicU16::new(0)))
             .collect();
 
-        let pending_batches: HashMap<String, Mutex<VecDeque<RecordBatch>>> = TPCH_TABLES
-            .iter()
-            .map(|(name, _)| (name.to_string(), Mutex::new(VecDeque::new())))
-            .collect();
-
-        let max_rows_per_file = tpch_max_rows_per_file();
-
-        info!(max_rows_per_file, "Configured TPCH maximum rows per file");
-
         Ok(Self {
             scale_factor: config.scale_factor,
             num_steps: config.num_steps,
             mutations: mutations.clone(),
             table_steps,
-            pending_batches,
             key_sets,
             op_counter: AtomicI64::new(0),
             storage,
-            max_rows_per_file,
         })
     }
 }
@@ -507,15 +463,6 @@ impl Dataset for TpchDataset {
     }
 
     async fn raw_next_batch(&self, table: &str) -> anyhow::Result<Option<RecordBatch>> {
-        if let Some(queued) = self.pending_batches.get(table) {
-            let mut queued = queued
-                .lock()
-                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-            if let Some(batch) = queued.pop_front() {
-                return Ok(Some(batch));
-            }
-        }
-
         // Each table independently tracks which step (part) it is on.
         let step_counter = self
             .table_steps
@@ -655,23 +602,7 @@ impl Dataset for TpchDataset {
         let op_indices: Vec<i64> = (op_base..op_base + total_rows as i64).collect();
         columns.push(Arc::new(Int64Array::from(op_indices)));
 
-        let combined_batch = RecordBatch::try_new(schema, columns)?;
-        let mut chunks = split_record_batch(combined_batch, self.max_rows_per_file);
-
-        let first = chunks
-            .pop_front()
-            .ok_or_else(|| anyhow::anyhow!("internal error: no chunks produced"))?;
-
-        if !chunks.is_empty()
-            && let Some(queued) = self.pending_batches.get(table)
-        {
-            let mut queued = queued
-                .lock()
-                .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
-            queued.extend(chunks);
-        }
-
-        Ok(Some(first))
+        Ok(Some(RecordBatch::try_new(schema, columns)?))
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {
@@ -711,6 +642,7 @@ mod tests {
             &self,
             _table_name: &str,
             _batch_id: u64,
+            _part_id: Option<usize>,
         ) -> anyhow::Result<Option<ReadResult>> {
             Ok(None)
         }
@@ -724,6 +656,7 @@ mod tests {
             Ok(WriteResult {
                 rows_written: 0,
                 bytes_written: 0,
+                part_ids: Vec::new(),
             })
         }
 
@@ -785,7 +718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tpch_num_batches_is_a_lower_bound_for_emitted_batches_per_table() {
+    async fn tpch_emits_exactly_one_batch_per_step_for_non_static_tables() {
         let dataset = build_dataset(1.0, 7);
 
         for (table, _) in TPCH_TABLES {
@@ -800,33 +733,12 @@ mod tests {
                 emitted_batches += 1;
             }
 
-            assert!(
-                emitted_batches >= dataset.num_batches(table),
-                "emitted batches should be >= planned batches for table '{table}'"
+            assert_eq!(
+                emitted_batches,
+                dataset.num_batches(table),
+                "emitted batches should match planned logical batches for table '{table}'"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn tpch_batches_are_capped_to_max_rows_per_file() {
-        let dataset = build_dataset(1.0, 7);
-
-        let mut saw_split = false;
-        while let Some(batch) = dataset
-            .raw_next_batch("lineitem")
-            .await
-            .expect("raw_next_batch should not fail")
-        {
-            assert!(
-                batch.num_rows() <= DEFAULT_TPCH_MAX_ROWS_PER_FILE,
-                "lineitem chunk exceeded max rows per file"
-            );
-            if batch.num_rows() == DEFAULT_TPCH_MAX_ROWS_PER_FILE {
-                saw_split = true;
-            }
-        }
-
-        assert!(saw_split, "expected at least one full-size split chunk");
     }
 
     #[tokio::test]
