@@ -191,6 +191,8 @@ pub struct SetupResponse {
     /// (e.g. "catalog.schema").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalog_namespace: Option<String>,
+    /// Optional read driver to use for reading data from the benchmark tables.
+    pub read_driver: Option<(AdbcDriver, HashMap<String, serde_json::Value>)>,
 }
 /// Request to teardown a benchmark run
 ///

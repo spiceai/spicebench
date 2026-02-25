@@ -159,6 +159,10 @@ struct StdioArgs {
     )]
     lakebase_database_instance: Option<String>,
 
+    /// Lakebase Staging Volume Path.
+    #[arg(long, env = "LAKEBASE_STAGING_VOLUME_PATH")]
+    lakebase_staging_volume_path: String,
+
     /// Lakebase project name (for Autoscaling synced table creation).
     /// Mutually exclusive with --lakebase-database-instance.
     #[arg(
@@ -282,6 +286,7 @@ struct LakebaseConfig {
     db_name: String,
     schema: String,
     target: LakebaseSyncTarget,
+    staging_volume_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -379,6 +384,7 @@ impl AdapterConfig {
                     db_name: args.lakebase_pg_db_name.clone(),
                     schema: pg_schema,
                     target: sync_target,
+                    staging_volume_path: args.lakebase_staging_volume_path.clone(),
                 })
             }
             ComputeMode::SparkCluster => {
@@ -533,7 +539,6 @@ impl DatabricksAdapter {
         format!("spicebench_sync_tables_{scenario_slug}")
     }
 
-    #[allow(dead_code)]
     fn sql_type_for_arrow(data_type: &DataType) -> Result<String> {
         match data_type {
             DataType::Boolean => Ok("BOOLEAN".to_string()),
@@ -558,7 +563,6 @@ impl DatabricksAdapter {
         }
     }
 
-    #[allow(dead_code)]
     fn create_table_ddl(
         &self,
         table_name: &str,
@@ -581,7 +585,7 @@ impl DatabricksAdapter {
             .join(", ");
 
         Ok(format!(
-            "CREATE TABLE {} ({columns}) USING {}",
+            "CREATE TABLE IF NOT EXISTS {} ({columns}) USING {}",
             self.table_full_name(table_name),
             table_format.as_sql_using()
         ))
@@ -1408,7 +1412,6 @@ print("OK")
             urlencoding::encode(&lakebase_config.token),
             lakebase_config.host,
             lakebase_config.db_name,
-            // urlencoding::encode(&format!("{}{}", lakebase_config.schema, SYNCED_SUFFIX)),
             urlencoding::encode(&lakebase_config.schema),
         ))
     }
@@ -1456,7 +1459,6 @@ print("OK")
                 payload["branch_name"] = json!(branch);
             }
         }
-
         eprintln!(
             "[databricks-adapter] create_synced_table: source_table_name={}, synced_table_name={}",
             source_table_name, synced_table_name
@@ -1717,14 +1719,6 @@ impl Handler for DatabricksAdapter {
         let variant = Self::variant_from_setup_metadata(&metadata)
             .map_err(|e| format!("Invalid setup metadata: {e}"))?;
 
-        if variant == DatabricksVariant::Lakebase
-            && !matches!(self.config.compute_target, ComputeTarget::SqlWarehouse)
-        {
-            return Err(
-                "Lakebase variant requires --databricks-compute-mode=sql-warehouse".to_string(),
-            );
-        }
-
         let (cluster_id, cluster_created_by_adapter) = match &self.config.compute_target {
             ComputeTarget::SparkCluster(_) => {
                 let (cluster_id, created) = self
@@ -1770,40 +1764,98 @@ impl Handler for DatabricksAdapter {
         let mut created_tables = Vec::with_capacity(datasets.len());
         let mut table_locations: HashMap<String, String> = HashMap::with_capacity(datasets.len());
 
-        // Create UC tables via CTAS (common to all variants).
-        for (table_name, dataset_cfg) in &datasets {
-            let location = dataset_cfg.location.as_deref().ok_or_else(|| {
-                format!("Dataset '{table_name}' is missing required 'location' field")
-            })?;
-            let drop_sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
-            self.execute_sql_statement(&drop_sql).await.map_err(|e| {
-                format!("Failed to drop existing table '{table_name}' during create_tables: {e}")
-            })?;
+        eprintln!("[databricks-adapter] setup: creating tables...: {:#?}", metadata);
 
-            let create_sql = self.create_table_ctas(table_name, location);
+        if metadata.get("etl_sink") == Some(&Value::String("hive".to_string())) {
+            eprintln!("[databricks-adapter] Initialization for hive sink");
 
-            eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+            // Create UC tables via CTAS (common to all variants).
+            for (table_name, dataset_cfg) in &datasets {
+                let location = dataset_cfg.location.as_deref().ok_or_else(|| {
+                    format!("Dataset '{table_name}' is missing required 'location' field")
+                })?;
+                let drop_sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
+                self.execute_sql_statement(&drop_sql).await.map_err(|e| {
+                    format!("Failed to drop existing table '{table_name}' during create_tables: {e}")
+                })?;
 
-            self.execute_sql_statement(&create_sql)
+                let create_sql = self.create_table_ctas(table_name, location);
+
+                eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
+
+                self.execute_sql_statement(&create_sql)
+                    .await
+                    .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
+
+                table_locations.insert(table_name.clone(), location.to_string());
+                created_tables.push(table_name.clone());
+            }
+
+            self.ensure_notebook(&scenario_slug, &table_locations)
                 .await
-                .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
+                .map_err(|e| format!("Failed to upload sync notebook: {e}"))?;
 
-            table_locations.insert(table_name.clone(), location.to_string());
-            created_tables.push(table_name.clone());
+            self.ensure_notebook_sync_job(&scenario_slug)
+                .await
+                .map_err(|e| format!("Failed to create scheduled notebook sync job: {e}"))?;
+        } else {
+            eprintln!("[databricks-adapter] Initialization for adbc sink");
+
+            let create_schema_sql = format!(
+                "CREATE SCHEMA IF NOT EXISTS {}.{}",
+                Self::quoted_identifier(&self.config.catalog),
+                Self::quoted_identifier(&self.config.schema)
+            );
+
+            eprintln!("[databricks-adapter] Initialize schema: {create_schema_sql}");
+
+            self.execute_sql_statement(&create_schema_sql).await.map_err(|e| {
+                format!("Failed to initialize schema: {e}")
+            })?;
+
+            // Create managed UC tables (sources for synced tables) via SQL Warehouse.
+            for (table_name, dataset_cfg) in &datasets {
+                let ddl = self
+                    .create_table_ddl(table_name, dataset_cfg, TableFormat::Delta)
+                    .map_err(|e| {
+                        format!("Failed to build DDL for managed table '{table_name}': {e}")
+                    })?;
+                eprintln!(
+                    "[databricks-adapter] creating managed table '{table_name}': {ddl}"
+                );
+                self.execute_sql_statement(&ddl).await.map_err(|e| {
+                    format!("Failed to create managed table '{table_name}': {e}")
+                })?;
+            }
         }
 
         // Variant-specific post-processing.
         match variant {
             DatabricksVariant::Databricks => {
-                self.ensure_notebook(&scenario_slug, &table_locations)
-                    .await
-                    .map_err(|e| format!("Failed to upload sync notebook: {e}"))?;
-
-                self.ensure_notebook_sync_job(&scenario_slug)
-                    .await
-                    .map_err(|e| format!("Failed to create scheduled notebook sync job: {e}"))?;
             }
             DatabricksVariant::Lakebase => {
+                eprintln!("[databricks-adapter] Waiting 20 seconds for schema to initialize");
+                std::thread::sleep(Duration::from_secs(20));
+
+                let lakebase_config = match &self.config.compute_target {
+                    ComputeTarget::Lakebase(cfg) => cfg,
+                    _ => {
+                        return Err("create_synced_table called without Lakebase compute target".to_string());
+                    }
+                };
+
+                let create_schema_sql = format!(
+                    "CREATE SCHEMA IF NOT EXISTS {}.{}",
+                    Self::quoted_identifier(&self.config.catalog),
+                    Self::quoted_identifier(&lakebase_config.schema),
+                );
+
+                eprintln!("[databricks-adapter] Initialize schema: {create_schema_sql}");
+
+                self.execute_sql_statement(&create_schema_sql).await.map_err(|e| {
+                    format!("Failed to initialize schema': {e}")
+                })?;
+
                 // Parallel synced table creation + wait for ONLINE
                 let this = &*self;
                 let sync_futs: Vec<_> = datasets
@@ -1815,7 +1867,9 @@ impl Handler for DatabricksAdapter {
                             this.create_synced_table(&table_name, &pks)
                                 .await
                                 .map_err(|e| {
-                                    format!("Failed to create synced table for '{table_name}': {e}")
+                                    format!(
+                                        "Failed to create synced table for '{table_name}': {e}"
+                                    )
                                 })?;
                             Ok::<_, String>(table_name)
                         }
@@ -1830,19 +1884,27 @@ impl Handler for DatabricksAdapter {
             state.created_tables = created_tables;
         }
 
-        // For Lakebase, return the PostgreSQL read driver.
-        // For other variants, return the Databricks ADBC driver.
         match &self.config.compute_target {
-            ComputeTarget::Lakebase(_) => {
+            // For Lakebase, return the Databricks ADBC driver for ingestion and PostgreSQL driver for reading.
+            ComputeTarget::Lakebase(lakebase_config) => {
                 let pg_uri = self
                     .lakebase_pg_uri()
                     .map_err(|e| format!("Failed to build Lakebase PostgreSQL URI: {e}"))?;
                 Ok(SetupResponse {
-                    driver: AdbcDriver::Postgresql,
-                    db_kwargs: HashMap::from([("uri".to_string(), Value::String(pg_uri))]),
-                    catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
+                    driver: AdbcDriver::Databricks,
+                    db_kwargs: HashMap::from([(
+                        "uri".to_string(),
+                        Value::String(self.databricks_uri()),
+                    ), (
+                        "databricks.staging.volume_path".to_string(),
+                        Value::String(lakebase_config.staging_volume_path.clone()),
+                    )]),
+                    // catalog_namespace: Some(format!("{}.{}", self.config.catalog, lakebase_config.schema)),
+                    catalog_namespace: None,
+                    read_driver: Some((AdbcDriver::Postgresql, HashMap::from([("uri".to_string(), Value::String(pg_uri))])))
                 })
             }
+            // For other variants, return a single Databricks ADBC driver.
             _ => Ok(SetupResponse {
                 driver: AdbcDriver::Databricks,
                 db_kwargs: HashMap::from([(
@@ -1850,6 +1912,7 @@ impl Handler for DatabricksAdapter {
                     Value::String(self.databricks_uri()),
                 )]),
                 catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
+                read_driver: None,
             }),
         }
     }
@@ -1897,22 +1960,71 @@ impl Handler for DatabricksAdapter {
             }
         }
 
-        // 3. Drop created tables.
-        if self.config.drop_tables_on_teardown {
-            let table_count = state.created_tables.len();
-            for table_name in &state.created_tables {
-                if state.variant == DatabricksVariant::Lakebase {
+        // 3. Clean up tables.
+        match state.variant {
+            DatabricksVariant::Lakebase => {
+                let lakebase_config = match &self.config.compute_target {
+                    ComputeTarget::Lakebase(cfg) => cfg,
+                    _ => {
+                        return Err(
+                            "Lakebase variant requires Lakebase compute target".to_string(),
+                        )
+                    }
+                };
+
+                for table_name in &state.created_tables {
+                    // a) Delete synced table from Lakebase (via synced tables API).
                     self.delete_synced_table(table_name).await.map_err(|e| {
-                        format!("Failed to delete synced table '{table_name}' during teardown: {e}")
+                        format!("Failed to delete synced table '{table_name}': {e}")
+                    })?;
+
+                    // b) Drop the synced table's UC catalog entry (lakebase schema).
+                    let synced_full = format!(
+                        "{}.{}.{}",
+                        Self::quoted_identifier(&self.config.catalog),
+                        Self::quoted_identifier(&lakebase_config.schema),
+                        Self::quoted_identifier(table_name)
+                    );
+                    if let Err(e) = self
+                        .execute_sql_statement(&format!(
+                            "DROP TABLE IF EXISTS {synced_full}"
+                        ))
+                        .await
+                    {
+                        eprintln!(
+                            "[databricks-adapter] warning: failed to drop synced table UC entry '{table_name}': {e}"
+                        );
+                    }
+
+                    // c) Drop the managed source table (adapter schema).
+                    let sql =
+                        format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
+                    self.execute_sql_statement(&sql).await.map_err(|e| {
+                        format!("Failed to drop managed table '{table_name}': {e}")
                     })?;
                 }
-
-                let sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
-                self.execute_sql_statement(&sql).await.map_err(|e| {
-                    format!("Failed to drop table '{table_name}' during teardown: {e}")
-                })?;
+                eprintln!(
+                    "[databricks-adapter] cleaned up {} table(s)",
+                    state.created_tables.len()
+                );
             }
-            eprintln!("[databricks-adapter] cleaned up {table_count} temporary table(s)");
+            DatabricksVariant::Databricks => {
+                if self.config.drop_tables_on_teardown {
+                    for table_name in &state.created_tables {
+                        let sql = format!(
+                            "DROP TABLE IF EXISTS {}",
+                            self.table_full_name(table_name)
+                        );
+                        self.execute_sql_statement(&sql).await.map_err(|e| {
+                            format!("Failed to drop table '{table_name}': {e}")
+                        })?;
+                    }
+                    eprintln!(
+                        "[databricks-adapter] cleaned up {} table(s)",
+                        state.created_tables.len()
+                    );
+                }
+            }
         }
 
         if state.cluster_created_by_adapter

@@ -20,11 +20,14 @@ pub mod spiceai;
 pub use adbc_core::options::IngestMode;
 
 use std::collections::HashMap;
-
+use std::sync::Arc;
 use adbc_core::options::{self, AdbcVersion, OptionDatabase, OptionValue};
 use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Optionable, Statement};
 use adbc_driver_manager::ManagedDriver;
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, Schema};
 use arrow_array::RecordBatch;
+use arrow_schema::Field;
 use snafu::prelude::*;
 
 #[derive(Debug, Snafu)]
@@ -149,6 +152,7 @@ impl AdbcConnection {
         mode: options::IngestMode,
         batch: RecordBatch,
     ) -> Result<Option<i64>> {
+        let batch = downcast_utf8view(&batch);
         self.bulk_ingest_stream(
             target_table,
             target_db_schema,
@@ -207,4 +211,27 @@ impl AdbcConnection {
             reason: format!("Bulk ingest execution failed: {e}"),
         })
     }
+}
+
+/// Cast Utf8View columns to Utf8 since the Databricks ADBC driver
+/// does not support STRING_VIEW.
+fn downcast_utf8view(batch: &RecordBatch) -> RecordBatch {
+    let schema = batch.schema();
+    let mut fields = Vec::with_capacity(schema.fields().len());
+    let mut columns = Vec::with_capacity(schema.fields().len());
+
+    for (i, field) in schema.fields().iter().enumerate() {
+        match field.data_type() {
+            DataType::Utf8View => {
+                fields.push(Arc::new(Field::new(field.name(), DataType::Utf8, field.is_nullable())));
+                columns.push(cast(batch.column(i), &DataType::Utf8).unwrap());
+            }
+            _ => {
+                fields.push(field.clone());
+                columns.push(batch.column(i).clone());
+            }
+        }
+    }
+
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
 }
