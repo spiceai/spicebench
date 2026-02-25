@@ -39,31 +39,39 @@ impl ReadResult {
 pub struct WriteResult {
     pub rows_written: u64,
     pub bytes_written: u64,
+    pub part_ids: Vec<usize>,
 }
 
 #[async_trait]
 pub trait DataStorage: Send + Sync + 'static {
     /// List available batch object paths for a given table.
     ///
-    /// Batches are stored under `tables/{table_name}/batch-NNNNNN.parquet`.
+    /// A logical batch may be stored as either:
+    /// - `tables/{table_name}/batch-NNNNNN.parquet`, or
+    /// - one or more split parts like
+    ///   `tables/{table_name}/batch-NNNNNN-part-PPP.parquet`.
     async fn list_batches(&self, table_name: &str) -> anyhow::Result<Vec<String>>;
 
-    /// Read a single batch from the source by its batch ID and table name.
+    /// Read a single batch object from the source.
     ///
     /// Returns `Ok(None)` when the batch does not exist in the underlying
     /// storage (e.g. the table has fewer batches than others). The caller
     /// should treat this as the table having no more data.
     ///
-    /// Batches are stored at `tables/{table_name}/batch-{batch_id:06}.parquet`.
+    /// If `part_id` is `Some(p)`, this reads the split-part object for that
+    /// logical batch. If `part_id` is `None`, this reads the unsuffixed
+    /// logical batch object.
     async fn read_batch(
         &self,
         table_name: &str,
         batch_id: u64,
+        part_id: Option<usize>,
     ) -> anyhow::Result<Option<ReadResult>>;
 
-    /// Write a single batch to storage for the given table and batch ID.
+    /// Write a single logical batch to storage for the given table and batch ID.
     ///
-    /// Batches are written to `tables/{table_name}/batch-{batch_id:06}.parquet`.
+    /// Implementations may split large batches across multiple physical files
+    /// while preserving the same logical `batch_id`.
     async fn write(
         &self,
         table_name: &str,
@@ -111,6 +119,23 @@ pub trait DataStorage: Send + Sync + 'static {
             return Ok(VecDeque::from(ids));
         }
         Ok(VecDeque::new())
+    }
+
+    /// Reads split part IDs for a logical batch from version metadata.
+    ///
+    /// Returns an empty vector when a batch has no split parts and should be
+    /// read from the unsuffixed object path.
+    async fn read_batch_parts(&self, table_name: &str, batch_id: u64) -> anyhow::Result<Vec<usize>> {
+        if let Some(metadata) = self.read_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+            && let Some(part_ids) = table_meta.batch_parts.get(&batch_id)
+        {
+            let mut sorted = part_ids.clone();
+            sorted.sort_unstable();
+            return Ok(sorted);
+        }
+
+        Ok(Vec::new())
     }
 
     fn table_params(&self, table_name: &str) -> HashMap<String, serde_json::Value>;
