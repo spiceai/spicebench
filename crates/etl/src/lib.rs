@@ -52,7 +52,7 @@ const INTERNAL_COLUMNS: &[&str] = &["_op", "_op_index"];
 /// Smaller input batches from a [`ReadResult`] are concatenated together until
 /// this threshold is reached, and larger input batches are split so no output
 /// batch exceeds this size.
-const TARGET_BATCH_ROWS: usize = 8_192 * 2;
+const TARGET_BATCH_ROWS: usize = 8_192 * 4;
 
 /// Maximum number of in-flight sink writes allowed per table task when the
 /// current segment set is insert-only.
