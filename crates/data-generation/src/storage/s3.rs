@@ -223,7 +223,6 @@ impl S3Storage {
             ))
         }
     }
-
 }
 
 #[async_trait]

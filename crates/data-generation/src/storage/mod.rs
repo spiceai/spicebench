@@ -125,7 +125,11 @@ pub trait DataStorage: Send + Sync + 'static {
     ///
     /// Returns an empty vector when a batch has no split parts and should be
     /// read from the unsuffixed object path.
-    async fn read_batch_parts(&self, table_name: &str, batch_id: u64) -> anyhow::Result<Vec<usize>> {
+    async fn read_batch_parts(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+    ) -> anyhow::Result<Vec<usize>> {
         if let Some(metadata) = self.read_version_metadata().await?
             && let Some(table_meta) = metadata.tables.get(table_name)
             && let Some(part_ids) = table_meta.batch_parts.get(&batch_id)
