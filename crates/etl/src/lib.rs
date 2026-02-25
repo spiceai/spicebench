@@ -347,34 +347,37 @@ async fn read_batches_until_min_rows(
     let mut completed_batches: HashMap<u64, Option<ReadResult>> = HashMap::new();
     let mut reserved_removed_step: HashMap<u64, bool> = HashMap::new();
 
-    let restore_unconsumed_reservations = |
-        scheduled_batch_ids: &VecDeque<u64>,
-        reserved_removed_step: &HashMap<u64, bool>,
-        consumed_work_units: &mut u64,
-    | {
-        if scheduled_batch_ids.is_empty() {
-            return;
-        }
-
-        let mut restored_removed_steps = 0u64;
-        let mut state = work_state.lock().expect("work_state lock poisoned");
-        for &batch_id in scheduled_batch_ids {
-            let tables = state.steps.entry(batch_id).or_default();
-            if !tables.iter().any(|t| t == table_name) {
-                tables.push(table_name.to_string());
+    let restore_unconsumed_reservations =
+        |scheduled_batch_ids: &VecDeque<u64>,
+         reserved_removed_step: &HashMap<u64, bool>,
+         consumed_work_units: &mut u64| {
+            if scheduled_batch_ids.is_empty() {
+                return;
             }
 
-            if reserved_removed_step.get(&batch_id).copied().unwrap_or(false) {
-                restored_removed_steps += 1;
+            let mut restored_removed_steps = 0u64;
+            let mut state = work_state.lock().expect("work_state lock poisoned");
+            for &batch_id in scheduled_batch_ids {
+                let tables = state.steps.entry(batch_id).or_default();
+                if !tables.iter().any(|t| t == table_name) {
+                    tables.push(table_name.to_string());
+                }
+
+                if reserved_removed_step
+                    .get(&batch_id)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    restored_removed_steps += 1;
+                }
+
+                *consumed_work_units = consumed_work_units.saturating_sub(1);
             }
 
-            *consumed_work_units = consumed_work_units.saturating_sub(1);
-        }
-
-        if restored_removed_steps > 0 {
-            logical_steps_consumed.fetch_sub(restored_removed_steps, Ordering::Relaxed);
-        }
-    };
+            if restored_removed_steps > 0 {
+                logical_steps_consumed.fetch_sub(restored_removed_steps, Ordering::Relaxed);
+            }
+        };
 
     scheduled_batch_ids.push_back(start_batch_id);
     reserved_removed_step.insert(start_batch_id, false);
@@ -424,8 +427,8 @@ async fn read_batches_until_min_rows(
             break;
         };
 
-        let (batch_id, read_result) = joined
-            .map_err(|e| format!("join error reading {table_name} batch: {e}"))?;
+        let (batch_id, read_result) =
+            joined.map_err(|e| format!("join error reading {table_name} batch: {e}"))?;
         let read_result = read_result?;
         completed_batches.insert(batch_id, read_result);
 
@@ -1409,7 +1412,10 @@ async fn run_pipeline(
         if let Some(limit) = step_limit
             && logical_steps_consumed.load(Ordering::Relaxed) >= limit as u64
         {
-            info!(steps_processed = logical_steps_consumed.load(Ordering::Relaxed), "Step limit reached, pausing pipeline");
+            info!(
+                steps_processed = logical_steps_consumed.load(Ordering::Relaxed),
+                "Step limit reached, pausing pipeline"
+            );
             progress_logger.abort();
             // Flush buffered partition data before pausing so downstream
             // consumers see all data written during this run segment.

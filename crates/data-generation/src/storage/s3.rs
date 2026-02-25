@@ -425,7 +425,10 @@ impl DataStorage for S3Storage {
         Ok(Vec::new())
     }
 
-    async fn read_batch_ids(&self, table_name: &str) -> anyhow::Result<std::collections::VecDeque<u64>> {
+    async fn read_batch_ids(
+        &self,
+        table_name: &str,
+    ) -> anyhow::Result<std::collections::VecDeque<u64>> {
         if let Some(metadata) = self.cached_version_metadata().await?
             && let Some(table_meta) = metadata.tables.get(table_name)
         {

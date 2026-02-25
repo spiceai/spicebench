@@ -180,7 +180,10 @@ async fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("--sink adbc requires --adbc-uri"))?;
 
             let mut db_kwargs = std::collections::HashMap::new();
-            db_kwargs.insert("uri".to_string(), serde_json::Value::String(uri.to_string()));
+            db_kwargs.insert(
+                "uri".to_string(),
+                serde_json::Value::String(uri.to_string()),
+            );
 
             for option in &cli.adbc_options {
                 let (key, value) = option.split_once('=').ok_or_else(|| {
@@ -277,12 +280,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
 
-            (
-                Arc::new(NullSink::new()),
-                None,
-                "null".to_string(),
-                None,
-            )
+            (Arc::new(NullSink::new()), None, "null".to_string(), None)
         }
     };
 
