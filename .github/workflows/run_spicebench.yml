@@ -220,6 +220,7 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+          DATABRICKS_STAGING_VOLUME_PATH: ${{ secrets.DATABRICKS_STAGING_VOLUME_PATH }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '8' }}
@@ -231,6 +232,11 @@ jobs:
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          LAKEBASE_PG_HOST: ${{ secrets.LAKEBASE_PG_HOST }}
+          LAKEBASE_PG_USER: ${{ secrets.LAKEBASE_PG_USER }}
+          LAKEBASE_PG_DB_NAME: ${{ secrets.LAKEBASE_PG_DB_NAME }}
+          LAKEBASE_PG_SCHEMA: ${{ secrets.LAKEBASE_PG_SCHEMA }}
+          LAKEBASE_DATABASE_INSTANCE: ${{ secrets.LAKEBASE_DATABASE_INSTANCE }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: 'info'
@@ -269,10 +275,22 @@ jobs:
             if [ -n "${DATABRICKS_SCHEMA:-}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
             fi
+
+            if [ -n "${DATABRICKS_STAGING_VOLUME_PATH:-}" ]; then
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STAGING_VOLUME_PATH=${DATABRICKS_STAGING_VOLUME_PATH}"
+            fi
           else
             ADAPTER_CMD="docker"
             ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
+          fi
+
+          if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_DB_NAME=${LAKEBASE_PG_DB_NAME}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_DATABASE_INSTANCE=${LAKEBASE_DATABASE_INSTANCE}"
           fi
 
           ~/.spice/bin/spicebench \

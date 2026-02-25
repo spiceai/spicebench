@@ -130,6 +130,10 @@ struct StdioArgs {
     )]
     databricks_table_format: TableFormat,
 
+    /// Staging Volume Path.
+    #[arg(long, env = "DATABRICKS_STAGING_VOLUME_PATH")]
+    databricks_staging_volume_path: String,
+
     /// Lakebase PostgreSQL endpoint host (required for lakebase compute mode).
     #[arg(long, env = "LAKEBASE_PG_HOST")]
     lakebase_pg_host: Option<String>,
@@ -137,10 +141,6 @@ struct StdioArgs {
     /// Lakebase PostgreSQL username (required for lakebase compute mode).
     #[arg(long, env = "LAKEBASE_PG_USER")]
     lakebase_pg_user: Option<String>,
-
-    /// Lakebase PostgreSQL token/password (required for lakebase compute mode).
-    #[arg(long, env = "LAKEBASE_PG_TOKEN")]
-    lakebase_pg_token: Option<String>,
 
     /// Lakebase PostgreSQL database name.
     #[arg(long, env = "LAKEBASE_PG_DB_NAME", default_value = "spicebench")]
@@ -158,10 +158,6 @@ struct StdioArgs {
         conflicts_with = "lakebase_project"
     )]
     lakebase_database_instance: Option<String>,
-
-    /// Lakebase Staging Volume Path.
-    #[arg(long, env = "LAKEBASE_STAGING_VOLUME_PATH")]
-    lakebase_staging_volume_path: String,
 
     /// Lakebase project name (for Autoscaling synced table creation).
     /// Mutually exclusive with --lakebase-database-instance.
@@ -259,6 +255,7 @@ struct AdapterConfig {
     catalog: String,
     schema: String,
     drop_tables_on_teardown: bool,
+    staging_volume_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -281,12 +278,10 @@ struct ClusterConfig {
 #[derive(Debug, Clone)]
 struct LakebaseConfig {
     user: String,
-    token: String,
     host: String,
     db_name: String,
     schema: String,
     target: LakebaseSyncTarget,
-    staging_volume_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -357,9 +352,6 @@ impl AdapterConfig {
                 let pg_user = args.lakebase_pg_user.ok_or_else(|| {
                     anyhow!("--lakebase-pg-user is required for lakebase compute mode")
                 })?;
-                let pg_token = args.lakebase_pg_token.ok_or_else(|| {
-                    anyhow!("--lakebase-pg-token is required for lakebase compute mode")
-                })?;
                 let pg_schema = args
                     .lakebase_pg_schema
                     .unwrap_or_else(|| args.databricks_schema.clone());
@@ -379,12 +371,10 @@ impl AdapterConfig {
 
                 ComputeTarget::Lakebase(LakebaseConfig {
                     user: pg_user,
-                    token: pg_token,
                     host: pg_host,
                     db_name: args.lakebase_pg_db_name.clone(),
                     schema: pg_schema,
                     target: sync_target,
-                    staging_volume_path: args.lakebase_staging_volume_path.clone(),
                 })
             }
             ComputeMode::SparkCluster => {
@@ -439,8 +429,16 @@ impl AdapterConfig {
             catalog: args.databricks_catalog,
             schema: args.databricks_schema,
             drop_tables_on_teardown: args.drop_tables_on_teardown,
+            staging_volume_path: args.databricks_staging_volume_path.clone(),
         })
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct DatabaseCredentialResponse {
+    token: String,
+    #[serde(alias = "expiration_time", alias = "expire_time")]
+    expiration_time: Option<String>,
 }
 
 impl DatabricksAdapter {
@@ -1400,7 +1398,7 @@ print("OK")
         ))
     }
 
-    fn lakebase_pg_uri(&self) -> Result<String> {
+    async fn lakebase_pg_uri(&self) -> Result<String> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
             _ => {
@@ -1409,10 +1407,13 @@ print("OK")
                 ));
             }
         };
+
+        let token = self.generate_lakebase_pg_token().await?;
+
         Ok(format!(
             "postgresql://{}:{}@{}/{}?sslmode=require&options=--search_path%3D{}",
             urlencoding::encode(&lakebase_config.user),
-            urlencoding::encode(&lakebase_config.token),
+            urlencoding::encode(&token),
             lakebase_config.host,
             lakebase_config.db_name,
             urlencoding::encode(&lakebase_config.schema),
@@ -1577,7 +1578,7 @@ print("OK")
         .with_no_client_auth();
         let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
 
-        let pg_uri = self.lakebase_pg_uri()?;
+        let pg_uri = self.lakebase_pg_uri().await?;
         let (client, connection) = tokio_postgres::connect(&pg_uri, tls)
             .await
             .map_err(|e| anyhow!("Failed to connect to Lakebase PG: {e}"))?;
@@ -1632,6 +1633,69 @@ print("OK")
         Err(anyhow!(
             "Failed to delete synced table '{synced_table_name}' ({status}): {body}"
         ))
+    }
+
+    async fn generate_lakebase_pg_token(&self) -> Result<String> {
+        let lakebase_config = match &self.config.compute_target {
+            ComputeTarget::Lakebase(cfg) => cfg,
+            _ => return Err(anyhow!("generate_lakebase_pg_token called without Lakebase compute target")),
+        };
+
+        let (url, payload) = match &lakebase_config.target {
+            LakebaseSyncTarget::Instance { name } => {
+                let url = format!(
+                    "https://{}/api/2.0/database/credentials",
+                    self.config.endpoint
+                );
+                let payload = json!({
+                    "request_id": Uuid::new_v4().to_string(),
+                    "instance_names": [name],
+                });
+                (url, payload)
+            }
+            LakebaseSyncTarget::Project { name, branch } => {
+                // Autoscaling uses the postgres API path and endpoint-based credential generation
+                let endpoint_path = format!(
+                    "projects/{}/branches/{}/endpoints/default",
+                    name, branch
+                );
+                let url = format!(
+                    "https://{}/api/2.0/postgres/generate-database-credential",
+                    self.config.endpoint
+                );
+                let payload = json!({
+                    "request_id": Uuid::new_v4().to_string(),
+                    "endpoint": endpoint_path,
+                });
+                (url, payload)
+            }
+        };
+
+        eprintln!("[databricks-adapter] generating fresh Lakebase PG OAuth token");
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.config.token)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Failed to generate Lakebase database credential ({status}): {body}"
+            ));
+        }
+
+        let cred: DatabaseCredentialResponse = response.json().await?;
+        eprintln!(
+            "[databricks-adapter] Lakebase PG token generated, expires: {}",
+            cred.expiration_time.as_deref().unwrap_or("unknown")
+        );
+
+        Ok(cred.token)
     }
 }
 
@@ -1944,6 +2008,7 @@ impl Handler for DatabricksAdapter {
             ComputeTarget::Lakebase(lakebase_config) => {
                 let pg_uri = self
                     .lakebase_pg_uri()
+                    .await
                     .map_err(|e| format!("Failed to build Lakebase PostgreSQL URI: {e}"))?;
                 Ok(SetupResponse {
                     driver: AdbcDriver::Databricks,
@@ -1952,7 +2017,7 @@ impl Handler for DatabricksAdapter {
                         Value::String(self.databricks_uri()),
                     ), (
                         "databricks.staging.volume_path".to_string(),
-                        Value::String(lakebase_config.staging_volume_path.clone()),
+                        Value::String(self.config.staging_volume_path.clone()),
                     )]),
                     catalog_namespace: None,
                     read_driver: Some((AdbcDriver::Postgresql, HashMap::from([("uri".to_string(), Value::String(pg_uri))])))
@@ -1964,6 +2029,9 @@ impl Handler for DatabricksAdapter {
                 db_kwargs: HashMap::from([(
                     "uri".to_string(),
                     Value::String(self.databricks_uri()),
+                ), (
+                    "databricks.staging.volume_path".to_string(),
+                    Value::String(self.config.staging_volume_path.clone()),
                 )]),
                 catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
                 read_driver: None,
