@@ -153,6 +153,7 @@ impl AdbcConnection {
         batch: RecordBatch,
     ) -> Result<Option<i64>> {
         let batch = downcast_utf8view(&batch);
+
         self.bulk_ingest_stream(
             target_table,
             target_db_schema,

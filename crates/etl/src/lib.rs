@@ -1052,9 +1052,12 @@ impl ETLPipeline {
         let tables = dataset.tables();
         let mut steps: BTreeMap<u64, Vec<String>> = BTreeMap::new();
 
+        // Only skip the first batch ID per table if initialize() was called.
+        let skip_first = *self.state_rx.borrow() == PipelineState::Initialized;
+
         for name in tables.keys() {
             let ids = dataset.clone().batch_ids(name).await;
-            let initialized_id = ids.front().copied();
+            let initialized_id = if skip_first { ids.front().copied() } else { None };
             let mut seen_ids = HashSet::new();
 
             for id in ids {

@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use std::{collections::HashMap, time::Duration};
-
+use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use arrow_schema::DataType;
 use async_trait::async_trait;
@@ -552,7 +552,10 @@ impl DatabricksAdapter {
             DataType::Float64 => Ok("DOUBLE".to_string()),
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => Ok("STRING".to_string()),
             DataType::Date32 => Ok("DATE".to_string()),
-            DataType::Timestamp(_, _) => Ok("TIMESTAMP".to_string()),
+            DataType::Timestamp(_, tz) => Ok(match tz {
+                Some(_) => {"TIMESTAMP".to_string()}
+                None => {"TIMESTAMP_NTZ".to_string()}
+            }),
             DataType::Decimal128(precision, scale) => {
                 let precision = (*precision).min(38);
                 Ok(format!("DECIMAL({precision}, {scale})"))
@@ -585,7 +588,7 @@ impl DatabricksAdapter {
             .join(", ");
 
         Ok(format!(
-            "CREATE TABLE IF NOT EXISTS {} ({columns}) USING {}",
+            "CREATE TABLE {} ({columns}) USING {}",
             self.table_full_name(table_name),
             table_format.as_sql_using()
         ))
@@ -1442,7 +1445,7 @@ print("OK")
             "spec": {
                 "source_table_full_name": source_table_name,
                 "primary_key_columns": primary_key_columns,
-                "scheduling_policy": "SNAPSHOT",
+                "scheduling_policy": "CONTINUOUS",
             },
             "new_pipeline_spec": {
                 "storage_catalog": self.config.catalog,
@@ -1531,7 +1534,7 @@ print("OK")
                 .unwrap_or_default();
 
             match detailed_state {
-                "SYNCED_TABLE_ONLINE_NO_PENDING_UPDATE" => {
+                "SYNCED_TABLE_ONLINE_NO_PENDING_UPDATE" | "SYNCED_TABLE_ONLINE_CONTINUOUS_UPDATE" => {
                     eprintln!(
                         "[databricks-adapter] synced table '{}' is ONLINE",
                         table_name
@@ -1574,10 +1577,13 @@ print("OK")
             urlencoding::encode(&synced_table_name),
         );
 
+        let payload = json!({"purge_data": true});
+
         let response = self
             .client
             .delete(&url)
             .bearer_auth(&self.config.token)
+            .json(&payload)
             .send()
             .await?;
 
@@ -1834,8 +1840,8 @@ impl Handler for DatabricksAdapter {
             DatabricksVariant::Databricks => {
             }
             DatabricksVariant::Lakebase => {
-                eprintln!("[databricks-adapter] Waiting 20 seconds for schema to initialize");
-                std::thread::sleep(Duration::from_secs(20));
+                eprintln!("[databricks-adapter] Waiting 1 minute for schema to initialize");
+                std::thread::sleep(Duration::from_secs(60));
 
                 let lakebase_config = match &self.config.compute_target {
                     ComputeTarget::Lakebase(cfg) => cfg,
@@ -1864,6 +1870,19 @@ impl Handler for DatabricksAdapter {
                         let table_name = table_name.clone();
                         let pks = dataset_cfg.primary_key_columns.clone();
                         async move {
+                            let alter_table_sql = format!(
+                                "ALTER TABLE {}.{}.{} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)",
+                                Self::quoted_identifier(&this.config.catalog),
+                                Self::quoted_identifier(&this.config.schema),
+                                Self::quoted_identifier(&table_name),
+                            );
+
+                            eprintln!("[databricks-adapter] alter table: {alter_table_sql}");
+
+                            this.execute_sql_statement(&alter_table_sql).await.map_err(|e| {
+                                format!("Failed to alter table '{table_name}': {e}")
+                            })?;
+
                             this.create_synced_table(&table_name, &pks)
                                 .await
                                 .map_err(|e| {
@@ -1971,7 +1990,6 @@ impl Handler for DatabricksAdapter {
                         )
                     }
                 };
-
                 for table_name in &state.created_tables {
                     // a) Delete synced table from Lakebase (via synced tables API).
                     self.delete_synced_table(table_name).await.map_err(|e| {
@@ -2003,6 +2021,7 @@ impl Handler for DatabricksAdapter {
                         format!("Failed to drop managed table '{table_name}': {e}")
                     })?;
                 }
+
                 eprintln!(
                     "[databricks-adapter] cleaned up {} table(s)",
                     state.created_tables.len()
