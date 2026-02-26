@@ -645,12 +645,14 @@ pub(crate) async fn run(
         }
     };
 
+    println!("[progress] Waiting for test workers to finish...");
     let test = match test_future.await {
         Ok(test) => test,
         Err(e) => {
             return Err(e);
         }
     };
+    println!("[progress] Test workers finished, collecting results...");
 
     // Propagate ETL error after collecting the test result
     if let Some(etl_err) = etl_error {
@@ -712,6 +714,7 @@ pub(crate) async fn run(
         }
     }
 
+    println!("[progress] Stopping SUT metrics scraper...");
     // Stop SUT metrics scraper
     sut_scraper_token.cancel();
     if let Some(handle) = sut_scraper_handle
@@ -726,6 +729,7 @@ pub(crate) async fn run(
         );
     }
 
+    println!("[progress] Stopping E2E latency scraper...");
     // Stop freshness scraper and emit raw E2E latency samples.
     // Percentile calculation is performed in dashboard queries.
     e2e_latency_token.cancel();
@@ -751,13 +755,14 @@ pub(crate) async fn run(
     print_batches(&records)?;
 
     // Shutdown streaming exporter before emitting final telemetry
+    println!("[progress] Shutting down streaming exporter...");
     if let Some(exporter) = streaming_exporter {
         exporter.shutdown().await;
     }
 
-    println!("Benchmark completed");
-
+    println!("[progress] Emitting telemetry...");
     telemetry.emit().await?;
+    println!("Benchmark completed");
 
     Ok(())
 }
