@@ -744,21 +744,22 @@ pub(crate) async fn run(
     // Only active when checkpoint validation is NOT enabled.
     e2e_latency_token.cancel();
     if let Some(handle) = e2e_latency_handle
-        && let Ok(samples_by_table) = handle.await {
-            let mut total_samples = 0usize;
-            for (table_name, samples) in &samples_by_table {
-                if !samples.is_empty() {
-                    total_samples += samples.len();
-                    let attrs = vec![KeyValue::new("table_name", table_name.clone())];
-                    for sample in samples {
-                        crate::metrics::E2E_LATENCY_MS.record(*sample, &attrs);
-                    }
+        && let Ok(samples_by_table) = handle.await
+    {
+        let mut total_samples = 0usize;
+        for (table_name, samples) in &samples_by_table {
+            if !samples.is_empty() {
+                total_samples += samples.len();
+                let attrs = vec![KeyValue::new("table_name", table_name.clone())];
+                for sample in samples {
+                    crate::metrics::E2E_LATENCY_MS.record(*sample, &attrs);
                 }
             }
-            if total_samples > 0 {
-                println!("Recorded {total_samples} E2E latency samples");
-            }
         }
+        if total_samples > 0 {
+            println!("Recorded {total_samples} E2E latency samples");
+        }
+    }
 
     println!("{}", vec!["-"; 30].join(""));
     println!("Benchmark metrics:");
