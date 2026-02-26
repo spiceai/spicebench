@@ -443,7 +443,10 @@ impl AdbcSink {
             let key_col = batch.column(key_idx);
             let key_ident = Self::quote_identifier(key);
             let key_literal = Self::sql_literal(key_col.as_ref(), row)?;
-            predicates.push(Self::null_safe_predicate_for_literal(&key_ident, &key_literal));
+            predicates.push(Self::null_safe_predicate_for_literal(
+                &key_ident,
+                &key_literal,
+            ));
         }
 
         let mut set_clauses = Vec::new();
