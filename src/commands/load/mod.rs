@@ -155,7 +155,7 @@ fn spawn_sut_metrics_scraper(
 ///
 /// Returns a map of table name → vec of freshness samples (in milliseconds).
 fn spawn_e2e_latency_check(
-    conn: Arc<std::sync::Mutex<adbc_client::AdbcConnection>>,
+    pool: adbc_client::AdbcConnectionPool,
     table_names: Vec<String>,
     token: CancellationToken,
     interval: Duration,
@@ -177,15 +177,15 @@ fn spawn_e2e_latency_check(
                 () = token.cancelled() => break,
             }
 
-            let conn = Arc::clone(&conn);
+            let pool = pool.clone();
             let tables = table_names.clone();
             let timestamps = Arc::clone(&last_created_at_us);
             let results = tokio::task::spawn_blocking(move || {
                 let mut out: Vec<(String, Option<f64>)> = Vec::new();
-                let mut guard = match conn.lock() {
-                    Ok(g) => g,
+                let mut conn = match pool.get() {
+                    Ok(c) => c,
                     Err(e) => {
-                        eprintln!("E2E latency checker: lock poisoned: {e}");
+                        eprintln!("E2E latency checker: failed to get connection: {e}");
                         return out;
                     }
                 };
@@ -198,7 +198,7 @@ fn spawn_e2e_latency_check(
                         continue;
                     }
                     let sql = format!("SELECT MAX(__created_at) FROM {table}");
-                    match guard.query(&sql) {
+                    match conn.query(&sql) {
                         Ok(batches) => {
                             let sample = batches.first().and_then(|batch| {
                                 let col = batch.column(0);
@@ -329,7 +329,7 @@ pub(crate) async fn run(
     scenario: &Scenario,
     common_args: &CommonArgs,
     version_metadata: &VersionMetadata,
-    adbc_conn: adbc_client::AdbcConnection,
+    read_pool: adbc_client::AdbcConnectionPool,
     etl_pipeline: &mut ETLPipeline,
     checkpoint_steps: Option<usize>,
     checkpoint_dir: Option<&Path>,
@@ -353,11 +353,10 @@ pub(crate) async fn run(
     // Create telemetry with resource upfront, before any metrics calls
     let telemetry = super::create_telemetry_with_resource(common_args, load_resource);
 
-    // Create the appropriate query executor based on args, sharing the ADBC connection
-    // so the freshness scraper can also query through it.
-    let shared_conn = Arc::new(std::sync::Mutex::new(adbc_conn));
-    let executor = Box::new(adbc_executor::AdbcDirectQueryExecutor::from_shared(
-        Arc::clone(&shared_conn),
+    // Create the appropriate query executor based on args.
+    // Each worker gets its own connection from the pool.
+    let executor = Box::new(adbc_executor::AdbcDirectQueryExecutor::new(
+        read_pool.clone(),
     ));
 
     println!("Running benchmark");
@@ -419,7 +418,7 @@ pub(crate) async fn run(
     let e2e_latency_handle = if !has_checkpoint_validation {
         let table_names: Vec<String> = etl_pipeline.dataset().tables().keys().cloned().collect();
         Some(spawn_e2e_latency_check(
-            Arc::clone(&shared_conn),
+            read_pool.clone(),
             table_names,
             e2e_latency_token.clone(),
             Duration::from_secs(5),

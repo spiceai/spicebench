@@ -17,7 +17,6 @@ limitations under the License.
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use adbc_client::AdbcConnection;
 use checkpointer::CheckpointStore;
 use clap::Parser;
 use data_generation::config::{TargetConfig, build_version_prefix};
@@ -227,21 +226,21 @@ async fn run_benchmark(
 
     // Allow system adapter to optionally provide read connection different from the write connection.
     // If not specified - use the same connection as the write connection.
-    let (read_driver_name, read_db_kwards) = match read_driver {
+    let (read_driver_name, read_db_kwargs) = match read_driver {
         None => (driver_name.clone(), db_kwargs.clone()),
-        Some((read_driver, read_db_kwards)) => (read_driver.to_string(), read_db_kwards.clone()),
+        Some((read_driver, read_db_kwargs)) => (read_driver.to_string(), read_db_kwargs.clone()),
     };
 
-    let read_conn = match AdbcConnection::create(&read_driver_name, read_db_kwards) {
-        Ok(conn) => conn,
+    let read_pool = match adbc_client::create_pool(&read_driver_name, read_db_kwargs, Some(common.concurrency as u32 + 1)) {
+        Ok(pool) => pool,
         Err(e) => {
             pipeline.cancel();
             return Err(anyhow::anyhow!(
-                "Failed to create benchmark ADBC connection for driver {driver_name}: {e}"
-            ));
-        }
+            "Failed to create ADBC connection pool for driver {read_driver_name}: {e}"
+        ));
+    }
     };
-    tracing::info!("ADBC read connection established (driver: {driver_name})");
+    tracing::info!("ADBC connection pool created (driver: {read_driver_name}, size: {})", common.concurrency + 1);
 
     commands::load::run(
         system_adapter_client,
@@ -249,7 +248,7 @@ async fn run_benchmark(
         &common.scenario,
         common,
         version_metadata,
-        read_conn,
+        read_pool,
         &mut pipeline,
         checkpoint_steps,
         Some(checkpoint_dir.path()),

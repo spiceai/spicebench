@@ -14,6 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+mod pool;
+pub use pool::{create_pool, AdbcConnectionManager, AdbcConnectionPool};
+
 pub use adbc_core::options::IngestMode;
 
 use adbc_core::options::{self, AdbcVersion, OptionDatabase, OptionValue};
@@ -104,6 +107,18 @@ impl AdbcConnection {
         })?;
 
         Ok(Self::new(conn, driver_name == "databricks"))
+    }
+
+    /// Lightweight check that the connection is still usable.
+    ///
+    /// Used by the r2d2 pool to validate connections before handing them out.
+    pub fn check_valid(&mut self) -> Result<()> {
+        self.conn
+            .new_statement()
+            .map(|_| ())
+            .map_err(|e| Error::ExecuteQuery {
+                reason: e.to_string(),
+            })
     }
 
     /// Execute a SQL query and collect all result batches.
