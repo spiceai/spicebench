@@ -1468,20 +1468,41 @@ print("OK")
             source_table_name, synced_table_name
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.config.token)
-            .json(&payload)
-            .send()
-            .await?;
+        let mut last_err = None;
+        for attempt in 1..=3 {
+            let response = self
+                .client
+                .post(&url)
+                .bearer_auth(&self.config.token)
+                .json(&payload)
+                .send()
+                .await?;
 
-        if !response.status().is_success() {
+            if response.status().is_success() {
+                last_err = None;
+                break;
+            }
+
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
+            let err_msg = format!(
                 "Failed to create synced table '{synced_table_name}' ({status}): {body}"
-            ));
+            );
+
+            if status.is_server_error() && attempt < 3 {
+                eprintln!(
+                    "[databricks-adapter] attempt {attempt}/3 failed (transient {status}), retrying in 5s..."
+                );
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                last_err = Some(err_msg);
+                continue;
+            }
+
+            return Err(anyhow!(err_msg));
+        }
+
+        if let Some(err) = last_err {
+            return Err(anyhow!(err));
         }
 
         eprintln!(

@@ -30,7 +30,7 @@ use etl::sink::s3_hive::S3HiveSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tokio::sync::Mutex;
-use tracing::{Level, trace};
+use tracing::trace;
 use tracing_subscriber::EnvFilter;
 mod args;
 mod commands;
@@ -39,9 +39,6 @@ mod scenario;
 
 use crate::args::{CommonArgs, EtlSink};
 use crate::commands::connect_system_adapter;
-
-const FLIGHTSQL_MAX_MSG_SIZE_OPTION: &str = "adbc.flight.sql.client_option.with_max_msg_size";
-const DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES: &str = "78643200";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -170,20 +167,16 @@ async fn run_benchmark(
     let query_catalog_namespace = setup_response.catalog_namespace.clone();
     let read_driver = setup_response.read_driver.clone();
 
-    let (target_sink, adbc_sink): (Arc<dyn Sink>, Option<Arc<AdbcSink>>) = match common.etl_sink {
+    let target_sink: Arc<dyn Sink> = match common.etl_sink {
         EtlSink::Hive => {
             if let Some(target_config) = target_config.clone() {
-                Ok((
-                    Arc::new(S3HiveSink::new(&target_config)?) as Arc<dyn Sink>,
-                    None,
-                ))
+                Ok(Arc::new(S3HiveSink::new(&target_config)?) as Arc<dyn Sink>)
             } else {
                 Err(anyhow::anyhow!("Target config is missing for Hive sink"))
             }?
         }
         EtlSink::Adbc => {
-            let adbc_sink = Arc::new(AdbcSink::new(&driver_name, db_kwargs.clone(), None)?);
-            (adbc_sink.clone() as Arc<dyn Sink>, None)
+            Arc::new(AdbcSink::new(&driver_name, db_kwargs.clone(), None)?) as Arc<dyn Sink>
         }
     };
 
