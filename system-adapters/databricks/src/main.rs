@@ -117,7 +117,7 @@ struct StdioArgs {
     #[arg(
         long,
         env = "DATABRICKS_DROP_TABLES_ON_TEARDOWN",
-        default_value_t = false
+        default_value_t = true
     )]
     drop_tables_on_teardown: bool,
 
