@@ -55,11 +55,16 @@ on:
         required: false
         default: false
         type: boolean
+      enable_module_debug_logging:
+        description: 'Enable debug logs only for SpiceBench modules (etl, spicebench, data_generation)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   run-spicebench:
     name: Run spicebench
-    runs-on: ubuntu-latest
+    runs-on: spiceai-dev-runners
     timeout-minutes: 600
     concurrency:
       group: spicebench-run-${{ github.event.inputs.system_under_test || 'spice_cloud' }}-${{ github.event.inputs.scenario || 'tpch' }}
@@ -216,14 +221,20 @@ jobs:
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_SINK: ${{ github.event.inputs.etl_sink || 'hive' }}
           VALIDATE_CHECKPOINT_RESULTS: ${{ github.event.inputs.validate_checkpoint_results || 'false' }}
+          ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
-          RUST_LOG: 'info'
         run: |
           set -euo pipefail
+          if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
+            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug'
+          else
+            export RUST_LOG='info'
+          fi
+
           TABLE_FORMAT="parquet"
           EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
           ETL_ENDPOINT=""
