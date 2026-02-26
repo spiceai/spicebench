@@ -30,7 +30,7 @@ use etl::sink::s3_hive::S3HiveSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tokio::sync::Mutex;
-use tracing::trace;
+use tracing::Level;
 use tracing_subscriber::EnvFilter;
 mod args;
 mod commands;
