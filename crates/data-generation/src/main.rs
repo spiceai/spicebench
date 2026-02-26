@@ -65,7 +65,7 @@ fn build(args: &CommonArgs) -> anyhow::Result<DataGenerator> {
         "Configuration"
     );
 
-    let mutations_config = MutationConfig::new(0.1, 0.1);
+    let mutations_config = MutationConfig::new(0.0, 0.0);
 
     let target = Arc::new(S3Storage::new(&target_config)?);
     let storage: Arc<dyn DataStorage> = target.clone() as Arc<dyn DataStorage>;
