@@ -231,16 +231,23 @@ async fn run_benchmark(
         Some((read_driver, read_db_kwargs)) => (read_driver.to_string(), read_db_kwargs.clone()),
     };
 
-    let read_pool = match adbc_client::create_pool(&read_driver_name, read_db_kwargs, Some(common.concurrency as u32 + 1)) {
+    let read_pool = match adbc_client::create_pool(
+        &read_driver_name,
+        read_db_kwargs,
+        Some(common.concurrency as u32 + 1),
+    ) {
         Ok(pool) => pool,
         Err(e) => {
             pipeline.cancel();
             return Err(anyhow::anyhow!(
-            "Failed to create ADBC connection pool for driver {read_driver_name}: {e}"
-        ));
-    }
+                "Failed to create ADBC connection pool for driver {read_driver_name}: {e}"
+            ));
+        }
     };
-    tracing::info!("ADBC connection pool created (driver: {read_driver_name}, size: {})", common.concurrency + 1);
+    tracing::info!(
+        "ADBC connection pool created (driver: {read_driver_name}, size: {})",
+        common.concurrency + 1
+    );
 
     commands::load::run(
         system_adapter_client,

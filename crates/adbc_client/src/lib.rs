@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 mod pool;
-pub use pool::{create_pool, AdbcConnectionManager, AdbcConnectionPool};
+pub use pool::{AdbcConnectionManager, AdbcConnectionPool, create_pool};
 
 pub use adbc_core::options::IngestMode;
 
