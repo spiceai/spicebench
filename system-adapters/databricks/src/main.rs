@@ -1950,6 +1950,14 @@ impl Handler for DatabricksAdapter {
 
             // Create managed UC tables (sources for synced tables) via SQL Warehouse.
             for (table_name, dataset_cfg) in &datasets {
+                // Drop any leftover table from a previous run to make setup idempotent.
+                let drop_sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
+                self.execute_sql_statement(&drop_sql).await.map_err(|e| {
+                    format!(
+                        "Failed to drop existing table '{table_name}' during create_tables: {e}"
+                    )
+                })?;
+
                 let ddl = self
                     .create_table_ddl(table_name, dataset_cfg, TableFormat::Delta)
                     .map_err(|e| {
