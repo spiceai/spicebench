@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub mod databricks;
-pub mod spiceai;
+// pub mod databricks;
+// pub mod spiceai;
 
 pub use adbc_core::options::IngestMode;
 
@@ -55,13 +55,17 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// Use a connector-specific builder (e.g. [`databricks::connect`]) to obtain an instance.
 pub struct AdbcConnection {
     conn: adbc_driver_manager::ManagedConnection,
+    downcast_utf8view: bool,
 }
 
 impl AdbcConnection {
     /// Create an `AdbcConnection` from an already-established [`ManagedConnection`].
     #[must_use]
-    pub fn new(conn: adbc_driver_manager::ManagedConnection) -> Self {
-        Self { conn }
+    pub fn new(conn: adbc_driver_manager::ManagedConnection, downcast_utf8view: bool) -> Self {
+        Self {
+            conn,
+            downcast_utf8view,
+        }
     }
 
     /// Create an `AdbcConnection` from a driver name and a map of key-value options.
@@ -102,7 +106,7 @@ impl AdbcConnection {
             reason: e.to_string(),
         })?;
 
-        Ok(Self::new(conn))
+        Ok(Self::new(conn, driver_name == "databricks"))
     }
 
     /// Execute a SQL query and collect all result batches.
@@ -153,7 +157,11 @@ impl AdbcConnection {
         mode: options::IngestMode,
         batch: RecordBatch,
     ) -> Result<Option<i64>> {
-        let batch = downcast_utf8view(&batch);
+        let batch = if self.downcast_utf8view {
+            downcast_utf8view(&batch)
+        } else {
+            batch
+        };
 
         self.bulk_ingest_stream(
             target_table,
