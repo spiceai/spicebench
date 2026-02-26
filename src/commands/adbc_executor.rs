@@ -15,9 +15,7 @@ limitations under the License.
 */
 #![allow(dead_code)]
 
-use std::sync::{Arc, Mutex};
-
-use adbc_client::AdbcConnection;
+use adbc_client::AdbcConnectionPool;
 use test_framework::{
     anyhow,
     execution::{ExecutionResult, QueryExecutor},
@@ -25,31 +23,17 @@ use test_framework::{
 
 /// Executes queries directly against a database via ADBC.
 ///
-/// `AdbcConnection` is not `Send`/`Sync` (the underlying `ManagedConnection`
-/// uses raw FFI pointers), so we wrap it in `Arc<Mutex<>>` to satisfy the
-/// `Send + Sync` bounds required by [`QueryExecutor`] and to allow cloning
-/// the executor across concurrent tasks.
+/// Each call to [`execute`] checks out a connection from the pool,
+/// runs the query, and returns the connection when the guard is dropped.
+/// This allows concurrent workers to issue queries in parallel.
+#[derive(Clone)]
 pub(crate) struct AdbcDirectQueryExecutor {
-    conn: Arc<Mutex<AdbcConnection>>,
+    pool: AdbcConnectionPool,
 }
 
 impl AdbcDirectQueryExecutor {
-    pub(crate) fn new(conn: AdbcConnection) -> Self {
-        Self {
-            conn: Arc::new(Mutex::new(conn)),
-        }
-    }
-
-    pub(crate) fn from_shared(conn: Arc<Mutex<AdbcConnection>>) -> Self {
-        Self { conn }
-    }
-}
-
-impl Clone for AdbcDirectQueryExecutor {
-    fn clone(&self) -> Self {
-        Self {
-            conn: Arc::clone(&self.conn),
-        }
+    pub(crate) fn new(pool: AdbcConnectionPool) -> Self {
+        Self { pool }
     }
 }
 
@@ -67,16 +51,14 @@ impl QueryExecutor for AdbcDirectQueryExecutor {
             .trim_end()
             .to_string();
 
-        let conn = Arc::clone(&self.conn);
+        let pool = self.pool.clone();
 
         // `AdbcConnection::query()` is synchronous (ADBC has no async API),
         // so we run it on the blocking thread pool to avoid stalling the tokio runtime.
         let (duration, batches) = tokio::task::spawn_blocking(move || {
             let start = std::time::Instant::now();
-            let mut guard = conn
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
-            let batches = guard.query(&sql).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let mut conn = pool.get().map_err(|e| anyhow::anyhow!("{e}"))?;
+            let batches = conn.query(&sql).map_err(|e| anyhow::anyhow!("{e}"))?;
             Ok::<_, anyhow::Error>((start.elapsed(), batches))
         })
         .await??;
