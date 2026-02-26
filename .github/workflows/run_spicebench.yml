@@ -235,7 +235,7 @@ jobs:
           DATABRICKS_STAGING_VOLUME_PATH: ${{ secrets.DATABRICKS_STAGING_VOLUME_PATH }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || '8' }}
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '8' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
