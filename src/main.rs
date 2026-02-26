@@ -248,6 +248,7 @@ async fn run_benchmark(
         run_id,
         &common.scenario,
         common,
+        version_metadata,
         read_conn,
         &mut pipeline,
         checkpoint_steps,
