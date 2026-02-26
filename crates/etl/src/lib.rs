@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray};
 use arrow::compute;
@@ -34,7 +34,7 @@ use system_adapter_protocol::DatasetConfig as ProtocolDatasetConfig;
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::sink::{InsertOp, Sink};
 
@@ -55,7 +55,7 @@ const TARGET_BATCH_ROWS: usize = 8_192 * 4;
 
 /// Maximum number of in-flight sink writes allowed per table task when the
 /// current segment set is insert-only.
-const MAX_IN_FLIGHT_TABLE_WRITES: usize = 2;
+const MAX_IN_FLIGHT_TABLE_WRITES: usize = 1;
 
 /// Maximum number of concurrent source logical-batch reads per ETL table task.
 const MAX_IN_FLIGHT_SOURCE_BATCH_READS: usize = 2;
@@ -111,6 +111,33 @@ fn build_partition_columns(dataset_columns: Vec<String>) -> Vec<String> {
     }
 
     columns
+}
+
+fn record_timing_sample_ms(samples: &StdArc<StdMutex<Vec<u64>>>, elapsed: Duration) {
+    let elapsed_ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
+    let mut values = samples.lock().expect("timing samples lock poisoned");
+    values.push(elapsed_ms);
+}
+
+fn take_median_sample_ms(samples: &StdArc<StdMutex<Vec<u64>>>) -> Option<(f64, usize)> {
+    let mut values = {
+        let mut guard = samples.lock().expect("timing samples lock poisoned");
+        if guard.is_empty() {
+            return None;
+        }
+        std::mem::take(&mut *guard)
+    };
+
+    values.sort_unstable();
+    let count = values.len();
+    let mid = count / 2;
+    let median_ms = if count % 2 == 1 {
+        values[mid] as f64
+    } else {
+        (values[mid - 1] as f64 + values[mid] as f64) / 2.0
+    };
+
+    Some((median_ms, count))
 }
 
 /// Concatenates small input batches and splits large input batches so each
@@ -948,8 +975,16 @@ impl ETLPipeline {
     /// the rehydrated Arrow schema. This can be used to build a
     /// [`CreateTablesRequest`](system_adapter_protocol::CreateTablesRequest) for
     /// the system adapter.
-    pub fn create_tables_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
-        self.dataset
+    pub fn create_tables_request_datasets(
+        dataset_source: DatasetSource,
+        config: &GenerationDatasetConfig,
+        data_storage: Arc<dyn DataStorage>,
+        mutations: &MutationConfig,
+        target_config: Option<TargetConfig>,
+    ) -> anyhow::Result<HashMap<String, ProtocolDatasetConfig>> {
+        let dataset = dataset_source.create(config, mutations, Arc::clone(&data_storage))?;
+
+        Ok(dataset
             .tables()
             .into_iter()
             .map(|(name, table)| {
@@ -964,11 +999,11 @@ impl ETLPipeline {
                     .collect();
                 let schema: SchemaRef = Arc::new(Schema::new(fields));
                 let schema = schema_with_created_at(&schema);
-                let primary_key_columns = self.dataset.primary_key(&name);
+                let primary_key_columns = dataset.primary_key(&name);
                 let config = ProtocolDatasetConfig {
                     schema,
                     primary_key_columns,
-                    location: self.target_config.as_ref().map(|config| {
+                    location: target_config.as_ref().map(|config| {
                         format!(
                             "s3://{}/{prefix}/{name}/",
                             config.bucket,
@@ -976,12 +1011,12 @@ impl ETLPipeline {
                         )
                     }),
                     time_column: Some(CREATED_AT_COLUMN.to_string()),
-                    partition_columns: self.dataset.partition_columns(&name),
+                    partition_columns: dataset.partition_columns(&name),
                 };
 
                 (name.clone(), config)
             })
-            .collect()
+            .collect())
     }
 
     /// Initializes the ETL pipeline by processing only the first batch (batch
@@ -1240,7 +1275,7 @@ impl ETLPipeline {
         let tables = dataset.tables();
         let mut steps: BTreeMap<u64, Vec<String>> = BTreeMap::new();
 
-        // Only skip the first batch ID per table if initialize() was called
+        // Only skip the first batch ID per table if initialize() was called.
         let skip_first = *self.state_rx.borrow() == PipelineState::Initialized;
 
         for name in tables.keys() {
@@ -1250,7 +1285,6 @@ impl ETLPipeline {
             } else {
                 None
             };
-
             let mut seen_ids = HashSet::new();
 
             for id in ids {
@@ -1360,11 +1394,13 @@ async fn run_pipeline(
         "ETL pipeline run started"
     );
 
-    // Shared progress counters for periodic logging.
+    // Shared progress counters and timing samples for periodic logging.
     let logical_steps_consumed = StdArc::new(AtomicU64::new(0));
     let batches_processed = StdArc::new(AtomicU64::new(0));
     let rows_processed = StdArc::new(AtomicU64::new(0));
     let tables_finished_counter = StdArc::new(AtomicU64::new(0));
+    let batch_retrieval_samples_ms = StdArc::new(StdMutex::new(Vec::<u64>::new()));
+    let sink_write_samples_ms = StdArc::new(StdMutex::new(Vec::<u64>::new()));
     let pipeline_start = Instant::now();
 
     // Spawn periodic progress logger (every 5 seconds).
@@ -1373,6 +1409,8 @@ async fn run_pipeline(
         let batches_processed = StdArc::clone(&batches_processed);
         let rows_processed = StdArc::clone(&rows_processed);
         let tables_finished_counter = StdArc::clone(&tables_finished_counter);
+        let batch_retrieval_samples_ms = StdArc::clone(&batch_retrieval_samples_ms);
+        let sink_write_samples_ms = StdArc::clone(&sink_write_samples_ms);
         let cancel = cancel.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -1398,6 +1436,23 @@ async fn run_pipeline(
                             rows_per_sec = format!("{:.1}", rows_done as f64 / secs),
                             "ETL progress"
                         );
+
+                        let retrieval_summary = take_median_sample_ms(&batch_retrieval_samples_ms);
+                        let sink_write_summary = take_median_sample_ms(&sink_write_samples_ms);
+                        if retrieval_summary.is_some() || sink_write_summary.is_some() {
+                            let (retrieval_median_ms, retrieval_samples) =
+                                retrieval_summary.unwrap_or((0.0, 0));
+                            let (sink_write_median_ms, sink_write_samples) =
+                                sink_write_summary.unwrap_or((0.0, 0));
+
+                            debug!(
+                                retrieval_samples,
+                                retrieval_median_ms = format!("{retrieval_median_ms:.1}"),
+                                sink_write_samples,
+                                sink_write_median_ms = format!("{sink_write_median_ms:.1}"),
+                                "ETL batch timing medians (last 5s)"
+                            );
+                        }
                     }
                     () = cancel.cancelled() => break,
                 }
@@ -1483,12 +1538,16 @@ async fn run_pipeline(
             let work_state = Arc::clone(&work_state);
             let logical_steps_consumed = StdArc::clone(&logical_steps_consumed);
             let last_created_at = Arc::clone(&last_created_at_us);
+            let batch_retrieval_samples_ms = StdArc::clone(&batch_retrieval_samples_ms);
+            let sink_write_samples_ms = StdArc::clone(&sink_write_samples_ms);
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
                 .unwrap_or_else(|| vec![CREATED_AT_COLUMN.to_string()]);
 
             join_set.spawn(async move {
+                let retrieval_started_at = Instant::now();
+
                 // 1. Read from source; keep reading subsequent table batches
                 // until we accumulate enough rows for efficient downstream work.
                 let (source_batches, key_columns, table_finished, consumed_work_units, rows_read) =
@@ -1538,6 +1597,12 @@ async fn run_pipeline(
                         ));
                     }
                 };
+
+                record_timing_sample_ms(
+                    &batch_retrieval_samples_ms,
+                    retrieval_started_at.elapsed(),
+                );
+
                 for batch in &coalesced {
                     let segments = match split_batch_by_op(batch, &key_columns) {
                         Ok(s) => s,
@@ -1553,6 +1618,8 @@ async fn run_pipeline(
                             ));
                         }
                     };
+
+                    let write_started_at = Instant::now();
 
                     if let Err(err_msg) = write_segments_for_batch(
                         Arc::clone(&data_sink),
@@ -1572,13 +1639,16 @@ async fn run_pipeline(
                         );
                         return Err(err_msg);
                     }
+
+                    record_timing_sample_ms(&sink_write_samples_ms, write_started_at.elapsed());
+
                     let tracker = last_created_at
                         .get(&table_name)
                         .expect("table missing from last_created_at map");
                     tracker.store(batch_ts, Ordering::Relaxed);
                 }
 
-                debug!(
+                trace!(
                     table = %table_name,
                     batch_id,
                     "Table batch processed"
@@ -1619,7 +1689,7 @@ async fn run_pipeline(
         batches_processed.fetch_add(step_batch_count, Ordering::Relaxed);
         rows_processed.fetch_add(step_rows_count, Ordering::Relaxed);
 
-        debug!(
+        trace!(
             batch_id,
             outer_steps_processed,
             steps_processed = logical_steps_consumed.load(Ordering::Relaxed),
