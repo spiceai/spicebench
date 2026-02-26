@@ -292,6 +292,7 @@ jobs:
           fi
 
           if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_DB_NAME=${LAKEBASE_PG_DB_NAME}"
