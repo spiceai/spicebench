@@ -392,6 +392,14 @@ impl AdbcSink {
         Ok(value)
     }
 
+    fn null_safe_predicate_for_literal(identifier: &str, literal: &str) -> String {
+        if literal == "NULL" {
+            format!("{identifier} IS NULL")
+        } else {
+            format!("{identifier} = {literal}")
+        }
+    }
+
     fn delete_sql_for_row(
         &self,
         table_name: &str,
@@ -408,7 +416,7 @@ impl AdbcSink {
             let column = batch.column(idx);
             let key_ident = Self::quote_identifier(key);
             let literal = Self::sql_literal(column.as_ref(), row)?;
-            predicates.push(format!("{key_ident} IS NOT DISTINCT FROM {literal}"));
+            predicates.push(Self::null_safe_predicate_for_literal(&key_ident, &literal));
         }
 
         Ok(format!(
@@ -435,7 +443,7 @@ impl AdbcSink {
             let key_col = batch.column(key_idx);
             let key_ident = Self::quote_identifier(key);
             let key_literal = Self::sql_literal(key_col.as_ref(), row)?;
-            predicates.push(format!("{key_ident} IS NOT DISTINCT FROM {key_literal}"));
+            predicates.push(Self::null_safe_predicate_for_literal(&key_ident, &key_literal));
         }
 
         let mut set_clauses = Vec::new();
