@@ -50,6 +50,11 @@ on:
         required: false
         default: '8'
         type: string
+      validate_results:
+        description: 'Whether to validate results'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   run-spicebench:
@@ -229,6 +234,7 @@ jobs:
           ETL_VERSION: ${{ github.event.inputs.etl_version }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_SINK: ${{ github.event.inputs.etl_sink || 'hive' }}
+          VALIDATE_RESULTS: ${{ github.event.inputs.validate_results }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -301,4 +307,5 @@ jobs:
             ${ETL_SINK_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
-            ${ADAPTER_ENVS}
+            ${ADAPTER_ENVS} \
+            --validate_results=${{ github.event.inputs.validate_results }}

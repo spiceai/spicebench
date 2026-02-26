@@ -2026,7 +2026,7 @@ impl Handler for DatabricksAdapter {
 
         match &self.config.compute_target {
             // For Lakebase, return the Databricks ADBC driver for ingestion and PostgreSQL driver for reading.
-            ComputeTarget::Lakebase(lakebase_config) => {
+            ComputeTarget::Lakebase(_) => {
                 let pg_uri = self
                     .lakebase_pg_uri()
                     .await
