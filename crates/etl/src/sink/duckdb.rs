@@ -147,7 +147,10 @@ impl DuckDBSink {
             .iter()
             .map(|k| {
                 let col = quote_identifier(k);
-                format!("{target_ident}.{col} IS NOT DISTINCT FROM __stg.{col}")
+                null_safe_equality_predicate(
+                    &format!("{target_ident}.{col}"),
+                    &format!("__stg.{col}"),
+                )
             })
             .collect();
 
@@ -170,7 +173,10 @@ impl DuckDBSink {
             .iter()
             .map(|k| {
                 let col = quote_identifier(k);
-                format!("{target_ident}.{col} IS NOT DISTINCT FROM __stg.{col}")
+                null_safe_equality_predicate(
+                    &format!("{target_ident}.{col}"),
+                    &format!("__stg.{col}"),
+                )
             })
             .collect();
 
@@ -390,6 +396,10 @@ impl Sink for DuckDBSink {
 
 fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn null_safe_equality_predicate(lhs: &str, rhs: &str) -> String {
+    format!("({lhs} = {rhs} OR ({lhs} IS NULL AND {rhs} IS NULL))")
 }
 
 fn sql_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {

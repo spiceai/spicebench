@@ -166,32 +166,53 @@ async fn run_benchmark(
         target_config.clone(),
     )?;
 
-    let setup_response = system_adapter_client
-        .lock()
-        .await
-        .setup(
-            run_id,
-            setup_metadata.clone(),
-            datasets.clone(),
-            Some(etl_sink_type),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
-
-    let driver_name = setup_response.driver.to_string();
-    let mut db_kwargs = setup_response.db_kwargs.clone();
-    let query_catalog_namespace = setup_response.catalog_namespace.clone();
-    let read_driver = setup_response.read_driver.clone();
-
-    let target_sink: Arc<dyn Sink> = match common.etl_sink {
+    let (setup_response, mut pipeline) = match common.etl_sink {
         EtlSink::Hive => {
-            if let Some(target_config) = target_config.clone() {
-                Ok(Arc::new(S3HiveSink::new(&target_config)?) as Arc<dyn Sink>)
-            } else {
-                Err(anyhow::anyhow!("Target config is missing for Hive sink"))
-            }?
+            let target_config = target_config
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("Target config is missing for Hive sink"))?;
+
+            let target_sink: Arc<dyn Sink> = Arc::new(S3HiveSink::new(&target_config)?);
+            let mut pipeline = ETLPipeline::new(
+                dataset_source,
+                &generation_config,
+                Arc::clone(&data_source),
+                target_sink,
+                &mutations,
+            )?
+            .with_target_config(target_config);
+
+            pipeline.initialize().await?;
+
+            let setup_response = system_adapter_client
+                .lock()
+                .await
+                .setup(
+                    run_id,
+                    setup_metadata.clone(),
+                    datasets.clone(),
+                    Some(etl_sink_type),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
+
+            (setup_response, pipeline)
         }
         EtlSink::Adbc => {
+            let setup_response = system_adapter_client
+                .lock()
+                .await
+                .setup(
+                    run_id,
+                    setup_metadata.clone(),
+                    datasets.clone(),
+                    Some(etl_sink_type),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
+
+            let driver_name = setup_response.driver.to_string();
+            let mut db_kwargs = setup_response.db_kwargs.clone();
             if driver_name.eq_ignore_ascii_case("flightsql") {
                 db_kwargs
                     .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
@@ -203,25 +224,36 @@ async fn run_benchmark(
             let (target_db_catalog, target_db_schema) =
                 infer_adbc_target_namespace(setup_response.catalog_namespace.as_deref());
 
-            Arc::new(AdbcSink::new(
+            let target_sink: Arc<dyn Sink> = Arc::new(AdbcSink::new(
                 &driver_name,
-                db_kwargs.clone(),
+                db_kwargs,
                 target_db_catalog,
                 target_db_schema,
-            )?) as Arc<dyn Sink>
+            )?);
+
+            let pipeline = ETLPipeline::new(
+                dataset_source,
+                &generation_config,
+                Arc::clone(&data_source),
+                target_sink,
+                &mutations,
+            )?;
+
+            (setup_response, pipeline)
         }
     };
 
-    let mut pipeline = ETLPipeline::new(
-        dataset_source,
-        &generation_config,
-        Arc::clone(&data_source),
-        target_sink,
-        &mutations,
-    )?;
+    let driver_name = setup_response.driver.to_string();
+    let mut db_kwargs = setup_response.db_kwargs.clone();
+    let query_catalog_namespace = setup_response.catalog_namespace.clone();
+    let read_driver = setup_response.read_driver.clone();
 
-    if let Some(target_config) = target_config {
-        pipeline = pipeline.with_target_config(target_config);
+    if matches!(common.etl_sink, EtlSink::Adbc) && driver_name.eq_ignore_ascii_case("flightsql") {
+        db_kwargs
+            .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
+            .or_insert_with(|| {
+                serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
+            });
     }
 
     // Allow system adapter to optionally provide read connection different from the write connection.
