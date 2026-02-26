@@ -413,8 +413,7 @@ pub(crate) async fn run(
     // since checkpoint validation provides its own e2e latency measurement.
     let e2e_latency_token = CancellationToken::new();
     let e2e_latency_handle = if !has_checkpoint_validation {
-        let table_names: Vec<String> =
-            etl_pipeline.dataset().tables().keys().cloned().collect();
+        let table_names: Vec<String> = etl_pipeline.dataset().tables().keys().cloned().collect();
         Some(spawn_e2e_latency_check(
             Arc::clone(&shared_conn),
             table_names,
@@ -740,8 +739,8 @@ pub(crate) async fn run(
     // Percentile calculation is performed in dashboard queries.
     // Only active when checkpoint validation is NOT enabled.
     e2e_latency_token.cancel();
-    if let Some(handle) = e2e_latency_handle {
-        if let Ok(samples_by_table) = handle.await {
+    if let Some(handle) = e2e_latency_handle
+        && let Ok(samples_by_table) = handle.await {
             let mut total_samples = 0usize;
             for (table_name, samples) in &samples_by_table {
                 if !samples.is_empty() {
@@ -756,7 +755,6 @@ pub(crate) async fn run(
                 println!("Recorded {total_samples} E2E latency samples");
             }
         }
-    }
 
     println!("{}", vec!["-"; 30].join(""));
     println!("Benchmark metrics:");
