@@ -308,4 +308,4 @@ jobs:
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
-            --validate-results=${{ github.event.inputs.validate_results }}
+            ${{ github.event.inputs.validate_results == 'true' && '--validate-results' || '' }}
