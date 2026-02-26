@@ -91,6 +91,12 @@ struct CheckpointValidationState {
     status_tx: Arc<tokio::sync::watch::Sender<ValidationStatus>>,
     /// Receiver for validation commands from the load runner.
     command_rx: tokio::sync::watch::Receiver<Option<ValidationCommand>>,
+    /// Per-query latest validation result in the current iteration window.
+    /// Cleared each time an iteration boundary is detected.
+    current_iteration_results: HashMap<Arc<str>, bool>,
+    /// Set to `true` once a complete iteration finishes with every query
+    /// passing. Sticky — once set, stays `true` for the validation window.
+    converged: bool,
 }
 
 impl CheckpointValidationState {
@@ -103,6 +109,8 @@ impl CheckpointValidationState {
             completed_iterations: 0,
             status_tx: handles.status_tx,
             command_rx: handles.command_rx,
+            current_iteration_results: HashMap::new(),
+            converged: false,
         }
     }
 
@@ -124,6 +132,8 @@ impl CheckpointValidationState {
                 self.expected_results = expected_results;
                 self.outcomes.clear();
                 self.completed_iterations = 0;
+                self.current_iteration_results.clear();
+                self.converged = false;
                 eprintln!(
                     "Checkpoint validation enabled for checkpoint {}",
                     checkpoint_idx
@@ -135,6 +145,8 @@ impl CheckpointValidationState {
                 self.active = false;
                 self.expected_results.clear();
                 self.outcomes.clear();
+                self.current_iteration_results.clear();
+                self.converged = false;
                 eprintln!("Checkpoint validation disabled");
                 let _ = self.status_tx.send(ValidationStatus::Inactive);
                 true
@@ -167,6 +179,10 @@ impl CheckpointValidationState {
         match &result {
             Ok(QueryValidationResult::Pass) => {
                 self.record_outcome(query_name, true, None);
+                if !self.converged {
+                    self.current_iteration_results
+                        .insert(Arc::clone(query_name), true);
+                }
             }
             Ok(QueryValidationResult::Fail(reason)) => {
                 eprintln!(
@@ -174,6 +190,10 @@ impl CheckpointValidationState {
                     self.checkpoint_idx, query_name, reason
                 );
                 self.record_outcome(query_name, false, Some(reason.clone()));
+                if !self.converged {
+                    self.current_iteration_results
+                        .insert(Arc::clone(query_name), false);
+                }
             }
             Err(e) => {
                 eprintln!(
@@ -186,6 +206,10 @@ impl CheckpointValidationState {
                     false,
                     Some(crate::queries::validation::QueryValidationFailReason::NoExpectedAnswer),
                 );
+                if !self.converged {
+                    self.current_iteration_results
+                        .insert(Arc::clone(query_name), false);
+                }
             }
         }
 
@@ -227,8 +251,24 @@ impl CheckpointValidationState {
     /// whether checkpoint validation is active, so the load runner can
     /// wait for at least one completed iteration before shutting down
     /// query workers.
+    ///
+    /// When active, also checks whether the just-completed iteration had
+    /// every query pass.  If so, sets `converged = true` (sticky).
     fn record_iteration_completed(&mut self) {
         self.completed_iterations += 1;
+
+        if !self.converged && !self.current_iteration_results.is_empty() {
+            let all_passed = self.current_iteration_results.values().all(|&v| v);
+            if all_passed {
+                self.converged = true;
+                eprintln!(
+                    "Checkpoint {} validation converged after {} iterations",
+                    self.checkpoint_idx, self.completed_iterations
+                );
+            }
+        }
+        self.current_iteration_results.clear();
+
         self.publish_status();
     }
 
@@ -237,6 +277,7 @@ impl CheckpointValidationState {
             checkpoint_idx: self.checkpoint_idx,
             outcomes: self.outcomes.values().cloned().collect(),
             completed_iterations: self.completed_iterations,
+            converged: self.converged,
         };
         let _ = self.status_tx.send(status);
     }
