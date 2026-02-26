@@ -1591,7 +1591,10 @@ async fn run_pipeline(
                     }
                 };
 
-                record_timing_sample_ms(&batch_retrieval_samples_ms, retrieval_started_at.elapsed());
+                record_timing_sample_ms(
+                    &batch_retrieval_samples_ms,
+                    retrieval_started_at.elapsed(),
+                );
 
                 for batch in &coalesced {
                     let segments = match split_batch_by_op(batch, &key_columns) {
