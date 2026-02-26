@@ -1,0 +1,50 @@
+name: Internet Speed Matrix
+
+on:
+  workflow_dispatch:
+
+jobs:
+  speed-test:
+    name: Speed test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - spiceai-macos
+          - ubuntu-latest
+          - spiceai-dev-runners
+
+    steps:
+      - name: Run internet speed check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEST_URL="https://wa-us-ping.vultr.com/vultr.com.100MB.bin"
+
+          echo "Runner: ${{ matrix.runner }}"
+          echo "Testing download speed with: ${TEST_URL}"
+
+          METRICS=$(curl -L --fail --silent --show-error --output /dev/null \
+            --write-out "size_download=%{size_download}\ntime_total=%{time_total}\ntime_connect=%{time_connect}\ntime_starttransfer=%{time_starttransfer}\n" \
+            "${TEST_URL}")
+
+          echo "${METRICS}"
+
+          SIZE_DOWNLOAD=$(echo "${METRICS}" | awk -F= '/^size_download=/{print $2}')
+          TIME_TOTAL=$(echo "${METRICS}" | awk -F= '/^time_total=/{print $2}')
+
+          if [ -z "${SIZE_DOWNLOAD}" ] || [ -z "${TIME_TOTAL}" ]; then
+            echo "Unable to parse speed test metrics"
+            exit 1
+          fi
+
+          if awk "BEGIN {exit !(${TIME_TOTAL} > 0)}"; then
+            SPEED_MBPS=$(awk "BEGIN {printf \"%.2f\", (${SIZE_DOWNLOAD} * 8) / (1000000 * ${TIME_TOTAL})}")
+            echo "Estimated download speed: ${SPEED_MBPS} Mbps"
+          else
+            echo "Invalid total transfer time reported: ${TIME_TOTAL}"
+            exit 1
+          fi
