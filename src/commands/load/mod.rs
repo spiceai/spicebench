@@ -388,17 +388,6 @@ pub(crate) async fn run(
         None
     };
 
-    // Spawn e2e checker
-    let table_names: Vec<String> = etl_pipeline.dataset().tables().keys().cloned().collect();
-    let e2e_latency_token = CancellationToken::new();
-    let e2e_latency_handle = spawn_e2e_latency_check(
-        Arc::clone(&shared_conn),
-        table_names,
-        e2e_latency_token.clone(),
-        Duration::from_secs(5),
-        etl_pipeline.last_created_at_us(),
-    );
-
     // Record client concurrency as a gauge
     crate::metrics::ACTIVE_CONNECTIONS.record(
         common_args.concurrency.try_into().unwrap_or(0),
@@ -423,6 +412,22 @@ pub(crate) async fn run(
 
     let has_checkpoint_validation =
         common_args.validate_results && checkpoint_steps.is_some() && checkpoint_dir.is_some();
+
+    // Spawn e2e checker — only when checkpoint validation is NOT enabled,
+    // since checkpoint validation provides its own e2e latency measurement.
+    let e2e_latency_token = CancellationToken::new();
+    let e2e_latency_handle = if !has_checkpoint_validation {
+        let table_names: Vec<String> = etl_pipeline.dataset().tables().keys().cloned().collect();
+        Some(spawn_e2e_latency_check(
+            Arc::clone(&shared_conn),
+            table_names,
+            e2e_latency_token.clone(),
+            Duration::from_secs(5),
+            etl_pipeline.last_created_at_us(),
+        ))
+    } else {
+        None
+    };
 
     let (query_set, test_builder) = super::build_test_with_validation(
         scenario,
@@ -489,6 +494,8 @@ pub(crate) async fn run(
                                         "Enabling checkpoint validation"
                                     );
 
+                                    let etl_pause_time = tokio::time::Instant::now();
+
                                     // Tell worker 0 to start validating.
                                     let _ = validation_controller.command_tx.send(Some(
                                         ValidationCommand::Enable {
@@ -497,35 +504,30 @@ pub(crate) async fn run(
                                         },
                                     ));
 
-                                    // Poll the validation status until at least
-                                    // `target_iterations` complete query-set iterations
-                                    // have finished, or a maximum timeout is reached.
-                                    const TARGET_ITERATIONS: usize = 2;
+                                    // Poll the validation status until convergence
+                                    // (a complete iteration where every query passes)
+                                    // or until the timeout is reached.
                                     const POLL_INTERVAL: Duration = Duration::from_secs(5);
                                     const MAX_WAIT: Duration = Duration::from_secs(600);
-                                    let wait_start = tokio::time::Instant::now();
+                                    let mut timed_out = false;
                                     loop {
                                         let status =
                                             validation_controller.status_rx.borrow().clone();
-                                        // Check both checkpoint_idx and iteration count to
-                                        // avoid acting on stale status from a previous window.
-                                        if let ValidationStatus::Active {
-                                            checkpoint_idx: idx,
-                                            completed_iterations,
-                                            ..
-                                        } = &status
-                                            && *idx == checkpoint_idx
-                                                && *completed_iterations >= TARGET_ITERATIONS
-                                            {
-                                                break;
-                                            }
-                                        if wait_start.elapsed() >= MAX_WAIT {
-                                            tracing::warn!(
+                                        if status.converged() {
+                                            let latency_ms =
+                                                etl_pause_time.elapsed().as_secs_f64() * 1000.0;
+                                            println!(
+                                                "Checkpoint {} converged in {:.1}s ({} iterations)",
                                                 checkpoint_idx,
-                                                completed = status.completed_iterations(),
-                                                target = TARGET_ITERATIONS,
-                                                "Validation window timed out before reaching target iterations"
+                                                latency_ms / 1000.0,
+                                                status.completed_iterations(),
                                             );
+                                            crate::metrics::E2E_LATENCY_MS
+                                                .record(latency_ms, &metric_attributes);
+                                            break;
+                                        }
+                                        if etl_pause_time.elapsed() >= MAX_WAIT {
+                                            timed_out = true;
                                             break;
                                         }
                                         tokio::time::sleep(POLL_INTERVAL).await;
@@ -533,38 +535,33 @@ pub(crate) async fn run(
 
                                     // Read the validation status before disabling.
                                     let status = validation_controller.status_rx.borrow().clone();
-                                    match &status {
-                                        ValidationStatus::Active {
-                                            checkpoint_idx: idx,
-                                            outcomes,
-                                            completed_iterations: iters,
-                                        } => {
-                                            let total_pass: usize =
-                                                outcomes.iter().map(|o| o.pass_count).sum();
-                                            let total_fail: usize =
-                                                outcomes.iter().map(|o| o.fail_count).sum();
-                                            println!(
-                                                "Checkpoint {idx} validation ({iters} iterations): {} queries, {total_pass} pass, {total_fail} fail",
-                                                outcomes.len()
-                                            );
-                                            if total_fail > 0 {
-                                                for o in outcomes {
-                                                    if o.fail_count > 0 {
-                                                        eprintln!(
-                                                            "  FAIL - query '{}': {} pass, {} fail, last failure: {:?}",
-                                                            o.query_name,
-                                                            o.pass_count,
-                                                            o.fail_count,
-                                                            o.last_failure
-                                                        );
-                                                    }
+                                    if let ValidationStatus::Active {
+                                        checkpoint_idx: idx,
+                                        outcomes,
+                                        completed_iterations: iters,
+                                        converged,
+                                    } = &status
+                                    {
+                                        let total_pass: usize =
+                                            outcomes.iter().map(|o| o.pass_count).sum();
+                                        let total_fail: usize =
+                                            outcomes.iter().map(|o| o.fail_count).sum();
+                                        println!(
+                                            "Checkpoint {idx} validation ({iters} iterations, converged={converged}): {} queries, {total_pass} pass, {total_fail} fail",
+                                            outcomes.len()
+                                        );
+                                        if total_fail > 0 {
+                                            for o in outcomes {
+                                                if o.fail_count > 0 {
+                                                    eprintln!(
+                                                        "  FAIL - query '{}': {} pass, {} fail, last failure: {:?}",
+                                                        o.query_name,
+                                                        o.pass_count,
+                                                        o.fail_count,
+                                                        o.last_failure
+                                                    );
                                                 }
                                             }
-                                        }
-                                        ValidationStatus::Inactive => {
-                                            tracing::warn!(
-                                                "Validation status is unexpectedly Inactive"
-                                            );
                                         }
                                     }
 
@@ -572,6 +569,19 @@ pub(crate) async fn run(
                                     let _ = validation_controller
                                         .command_tx
                                         .send(Some(ValidationCommand::Disable));
+
+                                    if timed_out {
+                                        eprintln!(
+                                            "Checkpoint {} validation timed out after {}s without convergence, aborting run",
+                                            checkpoint_idx, MAX_WAIT.as_secs()
+                                        );
+                                        shutdown_token.cancel();
+                                        etl_pipeline.cancel();
+                                        break Some(format!(
+                                            "Checkpoint {checkpoint_idx} validation timed out after {}s",
+                                            MAX_WAIT.as_secs()
+                                        ));
+                                    }
                                 }
                                 Ok(_) => {
                                     tracing::info!(
@@ -731,8 +741,11 @@ pub(crate) async fn run(
 
     // Stop freshness scraper and emit raw E2E latency samples.
     // Percentile calculation is performed in dashboard queries.
+    // Only active when checkpoint validation is NOT enabled.
     e2e_latency_token.cancel();
-    if let Ok(samples_by_table) = e2e_latency_handle.await {
+    if let Some(handle) = e2e_latency_handle
+        && let Ok(samples_by_table) = handle.await
+    {
         let mut total_samples = 0usize;
         for (table_name, samples) in &samples_by_table {
             if !samples.is_empty() {

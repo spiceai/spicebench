@@ -81,6 +81,10 @@ pub enum ValidationStatus {
         /// Number of complete query-set iterations that have finished
         /// since validation was enabled for this checkpoint.
         completed_iterations: usize,
+        /// Set to `true` once a complete query-set iteration finishes with
+        /// every validated query passing. Once set, stays `true` for the
+        /// remainder of this validation window.
+        converged: bool,
     },
 }
 
@@ -91,6 +95,16 @@ impl ValidationStatus {
         match self {
             ValidationStatus::Inactive => true,
             ValidationStatus::Active { outcomes, .. } => outcomes.iter().all(|o| o.fail_count == 0),
+        }
+    }
+
+    /// Returns `true` if the validation has converged — i.e. at least one
+    /// complete query-set iteration finished with every query passing.
+    #[must_use]
+    pub fn converged(&self) -> bool {
+        match self {
+            ValidationStatus::Inactive => false,
+            ValidationStatus::Active { converged, .. } => *converged,
         }
     }
 
