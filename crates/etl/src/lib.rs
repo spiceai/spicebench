@@ -975,8 +975,16 @@ impl ETLPipeline {
     /// the rehydrated Arrow schema. This can be used to build a
     /// [`CreateTablesRequest`](system_adapter_protocol::CreateTablesRequest) for
     /// the system adapter.
-    pub fn create_tables_request_datasets(&self) -> HashMap<String, ProtocolDatasetConfig> {
-        self.dataset
+    pub fn create_tables_request_datasets(
+        dataset_source: DatasetSource,
+        config: &GenerationDatasetConfig,
+        data_storage: Arc<dyn DataStorage>,
+        mutations: &MutationConfig,
+        target_config: Option<TargetConfig>,
+    ) -> anyhow::Result<HashMap<String, ProtocolDatasetConfig>> {
+        let dataset = dataset_source.create(config, mutations, Arc::clone(&data_storage))?;
+
+        Ok(dataset
             .tables()
             .into_iter()
             .map(|(name, table)| {
@@ -991,11 +999,11 @@ impl ETLPipeline {
                     .collect();
                 let schema: SchemaRef = Arc::new(Schema::new(fields));
                 let schema = schema_with_created_at(&schema);
-                let primary_key_columns = self.dataset.primary_key(&name);
+                let primary_key_columns = dataset.primary_key(&name);
                 let config = ProtocolDatasetConfig {
                     schema,
                     primary_key_columns,
-                    location: self.target_config.as_ref().map(|config| {
+                    location: target_config.as_ref().map(|config| {
                         format!(
                             "s3://{}/{prefix}/{name}/",
                             config.bucket,
@@ -1003,12 +1011,12 @@ impl ETLPipeline {
                         )
                     }),
                     time_column: Some(CREATED_AT_COLUMN.to_string()),
-                    partition_columns: self.dataset.partition_columns(&name),
+                    partition_columns: dataset.partition_columns(&name),
                 };
 
                 (name.clone(), config)
             })
-            .collect()
+            .collect())
     }
 
     /// Initializes the ETL pipeline by processing only the first batch (batch
@@ -1267,7 +1275,7 @@ impl ETLPipeline {
         let tables = dataset.tables();
         let mut steps: BTreeMap<u64, Vec<String>> = BTreeMap::new();
 
-        // Only skip the first batch ID per table if initialize() was called
+        // Only skip the first batch ID per table if initialize() was called.
         let skip_first = *self.state_rx.borrow() == PipelineState::Initialized;
 
         for name in tables.keys() {
@@ -1277,7 +1285,6 @@ impl ETLPipeline {
             } else {
                 None
             };
-
             let mut seen_ids = HashSet::new();
 
             for id in ids {

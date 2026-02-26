@@ -17,6 +17,7 @@ limitations under the License.
 
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
 use arrow::array::{Array, RecordBatch, TimestampMicrosecondArray};
+use data_generation::version::VersionMetadata;
 use etl::{ETLPipeline, PipelineState, StopReason};
 use std::collections::HashMap;
 use std::path::Path;
@@ -327,6 +328,7 @@ pub(crate) async fn run(
     run_id: uuid::Uuid,
     scenario: &Scenario,
     common_args: &CommonArgs,
+    version_metadata: &VersionMetadata,
     adbc_conn: adbc_client::AdbcConnection,
     etl_pipeline: &mut ETLPipeline,
     checkpoint_steps: Option<usize>,
@@ -343,6 +345,8 @@ pub(crate) async fn run(
             KeyValue::new("type", "spicebench"),
             KeyValue::new("adapter_name", common_args.system_adapter_name.clone()),
             KeyValue::new("scenario", scenario.to_string()),
+            KeyValue::new("data_gen_version", common_args.etl_version.clone()),
+            KeyValue::new("scale_factor", version_metadata.scale_factor.to_string()),
         ])
         .build();
 
