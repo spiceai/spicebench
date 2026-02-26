@@ -17,7 +17,7 @@ limitations under the License.
 //! r2d2-based ADBC connection pool.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use adbc_core::options::{AdbcVersion, OptionDatabase, OptionValue};
 use adbc_core::{Database, Driver, LOAD_FLAG_DEFAULT};
@@ -36,10 +36,10 @@ const DEFAULT_POOL_SIZE: u32 = 10;
 
 /// Manages ADBC connections for the `r2d2` connection pool.
 ///
-/// Wraps a [`ManagedDatabase`] behind an `Arc<Mutex<>>` so that `r2d2` can
+/// Wraps a [`ManagedDatabase`] behind an `Arc` so that `r2d2` can
 /// create new connections on demand from any thread.
 pub struct AdbcConnectionManager {
-    database: Arc<Mutex<ManagedDatabase>>,
+    database: Arc<ManagedDatabase>,
     downcast_utf8view: bool,
 }
 
@@ -47,7 +47,7 @@ impl AdbcConnectionManager {
     /// Create a new manager from an existing [`ManagedDatabase`].
     pub fn new(database: ManagedDatabase, downcast_utf8view: bool) -> Self {
         Self {
-            database: Arc::new(Mutex::new(database)),
+            database: Arc::new(database),
             downcast_utf8view,
         }
     }
@@ -58,12 +58,12 @@ impl r2d2::ManageConnection for AdbcConnectionManager {
     type Error = Error;
 
     fn connect(&self) -> std::result::Result<Self::Connection, Self::Error> {
-        let db = self.database.lock().map_err(|e| Error::CreateConnection {
-            reason: format!("Database lock poisoned: {e}"),
-        })?;
-        let conn = db.new_connection().map_err(|e| Error::CreateConnection {
-            reason: e.to_string(),
-        })?;
+        let conn = self
+            .database
+            .new_connection()
+            .map_err(|e| Error::CreateConnection {
+                reason: e.to_string(),
+            })?;
         Ok(AdbcConnection::new(conn, self.downcast_utf8view))
     }
 
