@@ -184,18 +184,43 @@ jobs:
               ;;
           esac
 
-      - name: Install ADBC driver
+      - name: Setup Go
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Checkout adbc-databricks Go driver
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
+        uses: actions/checkout@v6
+        with:
+          repository: spiceai/adbc-databricks
+          ref: viktor/improve-databricks-bulk-insert
+          path: adbc-databricks
+
+      - name: Build databricks Go ADBC driver
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
+        run: |
+          cd adbc-databricks/go
+          go build -tags driverlib -buildmode=c-shared \
+            -o build/libadbc_driver_databricks.so \
+            ./pkg/
+          sudo install -m 755 build/libadbc_driver_databricks.so /usr/local/lib/libdatabricks.so
+          sudo ldconfig
+
+      - name: Install ADBC Postgres driver
+        if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          SYSTEM_UNDER_TEST="${{ github.event.inputs.system_under_test || 'spice_cloud' }}"
-          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
+          dbc install postgresql
 
-          if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
-            dbc install databricks
-          else
-            dbc install flightsql
-          fi
+      - name: Install ADBC FlightSQL driver
+        if: ${{ !startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
+        run: |
+          set -euo pipefail
+          curl -LsSf https://dbc.columnar.tech/install.sh | sh
+          dbc install flightsql
 
       - name: Run spicebench
         env:
@@ -207,8 +232,10 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+          DATABRICKS_STAGING_VOLUME_PATH: ${{ secrets.DATABRICKS_STAGING_VOLUME_PATH }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '8' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
@@ -219,6 +246,11 @@ jobs:
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          LAKEBASE_PG_HOST: ${{ secrets.LAKEBASE_PG_HOST }}
+          LAKEBASE_PG_USER: ${{ secrets.LAKEBASE_PG_USER }}
+          LAKEBASE_PG_DB_NAME: ${{ secrets.LAKEBASE_PG_DB_NAME }}
+          LAKEBASE_PG_SCHEMA: ${{ secrets.LAKEBASE_PG_SCHEMA }}
+          LAKEBASE_DATABASE_INSTANCE: ${{ secrets.LAKEBASE_DATABASE_INSTANCE }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: 'info'
@@ -262,10 +294,23 @@ jobs:
             if [ -n "${DATABRICKS_SCHEMA:-}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
             fi
+
+            if [ -n "${DATABRICKS_STAGING_VOLUME_PATH:-}" ]; then
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STAGING_VOLUME_PATH=${DATABRICKS_STAGING_VOLUME_PATH}"
+            fi
           else
             ADAPTER_CMD="docker"
             ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
+          fi
+
+          if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_DB_NAME=${LAKEBASE_PG_DB_NAME}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_DATABASE_INSTANCE=${LAKEBASE_DATABASE_INSTANCE}"
           fi
 
           ~/.spice/bin/spicebench \
@@ -277,4 +322,5 @@ jobs:
             ${VALIDATION_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
-            ${ADAPTER_ENVS}
+            ${ADAPTER_ENVS} \
+

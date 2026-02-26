@@ -284,17 +284,23 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    if cli.adbc_create_tables {
+        if let Some(adbc_sink) = &adbc_sink {
+            let datasets = ETLPipeline::create_tables_request_datasets(
+                dataset_source.clone(),
+                &dataset_config,
+                source.clone() as Arc<dyn DataStorage>,
+                &mutations,
+                target_config.clone(),
+            )?;
+            adbc_sink.create_tables_from_dataset_configs(&datasets)?;
+        }
+    }
+
     let mut pipeline =
         ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
     if let Some(target_config) = target_config {
         pipeline = pipeline.with_target_config(target_config);
-    }
-
-    if cli.adbc_create_tables {
-        let datasets = pipeline.create_tables_request_datasets();
-        if let Some(adbc_sink) = adbc_sink {
-            adbc_sink.create_tables_from_dataset_configs(&datasets)?;
-        }
     }
 
     tracing::info!(

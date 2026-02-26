@@ -10,6 +10,8 @@ dependencies = [
  "adbc_driver_manager",
  "arrow",
  "arrow-array",
+ "arrow-cast",
+ "arrow-schema",
  "serde_json",
  "snafu",
 ]

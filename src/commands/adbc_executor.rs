@@ -59,7 +59,14 @@ impl QueryExecutor for AdbcDirectQueryExecutor {
         &self,
         query: &test_framework::queries::Query,
     ) -> anyhow::Result<ExecutionResult> {
-        let sql = query.to_sql_with_inlined_params().to_string();
+        let mut sql = query.to_sql_with_inlined_params().to_string();
+        sql = sql
+            .trim_end()
+            .strip_suffix(';')
+            .unwrap_or(&sql)
+            .trim_end()
+            .to_string();
+
         let conn = Arc::clone(&self.conn);
 
         // `AdbcConnection::query()` is synchronous (ADBC has no async API),
