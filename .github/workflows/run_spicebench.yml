@@ -291,7 +291,7 @@ jobs:
             fi
 
             if [ -n "${DATABRICKS_SCHEMA:-}" ]; then
-              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=viktor_test_schema_3"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=viktor_test_schema_4"
             fi
 
             if [ -n "${DATABRICKS_STAGING_VOLUME_PATH:-}" ]; then
