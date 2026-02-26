@@ -14,9 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-pub mod databricks;
-pub mod spiceai;
-
 pub use adbc_core::options::IngestMode;
 
 use adbc_core::options::{self, AdbcVersion, OptionDatabase, OptionValue};
