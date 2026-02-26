@@ -37,6 +37,7 @@ const MAX_ADBC_INGEST_BATCH_BYTES_ENV: &str = "SPICEBENCH_ADBC_MAX_INGEST_BATCH_
 /// SQL statements derived from key columns in each batch.
 pub struct AdbcSink {
     conn: Mutex<AdbcConnection>,
+    target_db_catalog: Option<String>,
     target_db_schema: Option<String>,
 }
 
@@ -53,6 +54,7 @@ impl AdbcSink {
     pub fn new(
         driver_name: &str,
         db_kwargs: HashMap<String, serde_json::Value>,
+        target_db_catalog: Option<String>,
         target_db_schema: Option<String>,
     ) -> anyhow::Result<Self> {
         let conn = AdbcConnection::create(driver_name, db_kwargs)
@@ -60,6 +62,7 @@ impl AdbcSink {
 
         Ok(Self {
             conn: Mutex::new(conn),
+            target_db_catalog,
             target_db_schema,
         })
     }
@@ -106,13 +109,45 @@ impl AdbcSink {
     }
 
     fn target_table_identifier(&self, table_name: &str) -> String {
-        let table_ident = Self::quote_identifier(table_name);
-        if let Some(schema) = self.target_db_schema.as_deref() {
-            if !schema.is_empty() {
-                return format!("{}.{}", Self::quote_identifier(schema), table_ident);
+        let mut parts = Vec::with_capacity(3);
+
+        if let Some(catalog) = self.target_db_catalog.as_deref() {
+            if !catalog.is_empty() {
+                parts.push(Self::quote_identifier(catalog));
             }
         }
-        table_ident
+
+        if let Some(schema) = self.target_db_schema.as_deref() {
+            if !schema.is_empty() {
+                parts.push(Self::quote_identifier(schema));
+            }
+        }
+
+        parts.push(Self::quote_identifier(table_name));
+        parts.join(".")
+    }
+
+    fn target_table_ingest_name(&self, table_name: &str) -> String {
+        self.target_table_identifier_unquoted(table_name)
+    }
+
+    fn target_table_identifier_unquoted(&self, table_name: &str) -> String {
+        let mut parts = Vec::with_capacity(3);
+
+        if let Some(catalog) = self.target_db_catalog.as_deref() {
+            if !catalog.is_empty() {
+                parts.push(catalog.to_string());
+            }
+        }
+
+        if let Some(schema) = self.target_db_schema.as_deref() {
+            if !schema.is_empty() {
+                parts.push(schema.to_string());
+            }
+        }
+
+        parts.push(table_name.to_string());
+        parts.join(".")
     }
 
     fn create_table_sql(&self, table_name: &str, schema: &Schema) -> anyhow::Result<String> {
@@ -222,9 +257,20 @@ impl AdbcSink {
         table_name: &str,
         batch: RecordBatch,
     ) -> anyhow::Result<()> {
+        let ingest_table_name = self.target_table_ingest_name(table_name);
+        let target_db_catalog = self
+            .target_db_catalog
+            .as_deref()
+            .and_then(|catalog| (!catalog.is_empty()).then_some(catalog));
+        let target_db_schema = self
+            .target_db_schema
+            .as_deref()
+            .and_then(|schema| (!schema.is_empty()).then_some(schema));
+
         match conn.bulk_ingest(
             table_name,
-            self.target_db_schema.as_deref(),
+            target_db_catalog,
+            target_db_schema,
             IngestMode::CreateAppend,
             batch.clone(),
         ) {
@@ -234,7 +280,7 @@ impl AdbcSink {
                 if Self::is_message_too_large_error(&message) {
                     if batch.num_rows() <= 1 {
                         anyhow::bail!(
-                            "ADBC bulk ingest failed for '{table_name}': single-row batch still exceeds FlightSQL message limit: {message}. Configure a larger FlightSQL max message size (e.g. adbc.flight.sql.client_option.with_max_msg_size)."
+                            "ADBC bulk ingest failed for source table '{table_name}' (ingest target '{ingest_table_name}'): single-row batch still exceeds FlightSQL message limit: {message}. Configure a larger FlightSQL max message size (e.g. adbc.flight.sql.client_option.with_max_msg_size)."
                         );
                     }
 
@@ -245,7 +291,9 @@ impl AdbcSink {
                     self.bulk_ingest_with_retry(conn, table_name, right)?;
                     Ok(())
                 } else {
-                    anyhow::bail!("ADBC bulk ingest failed for '{table_name}': {message}")
+                    anyhow::bail!(
+                        "ADBC bulk ingest failed for source table '{table_name}' (ingest target '{ingest_table_name}'): {message}"
+                    )
                 }
             }
         }

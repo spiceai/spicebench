@@ -127,4 +127,11 @@ pub struct TableMetadata {
     pub key_columns: Vec<String>,
     /// The batch IDs that were successfully written for this table.
     pub batch_ids: Vec<u64>,
+    /// Optional split-part IDs for each logical batch.
+    ///
+    /// If a batch ID is present with one or more part IDs, readers should
+    /// fetch `batch-{id}-part-{part}.parquet` for each listed part. If absent,
+    /// readers should fetch the unsuffixed `batch-{id}.parquet` object.
+    #[serde(default)]
+    pub batch_parts: HashMap<u64, Vec<usize>>,
 }

@@ -36,8 +36,37 @@ use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
 use std::env;
 use std::time::{Duration, Instant};
+use tokio::sync::{OnceCell, RwLock};
 
 use super::{ReadResult, WriteResult};
+
+const MIN_ROWS_PER_FILE: usize = 32_000;
+const MAX_ROWS_PER_FILE: usize = 64_000;
+const DEFAULT_MAX_ROWS_PER_FILE: usize = 48_000;
+
+fn max_rows_per_file() -> usize {
+    env::var("SPICEBENCH_TPCH_MAX_ROWS_PER_FILE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .map(|v| v.clamp(MIN_ROWS_PER_FILE, MAX_ROWS_PER_FILE))
+        .unwrap_or(DEFAULT_MAX_ROWS_PER_FILE)
+}
+
+fn split_record_batch(batch: &RecordBatch, max_rows: usize) -> Vec<RecordBatch> {
+    if batch.num_rows() <= max_rows {
+        return vec![batch.clone()];
+    }
+
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    while offset < batch.num_rows() {
+        let len = std::cmp::min(max_rows, batch.num_rows() - offset);
+        out.push(batch.slice(offset, len));
+        offset += len;
+    }
+    out
+}
 
 /// Unified S3 storage backend for versioned data generation.
 ///
@@ -59,6 +88,8 @@ pub struct S3Storage {
     /// `{prefix}/{scenario}/{version}`
     pub(crate) prefix: String,
     pub(crate) region: Option<String>,
+    key_columns_cache: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    version_metadata_cache: Arc<OnceCell<Option<VersionMetadata>>>,
 }
 
 impl S3Storage {
@@ -129,6 +160,8 @@ impl S3Storage {
             bucket: config.bucket.clone(),
             prefix: config.prefix.clone(),
             region: config.region.clone(),
+            key_columns_cache: Arc::new(RwLock::new(HashMap::new())),
+            version_metadata_cache: Arc::new(OnceCell::new()),
         })
     }
 
@@ -173,6 +206,63 @@ impl S3Storage {
         } else {
             ObjectPath::from(format!("{}/version.json", self.prefix))
         }
+    }
+
+    /// Returns the [`ObjectPath`] for a split batch part file.
+    ///
+    /// Path: `{prefix}/tables/{table_name}/batch-{batch_id:06}-part-{part_idx:03}.parquet`
+    pub(crate) fn batch_part_object_path(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+        part_idx: usize,
+    ) -> ObjectPath {
+        if self.prefix.is_empty() {
+            ObjectPath::from(format!(
+                "tables/{table_name}/batch-{batch_id:06}-part-{part_idx:03}.parquet"
+            ))
+        } else {
+            ObjectPath::from(format!(
+                "{}/tables/{table_name}/batch-{batch_id:06}-part-{part_idx:03}.parquet",
+                self.prefix
+            ))
+        }
+    }
+
+    async fn cached_key_columns(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
+        if let Some(cached) = self.key_columns_cache.read().await.get(table_name).cloned() {
+            return Ok(cached);
+        }
+
+        let key_columns = self.read_key_columns(table_name).await?;
+
+        let mut cache = self.key_columns_cache.write().await;
+        let cached = cache
+            .entry(table_name.to_string())
+            .or_insert_with(|| key_columns.clone())
+            .clone();
+
+        Ok(cached)
+    }
+
+    async fn cached_version_metadata(&self) -> anyhow::Result<Option<&VersionMetadata>> {
+        let cached = self
+            .version_metadata_cache
+            .get_or_try_init(|| async {
+                let path = self.version_metadata_object_path();
+                let get_result = match self.store.get(&path).await {
+                    Ok(r) => r,
+                    Err(object_store::Error::NotFound { .. }) => return Ok(None),
+                    Err(e) => return Err(anyhow::anyhow!(e)),
+                };
+
+                let bytes = get_result.bytes().await?;
+                let metadata: VersionMetadata = serde_json::from_slice(&bytes)?;
+                Ok(Some(metadata))
+            })
+            .await?;
+
+        Ok(cached.as_ref())
     }
 }
 
@@ -229,28 +319,51 @@ impl DataStorage for S3Storage {
         batch: RecordBatch,
     ) -> anyhow::Result<WriteResult> {
         let rows = batch.num_rows() as u64;
-        let schema = batch.schema();
         let start = Instant::now();
+        let max_rows = max_rows_per_file();
+        let chunks = split_record_batch(&batch, max_rows);
 
-        // Serialize RecordBatch to Parquet bytes in memory
+        tracing::debug!(
+            table = %table_name,
+            batch_id,
+            rows,
+            num_parts = chunks.len(),
+            max_rows_per_file = max_rows,
+            "S3 write batch split planning"
+        );
+
         let props = WriterProperties::builder()
             .set_compression(Compression::LZ4)
             .build();
 
-        let mut buf = Vec::new();
-        let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props))?;
-        writer.write(&batch)?;
-        writer.close()?;
-        let serialize_elapsed = start.elapsed();
+        let mut bytes_written: u64 = 0;
+        let mut serialize_elapsed = Duration::ZERO;
+        let mut upload_elapsed = Duration::ZERO;
+        let part_ids: Vec<usize> = if chunks.len() > 1 {
+            (0..chunks.len()).collect()
+        } else {
+            Vec::new()
+        };
+        for (part_idx, chunk) in chunks.iter().enumerate() {
+            let serialize_start = Instant::now();
+            let mut buf = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut buf, chunk.schema(), Some(props.clone()))?;
+            writer.write(chunk)?;
+            writer.close()?;
+            serialize_elapsed += serialize_start.elapsed();
+            bytes_written += buf.len() as u64;
 
-        let bytes_written = buf.len() as u64;
+            let path = if chunks.len() == 1 {
+                self.batch_object_path(table_name, batch_id)
+            } else {
+                self.batch_part_object_path(table_name, batch_id, part_idx)
+            };
 
-        // Upload to S3 under tables/{table_name}/
-        let path = self.batch_object_path(table_name, batch_id);
-
-        self.store.put(&path, PutPayload::from(buf)).await?;
+            let upload_start = Instant::now();
+            self.store.put(&path, PutPayload::from(buf)).await?;
+            upload_elapsed += upload_start.elapsed();
+        }
         let total_elapsed = start.elapsed();
-        let upload_elapsed = total_elapsed.saturating_sub(serialize_elapsed);
 
         if total_elapsed.as_secs() >= 5 {
             tracing::warn!(
@@ -287,6 +400,7 @@ impl DataStorage for S3Storage {
         Ok(WriteResult {
             rows_written: rows,
             bytes_written,
+            part_ids,
         })
     }
 
@@ -294,20 +408,52 @@ impl DataStorage for S3Storage {
         let path = self.version_metadata_object_path();
         let bytes = serde_json::to_vec_pretty(metadata)?;
         self.store.put(&path, PutPayload::from(bytes)).await?;
+        let _ = self.version_metadata_cache.set(Some(metadata.clone()));
         Ok(())
     }
 
     async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
-        let path = self.version_metadata_object_path();
-        let get_result = match self.store.get(&path).await {
-            Ok(r) => r,
-            Err(object_store::Error::NotFound { .. }) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
+        Ok(self.cached_version_metadata().await?.cloned())
+    }
 
-        let bytes = get_result.bytes().await?;
-        let metadata: VersionMetadata = serde_json::from_slice(&bytes)?;
-        Ok(Some(metadata))
+    async fn read_key_columns(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
+        if let Some(metadata) = self.cached_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+        {
+            return Ok(table_meta.key_columns.clone());
+        }
+        Ok(Vec::new())
+    }
+
+    async fn read_batch_ids(
+        &self,
+        table_name: &str,
+    ) -> anyhow::Result<std::collections::VecDeque<u64>> {
+        if let Some(metadata) = self.cached_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+        {
+            let mut ids = table_meta.batch_ids.clone();
+            ids.sort_unstable();
+            return Ok(std::collections::VecDeque::from(ids));
+        }
+        Ok(std::collections::VecDeque::new())
+    }
+
+    async fn read_batch_parts(
+        &self,
+        table_name: &str,
+        batch_id: u64,
+    ) -> anyhow::Result<Vec<usize>> {
+        if let Some(metadata) = self.cached_version_metadata().await?
+            && let Some(table_meta) = metadata.tables.get(table_name)
+            && let Some(part_ids) = table_meta.batch_parts.get(&batch_id)
+        {
+            let mut sorted = part_ids.clone();
+            sorted.sort_unstable();
+            return Ok(sorted);
+        }
+
+        Ok(Vec::new())
     }
 
     async fn list_batches(&self, table_name: &str) -> anyhow::Result<Vec<String>> {
@@ -328,17 +474,21 @@ impl DataStorage for S3Storage {
         &self,
         table_name: &str,
         batch_id: u64,
+        part_id: Option<usize>,
     ) -> anyhow::Result<Option<ReadResult>> {
-        let location = self.batch_object_path(table_name, batch_id);
+        let location = match part_id {
+            Some(part_id) => self.batch_part_object_path(table_name, batch_id, part_id),
+            None => self.batch_object_path(table_name, batch_id),
+        };
 
         let get_result = match self.store.get(&location).await {
             Ok(r) => r,
             Err(object_store::Error::NotFound { .. }) => return Ok(None),
             Err(e) => return Err(e.into()),
         };
+
         let bytes = get_result.bytes().await?;
         let bytes_read = bytes.len() as u64;
-
         let reader = ParquetRecordBatchReaderBuilder::try_new(bytes)?.build()?;
 
         let mut batches = Vec::new();
@@ -349,7 +499,7 @@ impl DataStorage for S3Storage {
             batches.push(batch);
         }
 
-        let key_columns = self.read_key_columns(table_name).await?;
+        let key_columns = self.cached_key_columns(table_name).await?;
 
         Ok(Some(ReadResult {
             batches,

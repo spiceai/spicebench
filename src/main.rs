@@ -40,6 +40,9 @@ mod scenario;
 use crate::args::{CommonArgs, EtlSink};
 use crate::commands::connect_system_adapter;
 
+const FLIGHTSQL_MAX_MSG_SIZE_OPTION: &str = "adbc.flight.sql.client_option.with_max_msg_size";
+const DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES: &str = "78643200";
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -59,6 +62,20 @@ fn s3_hive_target_prefix(common: &CommonArgs, scenario_name: &str, run_id: uuid:
         target_prefix = "etl-hive-output".to_string();
     }
     format!("{target_prefix}/{scenario_name}/{run_id}")
+}
+
+fn infer_adbc_target_namespace(
+    catalog_namespace: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let Some(namespace) = catalog_namespace.map(str::trim).filter(|ns| !ns.is_empty()) else {
+        return (None, None);
+    };
+
+    let mut parts = namespace.rsplitn(2, '.');
+    let schema = parts.next().map(str::trim).filter(|v| !v.is_empty());
+    let catalog = parts.next().map(str::trim).filter(|v| !v.is_empty());
+
+    (catalog.map(str::to_string), schema.map(str::to_string))
 }
 
 async fn run_benchmark(
@@ -163,7 +180,7 @@ async fn run_benchmark(
         .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
 
     let driver_name = setup_response.driver.to_string();
-    let db_kwargs = setup_response.db_kwargs.clone();
+    let mut db_kwargs = setup_response.db_kwargs.clone();
     let query_catalog_namespace = setup_response.catalog_namespace.clone();
     let read_driver = setup_response.read_driver.clone();
 
@@ -176,7 +193,23 @@ async fn run_benchmark(
             }?
         }
         EtlSink::Adbc => {
-            Arc::new(AdbcSink::new(&driver_name, db_kwargs.clone(), None)?) as Arc<dyn Sink>
+            if driver_name.eq_ignore_ascii_case("flightsql") {
+                db_kwargs
+                    .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
+                    .or_insert_with(|| {
+                        serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
+                    });
+            }
+
+            let (target_db_catalog, target_db_schema) =
+                infer_adbc_target_namespace(setup_response.catalog_namespace.as_deref());
+
+            Arc::new(AdbcSink::new(
+                &driver_name,
+                db_kwargs.clone(),
+                target_db_catalog,
+                target_db_schema,
+            )?) as Arc<dyn Sink>
         }
     };
 
