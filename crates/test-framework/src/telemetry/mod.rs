@@ -23,9 +23,9 @@ use anyhow::Result;
 
 use opentelemetry::metrics::{Meter, MeterProvider};
 
+use opentelemetry_sdk::metrics::PeriodicReader;
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
 use opentelemetry_sdk::metrics::reader::MetricReader;
-use opentelemetry_sdk::metrics::PeriodicReader;
 use opentelemetry_sdk::{
     Resource,
     metrics::{SdkMeterProvider, data::ResourceMetrics},
@@ -272,7 +272,10 @@ impl SutMetricsPipeline {
                 .with_interval(Duration::from_secs(5))
                 .build();
             builder = builder.with_reader(reader);
-            println!("SUT metrics: Arrow periodic exporter enabled (endpoint: {})", *ENDPOINT);
+            println!(
+                "SUT metrics: Arrow periodic exporter enabled (endpoint: {})",
+                *ENDPOINT
+            );
         }
 
         // OTLP periodic reader (when --otlp-endpoint is configured)
