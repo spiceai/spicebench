@@ -3,7 +3,7 @@
   "checkpoint_id": "4d2e6e04b1b1",
   "strategy": "manual-commit",
   "branch": "jeadie/26-02-27/counter",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "crates/system-adapter-protocol/src/lib.rs",
     "src/commands/load/mod.rs",
@@ -16,13 +16,20 @@
       "context": "/4d/2e6e04b1b1/0/context.md",
       "content_hash": "/4d/2e6e04b1b1/0/content_hash.txt",
       "prompt": "/4d/2e6e04b1b1/0/prompt.txt"
+    },
+    {
+      "metadata": "/4d/2e6e04b1b1/1/metadata.json",
+      "transcript": "/4d/2e6e04b1b1/1/full.jsonl",
+      "context": "/4d/2e6e04b1b1/1/context.md",
+      "content_hash": "/4d/2e6e04b1b1/1/content_hash.txt",
+      "prompt": "/4d/2e6e04b1b1/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 132,
-    "cache_creation_tokens": 16137,
-    "cache_read_tokens": 829404,
-    "output_tokens": 10088,
-    "api_call_count": 16
+    "input_tokens": 203,
+    "cache_creation_tokens": 123333,
+    "cache_read_tokens": 4264117,
+    "output_tokens": 11444,
+    "api_call_count": 81
   }
 }
