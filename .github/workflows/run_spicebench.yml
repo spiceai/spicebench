@@ -224,20 +224,20 @@ jobs:
         if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
         run: |
           set -euo pipefail
+          curl -LsSf https://dbc.columnar.tech/install.sh | sh
           if [ "${{ github.event.inputs.runner || 'ubuntu-latest' }}" = "spiceai-dev-runners" ]; then
             source "$HOME/.local/bin/env"
           fi
-          curl -LsSf https://dbc.columnar.tech/install.sh | sh
           dbc install postgresql
 
       - name: Install ADBC FlightSQL driver
         if: ${{ !startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
         run: |
           set -euo pipefail
+          curl -LsSf https://dbc.columnar.tech/install.sh | sh
           if [ "${{ github.event.inputs.runner || 'ubuntu-latest' }}" = "spiceai-dev-runners" ]; then
             source "$HOME/.local/bin/env"
           fi
-          curl -LsSf https://dbc.columnar.tech/install.sh | sh
           dbc install flightsql
 
       - name: Run spicebench
