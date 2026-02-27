@@ -55,7 +55,7 @@ const TARGET_BATCH_ROWS: usize = 8_192 * 4;
 
 /// Maximum number of in-flight sink writes allowed per table task when the
 /// current segment set is insert-only.
-const MAX_IN_FLIGHT_TABLE_WRITES: usize = 1;
+const MAX_IN_FLIGHT_TABLE_WRITES: usize = 2;
 
 /// Maximum number of concurrent source logical-batch reads per ETL table task.
 const MAX_IN_FLIGHT_SOURCE_BATCH_READS: usize = 2;

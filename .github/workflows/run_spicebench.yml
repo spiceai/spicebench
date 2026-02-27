@@ -32,6 +32,7 @@ on:
         description: 'Data generation version identifier (the {version} portion of {prefix}/{scenario}/{version}/)'
         required: true
         type: string
+        default: "1"
       etl_region:
         description: 'AWS region for the ETL S3 bucket'
         required: false
@@ -40,7 +41,7 @@ on:
       etl_sink:
         description: 'ETL sink (hive or adbc)'
         required: false
-        default: 'hive'
+        default: 'adbc'
         type: choice
         options:
           - hive
@@ -60,11 +61,19 @@ on:
         required: false
         default: false
         type: boolean
+      runner:
+        description: 'GitHub runner label to use for this workflow run'
+        required: true
+        default: ubuntu-latest
+        type: choice
+        options:
+          - ubuntu-latest
+          - spiceai-dev-runners
 
 jobs:
   run-spicebench:
     name: Run spicebench
-    runs-on: spiceai-dev-runners
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 600
     concurrency:
       group: spicebench-run-${{ github.event.inputs.system_under_test || 'spice_cloud' }}-${{ github.event.inputs.scenario || 'tpch' }}
