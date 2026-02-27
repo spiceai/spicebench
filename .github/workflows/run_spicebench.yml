@@ -75,8 +75,6 @@ jobs:
     name: Run spicebench
     runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 600
-    concurrency:
-      group: spicebench-run-${{ github.event.inputs.system_under_test || 'spice_cloud' }}-${{ github.event.inputs.scenario || 'tpch' }}
     steps:
       - uses: actions/checkout@v6
 
