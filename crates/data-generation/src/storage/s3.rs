@@ -21,6 +21,7 @@ use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectPath;
 use object_store::{BackoffConfig, ClientOptions, RetryConfig};
 
+use crate::archive;
 use crate::config::TargetConfig;
 use crate::storage::DataStorage;
 use crate::version::VersionMetadata;
@@ -29,6 +30,7 @@ use arrow::array::RecordBatch;
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use object_store::PutPayload;
+use object_store::WriteMultipart;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Compression;
@@ -36,6 +38,7 @@ use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
 use std::env;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{OnceCell, RwLock};
 
 use super::{ReadResult, WriteResult};
@@ -43,6 +46,8 @@ use super::{ReadResult, WriteResult};
 const MIN_ROWS_PER_FILE: usize = 32_000;
 const MAX_ROWS_PER_FILE: usize = 64_000;
 const DEFAULT_MAX_ROWS_PER_FILE: usize = 48_000;
+const ARCHIVE_TRANSFER_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+const ARCHIVE_UPLOAD_MAX_IN_FLIGHT_PARTS: usize = 8;
 
 fn max_rows_per_file() -> usize {
     env::var("SPICEBENCH_TPCH_MAX_ROWS_PER_FILE")
@@ -226,6 +231,15 @@ impl S3Storage {
                 "{}/tables/{table_name}/batch-{batch_id:06}-part-{part_idx:03}.parquet",
                 self.prefix
             ))
+        }
+    }
+
+    /// Returns the [`ObjectPath`] for the data archive file.
+    pub(crate) fn archive_object_path(&self) -> ObjectPath {
+        if self.prefix.is_empty() {
+            ObjectPath::from(archive::ARCHIVE_FILENAME)
+        } else {
+            ObjectPath::from(format!("{}/{}", self.prefix, archive::ARCHIVE_FILENAME))
         }
     }
 
@@ -507,5 +521,89 @@ impl DataStorage for S3Storage {
             bytes_read,
             key_columns,
         }))
+    }
+
+    async fn download_archive(&self, local_path: &std::path::Path) -> anyhow::Result<()> {
+        let path = self.archive_object_path();
+        tracing::info!(
+            s3_path = %path,
+            local_path = %local_path.display(),
+            "Downloading data archive from S3"
+        );
+
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let get_result = self.store.get(&path).await?;
+        let mut stream = get_result.into_stream();
+        let mut file = tokio::fs::File::create(local_path).await?;
+        let mut total_bytes: u64 = 0;
+
+        while let Some(chunk) = stream.try_next().await? {
+            total_bytes += chunk.len() as u64;
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+
+        tracing::info!(
+            bytes = total_bytes,
+            mb = format!("{:.2}", total_bytes as f64 / 1_048_576.0),
+            "Archive downloaded"
+        );
+        Ok(())
+    }
+
+    async fn upload_archive(&self, local_path: &std::path::Path) -> anyhow::Result<()> {
+        let path = self.archive_object_path();
+        let size = tokio::fs::metadata(local_path).await?.len();
+
+        tracing::info!(
+            local_path = %local_path.display(),
+            s3_path = %path,
+            bytes = size,
+            mb = format!("{:.2}", size as f64 / 1_048_576.0),
+            "Uploading data archive to S3"
+        );
+
+        let upload = self.store.put_multipart(&path).await?;
+        let mut writer = WriteMultipart::new_with_chunk_size(upload, ARCHIVE_TRANSFER_CHUNK_SIZE);
+        let mut file = tokio::fs::File::open(local_path).await?;
+        let mut buffer = vec![0u8; ARCHIVE_TRANSFER_CHUNK_SIZE];
+        let mut uploaded_bytes: u64 = 0;
+
+        loop {
+            let read = match file.read(&mut buffer).await {
+                Ok(read) => read,
+                Err(e) => {
+                    let _ = writer.abort().await;
+                    return Err(e.into());
+                }
+            };
+
+            if read == 0 {
+                break;
+            }
+
+            if let Err(e) = writer
+                .wait_for_capacity(ARCHIVE_UPLOAD_MAX_IN_FLIGHT_PARTS)
+                .await
+            {
+                let _ = writer.abort().await;
+                return Err(e.into());
+            }
+
+            writer.write(&buffer[..read]);
+            uploaded_bytes += read as u64;
+        }
+
+        writer.finish().await?;
+
+        tracing::info!(
+            bytes = uploaded_bytes,
+            mb = format!("{:.2}", uploaded_bytes as f64 / 1_048_576.0),
+            "Archive uploaded"
+        );
+        Ok(())
     }
 }

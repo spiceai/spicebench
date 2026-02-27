@@ -1000,6 +1000,7 @@ dependencies = [
  "anyhow",
  "arrow",
  "async-trait",
+ "bytes",
  "clap",
  "futures",
  "object_store",
@@ -1007,11 +1008,14 @@ dependencies = [
  "rand 0.9.2",
  "serde",
  "serde_json",
+ "tar",
+ "tempfile",
  "tokio",
  "tpchgen",
  "tpchgen-arrow",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
@@ -1149,6 +1153,7 @@ dependencies = [
  "parquet",
  "serde_json",
  "system-adapter-protocol",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

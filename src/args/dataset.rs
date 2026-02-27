@@ -66,10 +66,6 @@ pub struct DatasetTestArgs {
     #[command(flatten)]
     pub(crate) common: CommonArgs,
 
-    /// The expected scale factor for the test, used in metrics calculation
-    #[arg(long)]
-    pub(crate) scale_factor: Option<f64>,
-
     /// The query set to use for the test
     #[arg(long)]
     pub(crate) query_set: QuerySetArg,

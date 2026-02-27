@@ -118,9 +118,10 @@ pub struct CommonArgs {
     #[arg(long, default_value = "data-gen")]
     pub(crate) etl_prefix: String,
 
-    /// Version identifier for the data generation to read from.
-    #[arg(long, default_value = "1")]
-    pub(crate) etl_version: String,
+    /// TPC-H scale factor. The ETL version path segment is derived
+    /// automatically as `format_scale_factor(scale_factor)` (e.g. 1.0 → "1.0").
+    #[arg(long, default_value_t = 1.0)]
+    pub(crate) scale_factor: f64,
 
     /// Base S3 key prefix for the ETL target (rehydrated) data.
     /// A random suffix is appended automatically to create a unique destination per run.

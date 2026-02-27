@@ -14,7 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+pub mod file;
 pub mod s3;
+
+use std::path::Path;
 
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
@@ -150,4 +153,20 @@ pub trait DataStorage: Send + Sync + 'static {
     /// This is a planning method — no I/O is performed. Each implementation
     /// maps `(table_name, batch_id)` to its own path scheme (e.g. an S3 URI).
     fn expected_files(&self, table_name: &str, batch_ids: &[u64]) -> Vec<String>;
+
+    /// Downloads the data archive from this storage to a local file.
+    ///
+    /// Only supported by remote storage backends (e.g. S3). File-based
+    /// backends return an error.
+    async fn download_archive(&self, _local_path: &Path) -> anyhow::Result<()> {
+        anyhow::bail!("download_archive is not supported by this storage backend")
+    }
+
+    /// Uploads a local archive file to this storage.
+    ///
+    /// Only supported by remote storage backends (e.g. S3). File-based
+    /// backends return an error.
+    async fn upload_archive(&self, _local_path: &Path) -> anyhow::Result<()> {
+        anyhow::bail!("upload_archive is not supported by this storage backend")
+    }
 }

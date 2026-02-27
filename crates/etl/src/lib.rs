@@ -26,6 +26,7 @@ use data_generation::dataset::tpch::TpchDataset;
 use data_generation::dataset::{Dataset, MutationConfig};
 use data_generation::storage::{DataStorage, ReadResult};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -917,6 +918,46 @@ impl ETLPipeline {
     pub fn with_target_config(mut self, target_config: TargetConfig) -> Self {
         self.target_config = Some(target_config);
         self
+    }
+
+    /// Downloads the data archive from the given archive storage and extracts
+    /// it to `extract_dir`.
+    ///
+    /// This is a preparation step that must be called **before** creating the
+    /// pipeline (since `new()` requires version metadata to already be
+    /// available). In the spicebench CLI, call this before benchmark timing
+    /// begins so the download time is excluded from measurements.
+    ///
+    /// After this method returns, a [`FileStorage`](data_generation::storage::file::FileStorage)
+    /// pointing to `extract_dir` can be used as the pipeline's `data_storage`.
+    pub async fn download(
+        archive_storage: Arc<dyn DataStorage>,
+        extract_dir: &Path,
+    ) -> anyhow::Result<()> {
+        std::fs::create_dir_all(extract_dir)?;
+
+        let archive_path = extract_dir.join(data_generation::archive::ARCHIVE_FILENAME);
+        info!(
+            archive_path = %archive_path.display(),
+            extract_dir = %extract_dir.display(),
+            "Downloading data archive"
+        );
+
+        archive_storage.download_archive(&archive_path).await?;
+
+        info!(
+            extract_dir = %extract_dir.display(),
+            "Extracting archive"
+        );
+        data_generation::archive::extract_archive(&archive_path, extract_dir)?;
+
+        // Clean up the downloaded archive file to save disk space.
+        if let Err(e) = std::fs::remove_file(&archive_path) {
+            debug!("Could not remove archive file after extraction: {e}");
+        }
+
+        info!("Archive download and extraction complete");
+        Ok(())
     }
 
     /// Returns the current state of the pipeline.

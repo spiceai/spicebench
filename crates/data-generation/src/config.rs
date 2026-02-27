@@ -43,22 +43,22 @@ pub struct CommonArgs {
     #[arg(long, default_value_t = 25)]
     pub num_steps: u16,
 
-    /// S3 bucket name
-    #[arg(long)]
-    pub bucket: String,
-
-    /// S3 key prefix for generated files (the `{prefix}` portion of the path)
-    #[arg(long, default_value = "")]
-    pub prefix: String,
-
     /// Scenario name (e.g. "tpch") — used as `{scenario}` in the storage path `{prefix}/{scenario}/{version}/`
     #[arg(long, default_value = "tpch")]
     pub scenario: String,
 
-    /// Version identifier for this generation (e.g. 1, 2, 3, auto-ab12cd34).
-    /// Storage path: `{prefix}/{scenario}/{version}/`
+    /// Write the generated archive to this local path instead of uploading to S3.
+    /// When specified, --bucket and S3 options are not required.
     #[arg(long)]
-    pub version: String,
+    pub output_archive: Option<String>,
+
+    /// S3 bucket name (required unless --output-archive is specified)
+    #[arg(long)]
+    pub bucket: Option<String>,
+
+    /// S3 key prefix for generated files (the `{prefix}` portion of the path)
+    #[arg(long, default_value = "")]
+    pub prefix: String,
 
     /// AWS region
     #[arg(long)]
@@ -68,7 +68,7 @@ pub struct CommonArgs {
     #[arg(long)]
     pub endpoint: Option<String>,
 
-    /// Maximum number of concurrent S3 writes
+    /// Maximum number of concurrent S3 writes (legacy, unused with file storage)
     #[arg(long, default_value_t = 16)]
     pub max_concurrency: usize,
 }
@@ -105,18 +105,33 @@ impl CommonArgs {
         }
     }
 
+    /// Returns the derived version string from the scale factor.
+    ///
+    /// The version is `format_scale_factor(scale_factor)`, e.g. `"1.0"`.
+    pub fn derived_version(&self) -> String {
+        format_scale_factor(self.scale_factor)
+    }
+
     /// Builds the target config with the version-based storage path.
     ///
-    /// The resulting prefix is `{prefix}/{scenario}/{version}`.
-    pub fn target_config(&self) -> TargetConfig {
-        let prefix = build_version_prefix(&self.prefix, &self.scenario, &self.version);
-        TargetConfig {
-            bucket: self.bucket.clone(),
+    /// The resulting prefix is `{prefix}/{scenario}/{version}` where
+    /// version is derived from the scale factor.
+    ///
+    /// Requires `--bucket` to be specified; returns an error otherwise.
+    pub fn target_config(&self) -> anyhow::Result<TargetConfig> {
+        let bucket = self
+            .bucket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--bucket is required for S3 storage"))?;
+        let version = self.derived_version();
+        let prefix = build_version_prefix(&self.prefix, &self.scenario, &version);
+        Ok(TargetConfig {
+            bucket: bucket.clone(),
             prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
             partition_columns: vec![],
-        }
+        })
     }
 
     pub fn ingestor_config(&self) -> IngestorConfig {

@@ -8,9 +8,6 @@ on:
         required: false
         default: 'tpch'
         type: string
-      version:
-        required: true
-        type: string
       scale_factor:
         required: false
         default: '0.01'
@@ -62,10 +59,6 @@ on:
         description: 'GitHub runner label to execute on'
         required: false
         default: 'spiceai-macos'
-        type: string
-      version:
-        description: 'Data generation version identifier'
-        required: true
         type: string
       scale_factor:
         description: 'TPC-H scale factor'
@@ -142,7 +135,6 @@ jobs:
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
           SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
-          VERSION: ${{ inputs.version || github.event.inputs.version }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           MAX_CONCURRENCY: ${{ inputs.max_concurrency || github.event.inputs.max_concurrency || '8' }}
@@ -155,7 +147,6 @@ jobs:
         run: |
           ARGS="--dataset ${SCENARIO}"
           ARGS="${ARGS} --scenario ${SCENARIO}"
-          ARGS="${ARGS} --version ${VERSION}"
           ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
           ARGS="${ARGS} --bucket ${BUCKET}"
           ARGS="${ARGS} --prefix ${PREFIX}"
@@ -189,7 +180,7 @@ jobs:
       - name: Run checkpointer
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
-          VERSION: ${{ inputs.version || github.event.inputs.version }}
+          SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
@@ -198,6 +189,19 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
+          VERSION=$(python3 - <<'PY'
+          import os
+
+          sf = float(os.environ["SCALE_FACTOR"])
+          s = format(sf, ".15g")
+          if "e" in s or "E" in s:
+            s = ("%.15f" % sf).rstrip("0").rstrip(".")
+          if "." not in s:
+            s = f"{s}.0"
+          print(s)
+          PY
+          )
+
           ARGS="--scenario ${SCENARIO}"
           ARGS="${ARGS} --version ${VERSION}"
           ARGS="${ARGS} --bucket ${BUCKET}"
