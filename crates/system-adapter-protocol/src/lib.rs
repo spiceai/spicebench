@@ -222,22 +222,22 @@ pub struct MetricsRequest {
 /// Resource utilization snapshot from the system under test
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ResourceMetrics {
-    /// CPU utilization as a percentage (0.0–100.0)
+    /// Cumulative CPU seconds used
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_usage_percent: Option<f64>,
     /// Resident memory usage in bytes
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_usage_bytes: Option<u64>,
-    /// Disk bytes read since last scrape
+    /// Cumulative disk bytes read
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk_read_bytes: Option<u64>,
-    /// Disk bytes written since last scrape
+    /// Cumulative disk bytes written
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk_write_bytes: Option<u64>,
-    /// Disk read IOPS since last scrape
+    /// Cumulative disk read operations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk_read_iops: Option<u64>,
-    /// Disk write IOPS since last scrape
+    /// Cumulative disk write operations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk_write_iops: Option<u64>,
 }
