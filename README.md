@@ -322,6 +322,25 @@ spicebench \
     --scrape-sut-metrics
 ```
 
+#### Direct-query with local `spidapter` backend (stdio)
+
+```bash
+spicebench \
+    --query-set tpch \
+    --spicepod-path ./spicepod.yaml \
+    --system-adapter-name spidapter \
+    --system-adapter-execution-mode direct-query \
+    --system-adapter-stdio-cmd spidapter \
+    --system-adapter-stdio-args "stdio" \
+    --system-adapter-env SPIDAPTER_BACKEND=local \
+    --scrape-sut-metrics
+```
+
+Notes:
+
+- `SPIDAPTER_BACKEND=local` keeps the same `setup()` ADBC response shape.
+- Current local backend starts one scheduler and one executor.
+
 #### Databricks adapter example (local stdio binary)
 
 Build the adapter:
