@@ -24,7 +24,7 @@ use adbc_core::{Connection, Database, Driver, LOAD_FLAG_DEFAULT, Optionable, Sta
 use adbc_driver_manager::ManagedDriver;
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Schema};
-use arrow_array::RecordBatch;
+use arrow_array::{Array, RecordBatch, StringArray};
 use arrow_schema::Field;
 use snafu::prelude::*;
 use std::collections::HashMap;
@@ -56,15 +56,21 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub struct AdbcConnection {
     conn: adbc_driver_manager::ManagedConnection,
     downcast_utf8view: bool,
+    resolve_opaque_numerics: bool,
 }
 
 impl AdbcConnection {
     /// Create an `AdbcConnection` from an already-established [`ManagedConnection`].
     #[must_use]
-    pub fn new(conn: adbc_driver_manager::ManagedConnection, downcast_utf8view: bool) -> Self {
+    pub fn new(
+        conn: adbc_driver_manager::ManagedConnection,
+        downcast_utf8view: bool,
+        resolve_opaque_numerics: bool,
+    ) -> Self {
         Self {
             conn,
             downcast_utf8view,
+            resolve_opaque_numerics,
         }
     }
 
@@ -106,7 +112,11 @@ impl AdbcConnection {
             reason: e.to_string(),
         })?;
 
-        Ok(Self::new(conn, driver_name == "databricks"))
+        Ok(Self::new(
+            conn,
+            driver_name == "databricks",
+            driver_name == "postgresql",
+        ))
     }
 
     /// Lightweight check that the connection is still usable.
@@ -122,6 +132,9 @@ impl AdbcConnection {
     }
 
     /// Execute a SQL query and collect all result batches.
+    ///
+    /// Any columns returned with the Arrow opaque extension type for
+    /// PostgreSQL `numeric` are automatically converted to `Decimal128`.
     pub fn query(&mut self, sql: &str) -> Result<Vec<RecordBatch>> {
         let mut stmt = self.conn.new_statement().map_err(|e| Error::ExecuteQuery {
             reason: e.to_string(),
@@ -135,9 +148,15 @@ impl AdbcConnection {
             reason: e.to_string(),
         })?;
 
-        reader
+        let mut batches = reader
             .collect::<std::result::Result<Vec<_>, _>>()
-            .context(ReadBatchSnafu)
+            .context(ReadBatchSnafu)?;
+
+        if self.resolve_opaque_numerics {
+            batches = resolve_opaque_numerics(batches);
+        }
+
+        Ok(batches)
     }
 
     /// Execute a SQL data-modification statement and return the affected row count when provided by the driver.
@@ -274,4 +293,111 @@ fn downcast_utf8view(batch: &RecordBatch) -> RecordBatch {
     }
 
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+/// Returns `true` if the field uses the Arrow opaque extension type for
+/// PostgreSQL `numeric`.
+fn is_opaque_numeric(field: &Field) -> bool {
+    if !matches!(field.data_type(), DataType::Utf8) {
+        return false;
+    }
+    let metadata = field.metadata();
+    let Some(ext_name) = metadata.get("ARROW:extension:name") else {
+        return false;
+    };
+    if ext_name != "arrow.opaque" {
+        return false;
+    }
+    let Some(ext_meta) = metadata.get("ARROW:extension:metadata") else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(ext_meta)
+        .ok()
+        .and_then(|v| v.get("type_name")?.as_str().map(|s| s == "numeric"))
+        .unwrap_or(false)
+}
+
+/// Determine the maximum decimal scale (digits after the decimal point)
+/// across all non-null values in a string array.
+fn max_decimal_scale(array: &StringArray) -> i8 {
+    let mut scale: i8 = 0;
+    for i in 0..array.len() {
+        if array.is_null(i) {
+            continue;
+        }
+        let val = array.value(i);
+        if let Some(dot_pos) = val.find('.') {
+            let s = (val.len() - dot_pos - 1) as i8;
+            scale = scale.max(s);
+        }
+    }
+    scale
+}
+
+/// Convert columns returned by the PostgreSQL ADBC driver as
+/// `Utf8` with `arrow.opaque` extension metadata for `numeric` to
+/// `Decimal128`, matching the representation used in checkpoint
+/// parquet files.
+///
+/// The scale for each column is inferred from the actual data across
+/// all batches. If casting fails (e.g. the column contains `NaN` or
+/// `inf`), the original `Utf8` column is kept.
+fn resolve_opaque_numerics(batches: Vec<RecordBatch>) -> Vec<RecordBatch> {
+    if batches.is_empty() {
+        return batches;
+    }
+
+    let schema = batches[0].schema();
+    let opaque_cols: Vec<usize> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| if is_opaque_numeric(f) { Some(i) } else { None })
+        .collect();
+
+    if opaque_cols.is_empty() {
+        return batches;
+    }
+
+    // Determine the max scale for each opaque numeric column across
+    // all batches so every batch uses a consistent Decimal128 type.
+    let mut scales: Vec<i8> = vec![0; opaque_cols.len()];
+    for batch in &batches {
+        for (j, &col_idx) in opaque_cols.iter().enumerate() {
+            if let Some(arr) = batch.column(col_idx).as_any().downcast_ref::<StringArray>() {
+                scales[j] = scales[j].max(max_decimal_scale(arr));
+            }
+        }
+    }
+
+    batches
+        .into_iter()
+        .map(|batch| {
+            let schema = batch.schema();
+            let mut fields = Vec::with_capacity(schema.fields().len());
+            let mut columns = Vec::with_capacity(schema.fields().len());
+
+            for (i, field) in schema.fields().iter().enumerate() {
+                if let Some(j) = opaque_cols.iter().position(|&idx| idx == i) {
+                    let target_type = DataType::Decimal128(38, scales[j]);
+                    match cast(batch.column(i), &target_type) {
+                        Ok(converted) => {
+                            fields.push(Arc::new(Field::new(
+                                field.name(),
+                                target_type,
+                                field.is_nullable(),
+                            )));
+                            columns.push(converted);
+                            continue;
+                        }
+                        Err(_) => { /* fall through to keep original */ }
+                    }
+                }
+                fields.push(field.clone());
+                columns.push(batch.column(i).clone());
+            }
+
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+        })
+        .collect()
 }

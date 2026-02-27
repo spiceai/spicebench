@@ -148,7 +148,7 @@ impl CheckpointValidationState {
                 self.current_iteration_results.clear();
                 self.converged = false;
                 eprintln!("Checkpoint validation disabled");
-                let _ = self.status_tx.send(ValidationStatus::Inactive);
+                self.publish_status();
                 true
             }
             None => false,
@@ -228,15 +228,16 @@ impl CheckpointValidationState {
             .entry(Arc::clone(query_name))
             .or_insert_with(|| QueryValidationOutcome {
                 query_name: Arc::clone(query_name),
-                pass_count: 0,
-                fail_count: 0,
+                total_attempts: 0,
+                consecutive_passes: 0,
                 last_failure: None,
             });
 
+        outcome.total_attempts += 1;
         if passed {
-            outcome.pass_count += 1;
+            outcome.consecutive_passes += 1;
         } else {
-            outcome.fail_count += 1;
+            outcome.consecutive_passes = 0;
             outcome.last_failure = failure;
         }
     }
@@ -273,11 +274,17 @@ impl CheckpointValidationState {
     }
 
     fn publish_status(&self) {
-        let status = ValidationStatus::Active {
-            checkpoint_idx: self.checkpoint_idx,
-            outcomes: self.outcomes.values().cloned().collect(),
-            completed_iterations: self.completed_iterations,
-            converged: self.converged,
+        let status = if self.active {
+            ValidationStatus::Active {
+                checkpoint_idx: self.checkpoint_idx,
+                outcomes: self.outcomes.values().cloned().collect(),
+                completed_iterations: self.completed_iterations,
+                converged: self.converged,
+            }
+        } else {
+            ValidationStatus::Inactive {
+                completed_iterations: self.completed_iterations,
+            }
         };
         let _ = self.status_tx.send(status);
     }

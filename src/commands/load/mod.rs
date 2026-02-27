@@ -559,21 +559,23 @@ pub(crate) async fn run(
                                     } = &status
                                     {
                                         let total_pass: usize =
-                                            outcomes.iter().map(|o| o.pass_count).sum();
-                                        let total_fail: usize =
-                                            outcomes.iter().map(|o| o.fail_count).sum();
+                                            outcomes.iter().map(|o| o.consecutive_passes).sum();
+                                        let total_fail: usize = outcomes
+                                            .iter()
+                                            .filter(|o| o.consecutive_passes == 0 && o.total_attempts > 0)
+                                            .count();
                                         println!(
                                             "Checkpoint {idx} validation ({iters} iterations, converged={converged}): {} queries, {total_pass} pass, {total_fail} fail",
                                             outcomes.len()
                                         );
                                         if total_fail > 0 {
                                             for o in outcomes {
-                                                if o.fail_count > 0 {
+                                                if o.consecutive_passes == 0 && o.total_attempts > 0 {
                                                     eprintln!(
-                                                        "  FAIL - query '{}': {} pass, {} fail, last failure: {:?}",
+                                                        "  FAIL - query '{}': {} attempts, {} consecutive passes, last failure: {:?}",
                                                         o.query_name,
-                                                        o.pass_count,
-                                                        o.fail_count,
+                                                        o.total_attempts,
+                                                        o.consecutive_passes,
                                                         o.last_failure
                                                     );
                                                 }

@@ -53,25 +53,34 @@ pub enum ValidationCommand {
 }
 
 /// Per-query validation outcome recorded during a validation window.
+///
+/// Uses a **convergence model**: instead of cumulative pass/fail counts,
+/// tracks a streak of consecutive passes so that transient failures from
+/// sync propagation delay don't permanently taint the result.
 #[derive(Debug, Clone)]
 pub struct QueryValidationOutcome {
     /// The query name.
     pub query_name: Arc<str>,
-    /// Number of times this query was validated successfully.
-    pub pass_count: usize,
-    /// Number of times this query failed validation.
-    pub fail_count: usize,
-    /// The most recent failure reason, if any.
+    /// Total number of validation attempts (for reporting).
+    pub total_attempts: usize,
+    /// Number of consecutive passes ending at the most recent attempt.
+    /// Reset to 0 on any failure.
+    pub consecutive_passes: usize,
+    /// The most recent failure reason, if any (for diagnostics).
     pub last_failure: Option<QueryValidationFailReason>,
 }
 
 /// A snapshot of the current checkpoint validation state, published via a
 /// `watch` channel so the load runner can inspect it at any time.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub enum ValidationStatus {
     /// Checkpoint validation is not currently active.
-    #[default]
-    Inactive,
+    Inactive {
+        /// Number of complete query-set iterations that have finished.
+        /// Tracked even when validation is inactive so the load runner
+        /// can wait for at least one iteration before shutting down.
+        completed_iterations: usize,
+    },
     /// Checkpoint validation is active for the given checkpoint index.
     Active {
         /// The checkpoint index being validated.
@@ -88,44 +97,33 @@ pub enum ValidationStatus {
     },
 }
 
-impl ValidationStatus {
-    /// Returns `true` if all validated queries have passed (no failures).
-    #[must_use]
-    pub fn all_passed(&self) -> bool {
-        match self {
-            ValidationStatus::Inactive => true,
-            ValidationStatus::Active { outcomes, .. } => outcomes.iter().all(|o| o.fail_count == 0),
+impl Default for ValidationStatus {
+    fn default() -> Self {
+        Self::Inactive {
+            completed_iterations: 0,
         }
     }
+}
 
+impl ValidationStatus {
     /// Returns `true` if the validation has converged — i.e. at least one
     /// complete query-set iteration finished with every query passing.
     #[must_use]
     pub fn converged(&self) -> bool {
         match self {
-            ValidationStatus::Inactive => false,
+            ValidationStatus::Inactive { .. } => false,
             ValidationStatus::Active { converged, .. } => *converged,
         }
     }
 
-    /// Returns the total number of validation failures across all queries.
-    #[must_use]
-    pub fn total_failures(&self) -> usize {
-        match self {
-            ValidationStatus::Inactive => 0,
-            ValidationStatus::Active { outcomes, .. } => {
-                outcomes.iter().map(|o| o.fail_count).sum()
-            }
-        }
-    }
-
-    /// Returns the number of completed query-set iterations since
-    /// validation was enabled, or `0` if inactive.
+    /// Returns the number of completed query-set iterations.
     #[must_use]
     pub fn completed_iterations(&self) -> usize {
         match self {
-            ValidationStatus::Inactive => 0,
-            ValidationStatus::Active {
+            ValidationStatus::Inactive {
+                completed_iterations,
+            }
+            | ValidationStatus::Active {
                 completed_iterations,
                 ..
             } => *completed_iterations,
@@ -163,7 +161,7 @@ pub struct ValidationWorkerHandles {
 ///   commands and publish its validation status.
 pub fn create_validation_channels() -> (ValidationController, ValidationWorkerHandles) {
     let (command_tx, command_rx) = tokio::sync::watch::channel(None);
-    let (status_tx, status_rx) = tokio::sync::watch::channel(ValidationStatus::Inactive);
+    let (status_tx, status_rx) = tokio::sync::watch::channel(ValidationStatus::default());
 
     (
         ValidationController {
