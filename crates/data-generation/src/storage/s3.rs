@@ -94,7 +94,7 @@ pub struct S3Storage {
     pub(crate) prefix: String,
     pub(crate) region: Option<String>,
     key_columns_cache: Arc<RwLock<HashMap<String, Vec<String>>>>,
-    version_metadata_cache: Arc<OnceCell<Option<VersionMetadata>>>,
+    version_metadata_cache: Arc<OnceCell<Option<Arc<VersionMetadata>>>>,
 }
 
 impl S3Storage {
@@ -259,7 +259,7 @@ impl S3Storage {
         Ok(cached)
     }
 
-    async fn cached_version_metadata(&self) -> anyhow::Result<Option<&VersionMetadata>> {
+    async fn cached_version_metadata(&self) -> anyhow::Result<Option<Arc<VersionMetadata>>> {
         let cached = self
             .version_metadata_cache
             .get_or_try_init(|| async {
@@ -271,12 +271,12 @@ impl S3Storage {
                 };
 
                 let bytes = get_result.bytes().await?;
-                let metadata: VersionMetadata = serde_json::from_slice(&bytes)?;
+                let metadata = Arc::new(serde_json::from_slice::<VersionMetadata>(&bytes)?);
                 Ok(Some(metadata))
             })
             .await?;
 
-        Ok(cached.as_ref())
+        Ok(cached.clone())
     }
 }
 
@@ -422,12 +422,14 @@ impl DataStorage for S3Storage {
         let path = self.version_metadata_object_path();
         let bytes = serde_json::to_vec_pretty(metadata)?;
         self.store.put(&path, PutPayload::from(bytes)).await?;
-        let _ = self.version_metadata_cache.set(Some(metadata.clone()));
+        let _ = self
+            .version_metadata_cache
+            .set(Some(Arc::new(metadata.clone())));
         Ok(())
     }
 
-    async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
-        Ok(self.cached_version_metadata().await?.cloned())
+    async fn read_version_metadata(&self) -> anyhow::Result<Option<Arc<VersionMetadata>>> {
+        self.cached_version_metadata().await
     }
 
     async fn read_key_columns(&self, table_name: &str) -> anyhow::Result<Vec<String>> {

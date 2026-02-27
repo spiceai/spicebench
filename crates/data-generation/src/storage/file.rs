@@ -28,6 +28,7 @@ limitations under the License.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
@@ -46,12 +47,14 @@ use crate::version::VersionMetadata;
 /// are directly consumable after extraction.
 pub struct FileStorage {
     base_dir: PathBuf,
+    version_metadata: OnceLock<Arc<VersionMetadata>>,
 }
 
 impl FileStorage {
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: base_dir.into(),
+            version_metadata: OnceLock::new(),
         }
     }
 
@@ -80,6 +83,11 @@ impl FileStorage {
     /// Returns the path for `version.json`.
     fn version_metadata_path(&self) -> PathBuf {
         self.base_dir.join("version.json")
+    }
+
+    /// Caches deserialized version metadata if the cache is not yet populated.
+    fn cache_version_metadata_if_unset(&self, metadata: Arc<VersionMetadata>) {
+        let _ = self.version_metadata.set(metadata);
     }
 }
 
@@ -114,31 +122,42 @@ impl DataStorage for FileStorage {
             None => self.batch_path(table_name, batch_id),
         };
 
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let raw_bytes = std::fs::read(&path)?;
-        let bytes_read = raw_bytes.len() as u64;
-        let bytes = bytes::Bytes::from(raw_bytes);
-        let reader = ParquetRecordBatchReaderBuilder::try_new(bytes)?.build()?;
-
-        let mut batches = Vec::new();
-        let mut rows_read = 0u64;
-        for batch in reader {
-            let batch = batch?;
-            rows_read += batch.num_rows() as u64;
-            batches.push(batch);
-        }
-
+        // Read key columns from the cached version metadata (essentially free
+        // after the first call since it uses OnceLock).
         let key_columns = self.read_key_columns(table_name).await?;
 
-        Ok(Some(ReadResult {
-            batches,
-            rows_read,
-            bytes_read,
-            key_columns,
-        }))
+        // Offload the blocking file read + parquet decode to the blocking
+        // thread pool so the async worker is not stalled during I/O.
+        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<ReadResult>> {
+            let raw_bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+
+            let bytes_read = raw_bytes.len() as u64;
+            let bytes = bytes::Bytes::from(raw_bytes);
+            let reader = ParquetRecordBatchReaderBuilder::try_new(bytes)?.build()?;
+
+            let mut batches = Vec::new();
+            let mut rows_read = 0u64;
+            for batch in reader {
+                let batch = batch?;
+                rows_read += batch.num_rows() as u64;
+                batches.push(batch);
+            }
+
+            Ok(Some(ReadResult {
+                batches,
+                rows_read,
+                bytes_read,
+                key_columns,
+            }))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking panicked reading parquet: {e}"))??;
+
+        Ok(result)
     }
 
     async fn write(
@@ -153,7 +172,7 @@ impl DataStorage for FileStorage {
         }
 
         let props = WriterProperties::builder()
-            .set_compression(Compression::LZ4)
+            .set_compression(Compression::UNCOMPRESSED)
             .build();
 
         let mut buf = Vec::new();
@@ -179,16 +198,22 @@ impl DataStorage for FileStorage {
         }
         let json = serde_json::to_vec_pretty(metadata)?;
         std::fs::write(&path, &json)?;
+        self.cache_version_metadata_if_unset(Arc::new(metadata.clone()));
         Ok(())
     }
 
-    async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
+    async fn read_version_metadata(&self) -> anyhow::Result<Option<Arc<VersionMetadata>>> {
+        if let Some(cached_metadata) = self.version_metadata.get() {
+            return Ok(Some(cached_metadata.clone()));
+        }
+
         let path = self.version_metadata_path();
         if !path.exists() {
             return Ok(None);
         }
         let bytes = std::fs::read(&path)?;
-        let metadata: VersionMetadata = serde_json::from_slice(&bytes)?;
+        let metadata = Arc::new(serde_json::from_slice::<VersionMetadata>(&bytes)?);
+        self.cache_version_metadata_if_unset(metadata.clone());
         Ok(Some(metadata))
     }
 

@@ -18,6 +18,7 @@ pub mod file;
 pub mod s3;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
@@ -92,7 +93,7 @@ pub trait DataStorage: Send + Sync + 'static {
     /// Reads the version metadata (`version.json`) from storage.
     ///
     /// Returns `Ok(None)` if no version metadata exists.
-    async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
+    async fn read_version_metadata(&self) -> anyhow::Result<Option<Arc<VersionMetadata>>> {
         Ok(None)
     }
 
