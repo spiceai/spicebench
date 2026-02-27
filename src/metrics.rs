@@ -105,22 +105,6 @@ pub static MEDIAN_MEMORY_USAGE: LazyLock<Gauge<f64>> = LazyLock::new(|| {
 
 // --- Ingestion metrics ---
 
-pub static INGESTION_ROWS_TOTAL: LazyLock<Gauge<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_gauge("ingestion_rows_total")
-        .with_description("Total rows ingested during the benchmark run.")
-        .with_unit("rows")
-        .build()
-});
-
-pub static INGESTION_BYTES_TOTAL: LazyLock<Gauge<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_gauge("ingestion_bytes_total")
-        .with_description("Total bytes ingested during the benchmark run (data size).")
-        .with_unit("By")
-        .build()
-});
-
 pub static INGESTION_ROWS_PER_SEC: LazyLock<Gauge<f64>> = LazyLock::new(|| {
     meter()
         .f64_gauge("ingestion_rows_per_sec")
@@ -154,56 +138,6 @@ pub static ACTIVE_CONNECTIONS: LazyLock<Gauge<u64>> = LazyLock::new(|| {
         .u64_gauge("active_connections")
         .with_description("Number of concurrent connections / clients maintained.")
         .with_unit("connections")
-        .build()
-});
-
-// --- SUT resource usage (scraped from adapter) ---
-
-pub static SUT_CPU_USAGE_PERCENT: LazyLock<Gauge<f64>> = LazyLock::new(|| {
-    meter()
-        .f64_gauge("sut_cpu_usage_percent")
-        .with_description("SUT CPU utilization percentage.")
-        .with_unit("%")
-        .build()
-});
-
-pub static SUT_MEMORY_USAGE_BYTES: LazyLock<Gauge<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_gauge("sut_memory_usage_bytes")
-        .with_description("SUT resident memory usage in bytes.")
-        .with_unit("By")
-        .build()
-});
-
-pub static SUT_DISK_READ_BYTES: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_counter("sut_disk_read_bytes")
-        .with_description("SUT disk bytes read.")
-        .with_unit("By")
-        .build()
-});
-
-pub static SUT_DISK_WRITE_BYTES: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_counter("sut_disk_write_bytes")
-        .with_description("SUT disk bytes written.")
-        .with_unit("By")
-        .build()
-});
-
-pub static SUT_DISK_READ_IOPS: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_counter("sut_disk_read_iops")
-        .with_description("SUT disk read IOPS.")
-        .with_unit("iops")
-        .build()
-});
-
-pub static SUT_DISK_WRITE_IOPS: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_counter("sut_disk_write_iops")
-        .with_description("SUT disk write IOPS.")
-        .with_unit("iops")
         .build()
 });
 

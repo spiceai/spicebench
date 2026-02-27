@@ -78,39 +78,16 @@ pub struct StreamingOtlpExporter {
     tx: mpsc::Sender<QueryMetricEvent>,
     handle: JoinHandle<()>,
     shutdown_token: CancellationToken,
+    meter: Meter,
 }
 
 impl StreamingOtlpExporter {
     /// Spawn a new streaming OTLP exporter with the given endpoint.
     ///
     /// Metrics will be exported periodically (every 5 seconds).
-    #[must_use]
-    pub fn spawn(endpoint: String) -> Self {
-        // Use a bounded channel to avoid unbounded memory growth
-        let (tx, rx) = mpsc::channel(10_000);
-        let shutdown_token = CancellationToken::new();
-
-        let handle = tokio::spawn(Self::exporter_task(rx, endpoint, shutdown_token.clone()));
-
-        Self {
-            tx,
-            handle,
-            shutdown_token,
-        }
-    }
-
-    /// Get a sender that can be cloned and passed to workers
-    #[must_use]
-    pub fn sender(&self) -> mpsc::Sender<QueryMetricEvent> {
-        self.tx.clone()
-    }
-
-    async fn exporter_task(
-        mut rx: mpsc::Receiver<QueryMetricEvent>,
-        endpoint: String,
-        shutdown_token: CancellationToken,
-    ) {
-        // Build the OTLP exporter
+    /// Returns `None` if the OTLP exporter could not be created.
+    pub fn spawn(endpoint: String) -> Option<Self> {
+        // Build the OTLP exporter (must succeed before we can proceed)
         let exporter = match MetricExporter::builder()
             .with_tonic()
             .with_timeout(Duration::from_secs(10))
@@ -120,11 +97,12 @@ impl StreamingOtlpExporter {
             Ok(exp) => exp,
             Err(e) => {
                 eprintln!("Failed to create streaming OTLP exporter: {e}");
-                return;
+                return None;
             }
         };
 
-        // Create a periodic reader that exports every 5 seconds
+        // Create the periodic reader and provider synchronously so the Meter
+        // is available immediately for callers to create instruments on.
         let reader = PeriodicReader::builder(exporter)
             .with_interval(Duration::from_secs(5))
             .build();
@@ -138,10 +116,51 @@ impl StreamingOtlpExporter {
             .with_reader(reader)
             .build();
 
-        // Set as global provider for this task
         global::set_meter_provider(provider.clone());
 
         let meter: Meter = provider.meter("spicebench-streaming");
+
+        // Use a bounded channel to avoid unbounded memory growth
+        let (tx, rx) = mpsc::channel(10_000);
+        let shutdown_token = CancellationToken::new();
+
+        let handle = tokio::spawn(Self::exporter_task(
+            rx,
+            endpoint,
+            shutdown_token.clone(),
+            meter.clone(),
+            provider,
+        ));
+
+        Some(Self {
+            tx,
+            handle,
+            shutdown_token,
+            meter,
+        })
+    }
+
+    /// Get a `Meter` backed by the streaming periodic pipeline.
+    ///
+    /// Instruments created on this meter will be exported every 5 seconds.
+    #[must_use]
+    pub fn meter(&self) -> Meter {
+        self.meter.clone()
+    }
+
+    /// Get a sender that can be cloned and passed to workers
+    #[must_use]
+    pub fn sender(&self) -> mpsc::Sender<QueryMetricEvent> {
+        self.tx.clone()
+    }
+
+    async fn exporter_task(
+        mut rx: mpsc::Receiver<QueryMetricEvent>,
+        endpoint: String,
+        shutdown_token: CancellationToken,
+        meter: Meter,
+        provider: SdkMeterProvider,
+    ) {
         let query_duration_histogram: Histogram<f64> = meter
             .f64_histogram("spicebench.streaming.query.duration_ms")
             .with_description("Query execution duration in milliseconds (streaming)")

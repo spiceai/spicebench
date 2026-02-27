@@ -30,14 +30,28 @@ use test_framework::{
     arrow::util::pretty::print_batches,
     metrics::{MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, StatisticsCollector},
     opentelemetry::KeyValue,
+    opentelemetry::metrics::{Counter, Gauge},
     opentelemetry_sdk::Resource,
     spicetest::datasets::{ValidationCommand, ValidationStatus, create_validation_channels},
     spicetest::{SpiceTest, datasets::NotStarted},
+    telemetry::SutMetricsPipeline,
     telemetry::streaming::StreamingOtlpExporter,
 };
 use tokio::signal;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+
+/// Instruments for recording SUT resource metrics on the streaming pipeline.
+struct SutInstruments {
+    cpu_usage_percent: Counter<f64>,
+    memory_bytes: Gauge<u64>,
+    disk_read_bytes: Counter<u64>,
+    disk_write_bytes: Counter<u64>,
+    disk_read_ops: Counter<u64>,
+    disk_write_ops: Counter<u64>,
+    ingestion_rows_total: Gauge<u64>,
+    ingestion_bytes_total: Gauge<u64>,
+}
 
 fn run_metric_attributes(common_args: &CommonArgs) -> Vec<KeyValue> {
     vec![KeyValue::new(
@@ -46,34 +60,65 @@ fn run_metric_attributes(common_args: &CommonArgs) -> Vec<KeyValue> {
     )]
 }
 
-/// Record the latest SUT metrics snapshot as OTel gauge values.
-fn record_sut_metrics(response: &MetricsResponse, attributes: &[KeyValue]) {
-    // Resource metrics
+/// Record the latest SUT metrics snapshot on the given streaming instruments.
+fn record_sut_metrics(
+    response: &MetricsResponse,
+    instruments: &SutInstruments,
+    attributes: &[KeyValue],
+    prev_cpu_usage_seconds: &mut Option<f64>,
+    prev_disk_read_bytes: &mut Option<u64>,
+    prev_disk_write_bytes: &mut Option<u64>,
+    prev_disk_read_iops: &mut Option<u64>,
+    prev_disk_write_iops: &mut Option<u64>,
+) {
+    // Resource metrics are cumulative counters; record the delta since last scrape
     if let Some(cpu) = response.resource.cpu_usage_percent {
-        crate::metrics::SUT_CPU_USAGE_PERCENT.record(cpu, attributes);
+        if let Some(prev) = prev_cpu_usage_seconds {
+            instruments
+                .cpu_usage_percent
+                .add((cpu - *prev).max(0.0), attributes);
+        }
+        *prev_cpu_usage_seconds = Some(cpu);
     }
     if let Some(mem) = response.resource.memory_usage_bytes {
-        crate::metrics::SUT_MEMORY_USAGE_BYTES.record(mem, attributes);
+        instruments.memory_bytes.record(mem, attributes);
     }
+    // Disk metrics are cumulative counters; record the delta since last scrape
     if let Some(v) = response.resource.disk_read_bytes {
-        crate::metrics::SUT_DISK_READ_BYTES.add(v, attributes);
+        if let Some(prev) = prev_disk_read_bytes {
+            let delta = v.saturating_sub(*prev);
+            instruments.disk_read_bytes.add(delta, attributes);
+        }
+        *prev_disk_read_bytes = Some(v);
     }
     if let Some(v) = response.resource.disk_write_bytes {
-        crate::metrics::SUT_DISK_WRITE_BYTES.add(v, attributes);
+        if let Some(prev) = prev_disk_write_bytes {
+            let delta = v.saturating_sub(*prev);
+            instruments.disk_write_bytes.add(delta, attributes);
+        }
+        *prev_disk_write_bytes = Some(v);
     }
     if let Some(v) = response.resource.disk_read_iops {
-        crate::metrics::SUT_DISK_READ_IOPS.add(v, attributes);
+        if let Some(prev) = prev_disk_read_iops {
+            let delta = v.saturating_sub(*prev);
+            instruments.disk_read_ops.add(delta, attributes);
+        }
+        *prev_disk_read_iops = Some(v);
     }
     if let Some(v) = response.resource.disk_write_iops {
-        crate::metrics::SUT_DISK_WRITE_IOPS.add(v, attributes);
+        if let Some(prev) = prev_disk_write_iops {
+            let delta = v.saturating_sub(*prev);
+            instruments.disk_write_ops.add(delta, attributes);
+        }
+        *prev_disk_write_iops = Some(v);
     }
 
     // Ingestion metrics
     if let Some(v) = response.ingestion.rows_ingested {
-        crate::metrics::INGESTION_ROWS_TOTAL.record(v, attributes);
+        instruments.ingestion_rows_total.record(v, attributes);
     }
     if let Some(v) = response.ingestion.bytes_ingested {
-        crate::metrics::INGESTION_BYTES_TOTAL.record(v, attributes);
+        instruments.ingestion_bytes_total.record(v, attributes);
     }
     if let Some(v) = response.ingestion.rows_per_sec {
         crate::metrics::INGESTION_ROWS_PER_SEC.record(v, attributes);
@@ -93,9 +138,15 @@ fn spawn_sut_metrics_scraper(
     token: CancellationToken,
     interval: Duration,
     attributes: Vec<KeyValue>,
+    instruments: SutInstruments,
 ) -> tokio::task::JoinHandle<Option<MetricsResponse>> {
     tokio::spawn(async move {
         let mut last_response: Option<MetricsResponse> = None;
+        let mut prev_disk_read_bytes: Option<u64> = None;
+        let mut prev_disk_write_bytes: Option<u64> = None;
+        let mut prev_cpu_usage_seconds: Option<f64> = None;
+        let mut prev_disk_read_iops: Option<u64> = None;
+        let mut prev_disk_write_iops: Option<u64> = None;
         let mut ticker = tokio::time::interval(interval);
         loop {
             tokio::select! {
@@ -103,32 +154,42 @@ fn spawn_sut_metrics_scraper(
                     let metrics_result = adapter.lock().await.metrics(run_id).await;
                     match metrics_result {
                         Ok(resp) => {
-                            let cpu_pct = resp
-                                .resource
-                                .cpu_usage_percent
-                                .map(|v| format!("{v:.2}%"))
-                                .unwrap_or_else(|| "n/a".to_string());
-                            let mem_mb = resp
-                                .resource
-                                .memory_usage_bytes
-                                .map(|v| format!("{:.2}", v as f64 / (1024.0 * 1024.0)))
-                                .unwrap_or_else(|| "n/a".to_string());
-                            let rows_per_sec = resp
-                                .ingestion
-                                .rows_per_sec
-                                .map(|v| format!("{v:.2}"))
-                                .unwrap_or_else(|| "n/a".to_string());
-                            let active_connections = resp
-                                .ingestion
-                                .active_connections
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|| "n/a".to_string());
+                            eprintln!("SUT metrics scrape successful: {:?}", resp);
+                            // let cpu_sec = resp
+                            //     .resource
+                            //     .cpu_usage_percent
+                            //     .map(|v| format!("{v:.2}s"))
+                            //     .unwrap_or_else(|| "n/a".to_string());
+                            // let mem_mb = resp
+                            //     .resource
+                            //     .memory_usage_bytes
+                            //     .map(|v| format!("{:.2}", v as f64 / (1024.0 * 1024.0)))
+                            //     .unwrap_or_else(|| "n/a".to_string());
+                            // let rows_per_sec = resp
+                            //     .ingestion
+                            //     .rows_per_sec
+                            //     .map(|v| format!("{v:.2}"))
+                            //     .unwrap_or_else(|| "n/a".to_string());
+                            // let active_connections = resp
+                            //     .ingestion
+                            //     .active_connections
+                            //     .map(|v| v.to_string())
+                            //     .unwrap_or_else(|| "n/a".to_string());
 
-                            println!(
-                                "SUT metrics: cpu={} mem_mb={} rows_per_sec={} active_connections={}",
-                                cpu_pct, mem_mb, rows_per_sec, active_connections
+                            // println!(
+                            //     "SUT metrics: cpu_sec={} mem_mb={} rows_per_sec={} active_connections={}",
+                            //     cpu_sec, mem_mb, rows_per_sec, active_connections
+                            // );
+                            record_sut_metrics(
+                                &resp,
+                                &instruments,
+                                &attributes,
+                                &mut prev_cpu_usage_seconds,
+                                &mut prev_disk_read_bytes,
+                                &mut prev_disk_write_bytes,
+                                &mut prev_disk_read_iops,
+                                &mut prev_disk_write_iops,
                             );
-                            record_sut_metrics(&resp, &attributes);
                             last_response = Some(resp);
                         }
                         Err(e) => {
@@ -139,7 +200,16 @@ fn spawn_sut_metrics_scraper(
                 () = token.cancelled() => {
                     // Final scrape before exiting
                     if let Ok(resp) = adapter.lock().await.metrics(run_id).await {
-                        record_sut_metrics(&resp, &attributes);
+                        record_sut_metrics(
+                            &resp,
+                            &instruments,
+                            &attributes,
+                            &mut prev_cpu_usage_seconds,
+                            &mut prev_disk_read_bytes,
+                            &mut prev_disk_write_bytes,
+                            &mut prev_disk_read_iops,
+                            &mut prev_disk_write_iops,
+                        );
                         last_response = Some(resp);
                     }
                     break;
@@ -367,7 +437,7 @@ pub(crate) async fn run(
         .build();
 
     // Create telemetry with resource upfront, before any metrics calls
-    let telemetry = super::create_telemetry_with_resource(common_args, load_resource);
+    let telemetry = super::create_telemetry_with_resource(common_args, load_resource.clone());
 
     // Create the appropriate query executor based on args.
     // Each worker gets its own connection from the pool.
@@ -383,24 +453,49 @@ pub(crate) async fn run(
     let streaming_exporter = common_args
         .otlp_endpoint
         .as_ref()
-        .map(|endpoint| StreamingOtlpExporter::spawn(endpoint.clone()));
+        .and_then(|endpoint| StreamingOtlpExporter::spawn(endpoint.clone()));
 
-    // Spawn SUT metrics scraper if --scrape-sut-metrics is enabled and a system adapter is configured
+    // Spawn SUT metrics scraper if --scrape-sut-metrics is enabled and a system adapter is configured.
+    // SUT metrics are always periodically exported to the Arrow backend (SPICEAI_BENCHMARK_METRICS_KEY).
+    // When --otlp-endpoint is configured, they are also exported there.
     let sut_scraper_token = CancellationToken::new();
-    let sut_scraper_handle = if common_args.scrape_sut_metrics
+    let (sut_scraper_handle, sut_pipeline) = if common_args.scrape_sut_metrics
         && (common_args.system_adapter_stdio_cmd.is_some()
             || common_args.system_adapter_http_url.is_some())
     {
+        let sut_pipeline = SutMetricsPipeline::new(
+            "SPICEAI_BENCHMARK_METRICS_KEY",
+            common_args.otlp_endpoint.as_deref(),
+            load_resource.clone(),
+        )
+        .await?;
+        let m = sut_pipeline.meter();
+        let instruments = SutInstruments {
+            cpu_usage_percent: m.f64_counter("sut_cpu_usage_percent").build(),
+            memory_bytes: m.u64_gauge("sut_memory_usage_bytes").build(),
+            disk_read_bytes: m.u64_counter("sut_disk_read_bytes").build(),
+            disk_write_bytes: m.u64_counter("sut_disk_write_bytes").build(),
+            disk_read_ops: m.u64_counter("sut_disk_read_ops").build(),
+            disk_write_ops: m.u64_counter("sut_disk_write_ops").build(),
+            ingestion_rows_total: m.u64_gauge("ingestion_rows_total").build(),
+            ingestion_bytes_total: m.u64_gauge("ingestion_bytes_total").build(),
+        };
+        let mut sut_attributes = metric_attributes.clone();
+        sut_attributes.push(KeyValue::new("run_id", run_id.to_string()));
         println!("SUT metrics scraping enabled (run_id={run_id})");
-        Some(spawn_sut_metrics_scraper(
-            system_adapter_client,
-            run_id,
-            sut_scraper_token.clone(),
-            Duration::from_secs(5),
-            metric_attributes.clone(),
-        ))
+        (
+            Some(spawn_sut_metrics_scraper(
+                system_adapter_client,
+                run_id,
+                sut_scraper_token.clone(),
+                Duration::from_secs(5),
+                sut_attributes,
+                instruments,
+            )),
+            Some(sut_pipeline),
+        )
     } else {
-        None
+        (None, None)
     };
 
     // Record client concurrency as a gauge
@@ -741,18 +836,21 @@ pub(crate) async fn run(
         }
     }
 
-    // Stop SUT metrics scraper
+    // Stop SUT metrics scraper and flush its pipeline
     sut_scraper_token.cancel();
     if let Some(handle) = sut_scraper_handle
         && let Ok(Some(last_sut_metrics)) = handle.await
     {
         println!(
-            "Final SUT metrics: cpu={:?}%, mem={:?}B, ingested_rows={:?}, ingested_bytes={:?}",
+            "Final SUT metrics: cpu_sec={:?}, mem={:?}B, ingested_rows={:?}, ingested_bytes={:?}",
             last_sut_metrics.resource.cpu_usage_percent,
             last_sut_metrics.resource.memory_usage_bytes,
             last_sut_metrics.ingestion.rows_ingested,
             last_sut_metrics.ingestion.bytes_ingested,
         );
+    }
+    if let Some(pipeline) = sut_pipeline {
+        pipeline.shutdown();
     }
 
     // Stop freshness scraper and emit raw E2E latency samples.
