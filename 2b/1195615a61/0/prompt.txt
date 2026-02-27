@@ -1,0 +1,13 @@
+Check all the metrics in here src/metrics.rs. I don't know if theyre using the write gauge/counter etc
+
+---
+
+should `SUT_MEMORY_USAGE_BYTES` be a gauge?
+
+---
+
+Should `SUT_DISK_*` be a gauge?
+
+---
+
+theyre cumulative, update to counters for me

@@ -1,0 +1,20 @@
+# Session Context
+
+## User Prompts
+
+### Prompt 1
+
+Check all the metrics in here src/metrics.rs. I don't know if theyre using the write gauge/counter etc
+
+### Prompt 2
+
+should `SUT_MEMORY_USAGE_BYTES` be a gauge?
+
+### Prompt 3
+
+Should `SUT_DISK_*` be a gauge?
+
+### Prompt 4
+
+theyre cumulative, update to counters for me
+
