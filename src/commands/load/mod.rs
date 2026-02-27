@@ -157,6 +157,7 @@ fn spawn_sut_metrics_scraper(
 fn spawn_e2e_latency_check(
     pool: adbc_client::AdbcConnectionPool,
     table_names: Vec<String>,
+    query_catalog_namespace: Option<String>,
     token: CancellationToken,
     interval: Duration,
     last_created_at_us: Arc<HashMap<String, AtomicI64>>,
@@ -180,6 +181,7 @@ fn spawn_e2e_latency_check(
             let pool = pool.clone();
             let tables = table_names.clone();
             let timestamps = Arc::clone(&last_created_at_us);
+            let query_catalog_namespace = query_catalog_namespace.clone();
             let results = tokio::task::spawn_blocking(move || {
                 let mut out: Vec<(String, Option<f64>)> = Vec::new();
                 let mut conn = match pool.get() {
@@ -197,7 +199,21 @@ fn spawn_e2e_latency_check(
                         out.push((table.clone(), None));
                         continue;
                     }
-                    let sql = format!("SELECT MAX(__created_at) FROM {table}");
+                    let table_ref = if let Some(namespace) = query_catalog_namespace
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|ns| !ns.is_empty())
+                    {
+                        if table.contains('.') {
+                            table.to_string()
+                        } else {
+                            format!("{namespace}.{table}")
+                        }
+                    } else {
+                        table.to_string()
+                    };
+
+                    let sql = format!("SELECT MAX(__created_at) FROM {table_ref}");
                     match conn.query(&sql) {
                         Ok(batches) => {
                             let sample = batches.first().and_then(|batch| {
@@ -420,6 +436,7 @@ pub(crate) async fn run(
         Some(spawn_e2e_latency_check(
             read_pool.clone(),
             table_names,
+            query_catalog_namespace.clone(),
             e2e_latency_token.clone(),
             Duration::from_secs(5),
             etl_pipeline.last_created_at_us(),
