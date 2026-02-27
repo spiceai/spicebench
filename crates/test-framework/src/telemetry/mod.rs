@@ -254,29 +254,34 @@ impl SutMetricsPipeline {
     ) -> Result<Self> {
         let mut builder = SdkMeterProvider::builder().with_resource(resource);
 
-        // Arrow periodic reader (always, when API key is present)
-        let api_key = std::env::var(api_key_name).ok();
-        if let Some(key) = api_key {
-            let arrow_exporter = otel_arrow::OtelArrowExporter::new(
-                TelemetryExporterBuilder::new()
-                    .with_credentials(flight_client::Credentials::Bearer {
-                        token: SecretString::new(key.into()).into(),
-                        prefix: false,
-                    })
-                    .with_service_name("benchmarks_telemetry".into())
-                    .with_endpoint(Arc::clone(&ENDPOINT))
-                    .build()
-                    .await?,
-            );
-            let reader = PeriodicReader::builder(arrow_exporter)
-                .with_interval(Duration::from_secs(5))
-                .build();
-            builder = builder.with_reader(reader);
-            println!(
-                "SUT metrics: Arrow periodic exporter enabled (endpoint: {})",
-                *ENDPOINT
-            );
-        }
+        match std::env::var(api_key_name) {
+            Ok(key) => {
+                let token = Arc::new(SecretString::new(key.into()));
+                // Arrow periodic reader (always, when API key is present)
+                let arrow_exporter = otel_arrow::OtelArrowExporter::new(
+                    TelemetryExporterBuilder::new()
+                        .with_credentials(flight_client::Credentials::Bearer {
+                            token,
+                            prefix: false,
+                        })
+                        .with_service_name("benchmarks_telemetry".into())
+                        .with_endpoint(Arc::clone(&ENDPOINT))
+                        .build()
+                        .await?,
+                );
+                let reader = PeriodicReader::builder(arrow_exporter)
+                    .with_interval(Duration::from_secs(5))
+                    .build();
+                builder = builder.with_reader(reader);
+                println!(
+                    "SUT metrics: Arrow periodic exporter enabled (endpoint: {})",
+                    *ENDPOINT
+                )
+            }
+            Err(e) => {
+                eprintln!("Failed to create Arrow exporter for SUT metrics: {e}");
+            }
+        };
 
         // OTLP periodic reader (when --otlp-endpoint is configured)
         if let Some(endpoint) = otlp_endpoint {

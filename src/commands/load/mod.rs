@@ -154,32 +154,6 @@ fn spawn_sut_metrics_scraper(
                     let metrics_result = adapter.lock().await.metrics(run_id).await;
                     match metrics_result {
                         Ok(resp) => {
-                            eprintln!("SUT metrics scrape successful: {:?}", resp);
-                            // let cpu_sec = resp
-                            //     .resource
-                            //     .cpu_usage_percent
-                            //     .map(|v| format!("{v:.2}s"))
-                            //     .unwrap_or_else(|| "n/a".to_string());
-                            // let mem_mb = resp
-                            //     .resource
-                            //     .memory_usage_bytes
-                            //     .map(|v| format!("{:.2}", v as f64 / (1024.0 * 1024.0)))
-                            //     .unwrap_or_else(|| "n/a".to_string());
-                            // let rows_per_sec = resp
-                            //     .ingestion
-                            //     .rows_per_sec
-                            //     .map(|v| format!("{v:.2}"))
-                            //     .unwrap_or_else(|| "n/a".to_string());
-                            // let active_connections = resp
-                            //     .ingestion
-                            //     .active_connections
-                            //     .map(|v| v.to_string())
-                            //     .unwrap_or_else(|| "n/a".to_string());
-
-                            // println!(
-                            //     "SUT metrics: cpu_sec={} mem_mb={} rows_per_sec={} active_connections={}",
-                            //     cpu_sec, mem_mb, rows_per_sec, active_connections
-                            // );
                             record_sut_metrics(
                                 &resp,
                                 &instruments,
@@ -453,7 +427,7 @@ pub(crate) async fn run(
     let streaming_exporter = common_args
         .otlp_endpoint
         .as_ref()
-        .and_then(|endpoint| StreamingOtlpExporter::spawn(endpoint.clone()));
+        .map(|endpoint| StreamingOtlpExporter::spawn(endpoint.clone()));
 
     // Spawn SUT metrics scraper if --scrape-sut-metrics is enabled and a system adapter is configured.
     // SUT metrics are always periodically exported to the Arrow backend (SPICEAI_BENCHMARK_METRICS_KEY).
