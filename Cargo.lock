@@ -741,6 +741,7 @@ dependencies = [
  "parquet",
  "serde",
  "serde_json",
+ "tempfile",
  "test-framework",
  "tokio",
  "tracing",

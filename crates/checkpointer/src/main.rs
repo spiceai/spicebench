@@ -32,6 +32,8 @@ use data_generation::config::{TargetConfig, build_version_prefix};
 #[cfg(feature = "duckdb")]
 use data_generation::storage::DataStorage;
 #[cfg(feature = "duckdb")]
+use data_generation::storage::file::FileStorage;
+#[cfg(feature = "duckdb")]
 use data_generation::storage::s3::S3Storage;
 #[cfg(feature = "duckdb")]
 use etl::sink::duckdb::DuckDBSink;
@@ -46,7 +48,7 @@ use tracing_subscriber::EnvFilter;
 #[cfg(feature = "duckdb")]
 #[derive(Parser)]
 #[command(
-    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes directly to a SUT via ADBC"
+    about = "Run checkpoint ETL by reading a data archive from S3, rehydrating data, and writing into DuckDB"
 )]
 struct Cli {
     /// The scenario to run, which determines the dataset type and checkpoint queries.
@@ -196,12 +198,18 @@ async fn main() -> anyhow::Result<()> {
 
         let source_config = cli.source_config();
         let version_prefix = source_config.prefix.clone();
-        let source = Arc::new(S3Storage::new(&source_config)?);
+        let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
+
+        // Download and extract the archive to a temporary local directory.
+        let extract_dir = tempfile::tempdir()?;
+        ETLPipeline::download(archive_storage, extract_dir.path()).await?;
+        let source: Arc<dyn DataStorage> = Arc::new(FileStorage::new(extract_dir.path()));
 
         // Read version metadata to derive dataset config and mutations.
         let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
         anyhow::anyhow!(
-            "No version.json found at {version_prefix}. Was data generation run for this version?"
+            "No version.json found in extracted data at {}. Was data generation run for this version?",
+            extract_dir.path().display()
         )
     })?;
 
@@ -226,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
             bucket = %cli.bucket,
             prefix = %cli.prefix,
             version_prefix = %version_prefix,
+            extract_dir = %extract_dir.path().display(),
             duckdb_path = %cli.duckdb_path.display(),
             scale_factor = version_metadata.scale_factor,
             num_steps = version_metadata.num_steps,
