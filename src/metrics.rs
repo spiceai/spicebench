@@ -175,33 +175,33 @@ pub static SUT_MEMORY_USAGE_BYTES: LazyLock<Gauge<u64>> = LazyLock::new(|| {
         .build()
 });
 
-pub static SUT_DISK_READ_BYTES: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+pub static SUT_DISK_READ_BYTES: LazyLock<Counter<u64>> = LazyLock::new(|| {
     meter()
-        .u64_gauge("sut_disk_read_bytes")
+        .u64_counter("sut_disk_read_bytes")
         .with_description("SUT disk bytes read.")
         .with_unit("By")
         .build()
 });
 
-pub static SUT_DISK_WRITE_BYTES: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+pub static SUT_DISK_WRITE_BYTES: LazyLock<Counter<u64>> = LazyLock::new(|| {
     meter()
-        .u64_gauge("sut_disk_write_bytes")
+        .u64_counter("sut_disk_write_bytes")
         .with_description("SUT disk bytes written.")
         .with_unit("By")
         .build()
 });
 
-pub static SUT_DISK_READ_IOPS: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+pub static SUT_DISK_READ_IOPS: LazyLock<Counter<u64>> = LazyLock::new(|| {
     meter()
-        .u64_gauge("sut_disk_read_iops")
+        .u64_counter("sut_disk_read_iops")
         .with_description("SUT disk read IOPS.")
         .with_unit("iops")
         .build()
 });
 
-pub static SUT_DISK_WRITE_IOPS: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+pub static SUT_DISK_WRITE_IOPS: LazyLock<Counter<u64>> = LazyLock::new(|| {
     meter()
-        .u64_gauge("sut_disk_write_iops")
+        .u64_counter("sut_disk_write_iops")
         .with_description("SUT disk write IOPS.")
         .with_unit("iops")
         .build()

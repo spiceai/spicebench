@@ -56,16 +56,16 @@ fn record_sut_metrics(response: &MetricsResponse, attributes: &[KeyValue]) {
         crate::metrics::SUT_MEMORY_USAGE_BYTES.record(mem, attributes);
     }
     if let Some(v) = response.resource.disk_read_bytes {
-        crate::metrics::SUT_DISK_READ_BYTES.record(v, attributes);
+        crate::metrics::SUT_DISK_READ_BYTES.add(v, attributes);
     }
     if let Some(v) = response.resource.disk_write_bytes {
-        crate::metrics::SUT_DISK_WRITE_BYTES.record(v, attributes);
+        crate::metrics::SUT_DISK_WRITE_BYTES.add(v, attributes);
     }
     if let Some(v) = response.resource.disk_read_iops {
-        crate::metrics::SUT_DISK_READ_IOPS.record(v, attributes);
+        crate::metrics::SUT_DISK_READ_IOPS.add(v, attributes);
     }
     if let Some(v) = response.resource.disk_write_iops {
-        crate::metrics::SUT_DISK_WRITE_IOPS.record(v, attributes);
+        crate::metrics::SUT_DISK_WRITE_IOPS.add(v, attributes);
     }
 
     // Ingestion metrics
