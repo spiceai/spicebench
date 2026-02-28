@@ -595,6 +595,7 @@ pub(crate) async fn run(
                                     const POLL_INTERVAL: Duration = Duration::from_secs(5);
                                     const MAX_WAIT: Duration = Duration::from_secs(600);
                                     let mut timed_out = false;
+                                    let mut interrupted = false;
                                     loop {
                                         let status =
                                             validation_controller.status_rx.borrow().clone();
@@ -615,7 +616,13 @@ pub(crate) async fn run(
                                             timed_out = true;
                                             break;
                                         }
-                                        tokio::time::sleep(POLL_INTERVAL).await;
+                                        tokio::select! {
+                                            _ = tokio::time::sleep(POLL_INTERVAL) => {}
+                                            _ = signal::ctrl_c() => {
+                                                interrupted = true;
+                                                break;
+                                            }
+                                        }
                                     }
 
                                     // Read the validation status before disabling.
@@ -654,6 +661,13 @@ pub(crate) async fn run(
                                     let _ = validation_controller
                                         .command_tx
                                         .send(Some(ValidationCommand::Disable));
+
+                                    if interrupted {
+                                        eprintln!("Interrupt received during checkpoint validation, stopping...");
+                                        shutdown_token.cancel();
+                                        etl_pipeline.cancel();
+                                        break Some("Interrupted by user".to_string());
+                                    }
 
                                     if timed_out {
                                         eprintln!(
