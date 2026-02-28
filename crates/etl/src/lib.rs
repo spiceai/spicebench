@@ -357,6 +357,7 @@ async fn read_batches_until_min_rows(
     logical_steps_consumed: &StdArc<AtomicU64>,
     table_name: &str,
     start_batch_id: u64,
+    step_limit: Option<usize>,
 ) -> Result<(Vec<RecordBatch>, Vec<String>, bool, u64, u64), String> {
     let mut all_batches: Vec<RecordBatch> = Vec::new();
     let mut total_rows: usize = 0;
@@ -422,6 +423,7 @@ async fn read_batches_until_min_rows(
             && join_set.len() < MAX_IN_FLIGHT_SOURCE_BATCH_READS.max(1)
             && total_rows < TARGET_BATCH_ROWS
             && !table_finished
+            && step_limit.map_or(true, |limit| consumed_work_units < limit as u64)
         {
             let reservation = {
                 let mut state = work_state.lock().expect("work_state lock poisoned");
@@ -1557,6 +1559,7 @@ async fn run_pipeline(
                         &logical_steps_consumed,
                         &table_name,
                         batch_id,
+                        step_limit,
                     )
                     .await
                     {
