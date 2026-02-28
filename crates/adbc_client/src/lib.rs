@@ -62,7 +62,11 @@ pub struct AdbcConnection {
 impl AdbcConnection {
     /// Create an `AdbcConnection` from an already-established [`ManagedConnection`].
     #[must_use]
-    pub fn new(conn: adbc_driver_manager::ManagedConnection, downcast_utf8view: bool, resolve_opaque_numerics: bool) -> Self {
+    pub fn new(
+        conn: adbc_driver_manager::ManagedConnection,
+        downcast_utf8view: bool,
+        resolve_opaque_numerics: bool,
+    ) -> Self {
         Self {
             conn,
             downcast_utf8view,
