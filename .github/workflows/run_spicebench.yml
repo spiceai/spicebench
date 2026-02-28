@@ -83,8 +83,8 @@ jobs:
       - uses: ./.github/actions/management-login
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
         with:
-          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+          client-id: ${{ secrets.PEASEE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ secrets.PEASEE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
