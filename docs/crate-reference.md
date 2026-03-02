@@ -106,19 +106,19 @@ JSON-RPC 2.0 protocol definitions for system adapter communication. Supports bot
 
 ### Core Types
 
-| Type                                                        | Description                                            |
-| ----------------------------------------------------------- | ------------------------------------------------------ |
-| `AdbcDriver` (enum)                                         | `Flightsql`, `Databricks`, `Postgresql`                |
-| `EtlSinkType` (enum)                                        | `Hive`, `Adbc`                                         |
-| `EtlType` (enum)                                            | `S3`, `Adbc`                                           |
-| `DatasetConfig`                                             | Dataset schema, keys, location, ETL type, and params   |
-| `SetupRequest` / `SetupResponse`                            | Setup method request/response                          |
-| `QueryMethodResponse`                                       | ADBC driver + connection kwargs                        |
-| `TeardownRequest` / `TeardownResponse`                      | Teardown method request/response                       |
-| `MetricsRequest` / `MetricsResponse`                        | Metrics method request/response                        |
-| `ResourceMetrics`                                           | CPU, memory, disk I/O from the SUT                     |
-| `IngestionMetrics`                                          | Rows, bytes, throughput, connection count from the SUT |
-| `JsonRpcRequest<T>` / `JsonRpcResponse<T>` / `JsonRpcError` | JSON-RPC 2.0 wire types                                |
+| Type                                                        | Description                                              |
+| ----------------------------------------------------------- | -------------------------------------------------------- |
+| `AdbcDriver` (enum)                                         | Supported ADBC drivers (e.g., `Flightsql`, `Databricks`) |
+| `EtlSinkType` (enum)                                        | `Hive`, `Adbc`                                           |
+| `EtlType` (enum)                                            | `S3`, `Adbc`                                             |
+| `DatasetConfig`                                             | Dataset schema, keys, location, ETL type, and params     |
+| `SetupRequest` / `SetupResponse`                            | Setup method request/response                            |
+| `QueryMethodResponse`                                       | ADBC driver + connection kwargs                          |
+| `TeardownRequest` / `TeardownResponse`                      | Teardown method request/response                         |
+| `MetricsRequest` / `MetricsResponse`                        | Metrics method request/response                          |
+| `ResourceMetrics`                                           | CPU, memory, disk I/O from the SUT                       |
+| `IngestionMetrics`                                          | Rows, bytes, throughput, connection count from the SUT   |
+| `JsonRpcRequest<T>` / `JsonRpcResponse<T>` / `JsonRpcError` | JSON-RPC 2.0 wire types                                  |
 
 ### Client (`client` feature)
 
@@ -207,7 +207,6 @@ ETL pipeline — reads from S3, rehydrates, and writes to configurable sinks.
 | `S3HiveSink` | Hive-partitioned Parquet to S3 with concurrency control          |
 | `AdbcSink`   | ADBC bulk ingest. Method: `create_tables_from_dataset_configs()` |
 | `NullSink`   | Discards all writes (for benchmarking pipeline throughput)       |
-| `DuckDBSink` | Local DuckDB with staging tables (feature-gated: `duckdb`)       |
 
 ### Trait
 
@@ -337,7 +336,7 @@ fn schema() -> Arc<Schema>  // Flattened OTel metrics Arrow schema
 
 **Path:** `crates/spicepod/`
 
-YAML-based configuration loader for Spice.ai pod definitions.
+YAML-based configuration loader for Spice.ai pod definitions. Used by the Spice Cloud adapter for dataset, catalog, and runtime configuration.
 
 ### Public Types
 
@@ -367,7 +366,7 @@ Components: `catalog`, `dataset`, `model`, `view`, `embeddings`, `eval`, `tool`,
 
 **Path:** `crates/app/`
 
-Aggregates components from the root Spicepod and dependencies into a single `App`.
+Aggregates components from the root Spicepod and dependencies into a single `App`. Used by the Spice Cloud adapter.
 
 ### Public Types
 

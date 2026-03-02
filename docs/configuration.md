@@ -1,10 +1,10 @@
 # Configuration
 
-SpiceBench uses **Spicepod YAML** files for dataset and infrastructure configuration, and CLI flags for runtime behavior.
+SpiceBench uses CLI flags for runtime behavior. The Spice Cloud system adapter additionally uses **Spicepod YAML** files for dataset and infrastructure configuration.
 
-## Spicepod Format
+## Spicepod Format (Spice Cloud)
 
-Spicepod is a declarative YAML configuration format. SpiceBench uses it to define datasets, catalogs, and runtime settings.
+Spicepod is a declarative YAML configuration format used by the Spice Cloud adapter to define datasets, catalogs, and runtime settings.
 
 ### Basic Structure
 
@@ -59,19 +59,19 @@ datasets:
       s3_auth: public
     acceleration:                     # Optional acceleration config
       enabled: true
-      engine: duckdb
+      # engine is runtime-specific
 ```
 
 #### Dataset Fields
 
-| Field          | Type                  | Description                                      |
-| -------------- | --------------------- | ------------------------------------------------ |
-| `name`         | String                | Table name used in queries                       |
-| `from`         | String                | Data source URI (e.g., `s3://`, `databricks://`) |
-| `params`       | Map\<String, String\> | Source-specific parameters                       |
-| `acceleration` | Object                | Acceleration/caching configuration               |
-| `time_column`  | String                | Column for temporal ordering                     |
-| `primary_key`  | String                | Primary key column(s)                            |
+| Field          | Type                  | Description                        |
+| -------------- | --------------------- | ---------------------------------- |
+| `name`         | String                | Table name used in queries         |
+| `from`         | String                | Data source URI (e.g., `s3://`)    |
+| `params`       | Map\<String, String\> | Source-specific parameters         |
+| `acceleration` | Object                | Acceleration/caching configuration |
+| `time_column`  | String                | Column for temporal ordering       |
+| `primary_key`  | String                | Primary key column(s)              |
 
 ### TPC-H Example (public S3)
 
@@ -125,36 +125,21 @@ SpiceBench ships with several built-in query sets:
 
 Use `--query-set scenario --scenario-query-file path/to/queries.sql` to load custom queries. The file should contain SQL statements separated by semicolons.
 
-## SQL Dialect Overrides
+## SQL Overrides
 
-SpiceBench rewrites SQL queries for different database engines using `--query-overrides`. This handles syntax differences like quoting, function names, type casting, and reserved words.
+SpiceBench supports SQL query rewrites for supported systems using `--query-overrides`.
 
-| Dialect               | Use When Targeting                 |
-| --------------------- | ---------------------------------- |
-| `sqlite`              | SQLite                             |
-| `postgresql`          | PostgreSQL                         |
-| `mysql`               | MySQL                              |
-| `dremio`              | Dremio                             |
-| `spark`               | Apache Spark SQL                   |
-| `duckdb`              | DuckDB                             |
-| `duckdb-zero-results` | DuckDB (empty result variant)      |
-| `duckdb-partitioned`  | DuckDB (partitioned tables)        |
-| `snowflake`           | Snowflake                          |
-| `oracle`              | Oracle                             |
-| `odbc-athena`         | Amazon Athena via ODBC             |
-| `odbc-databricks`     | Databricks via ODBC                |
-| `iceberg-sf1`         | Iceberg tables (SF1)               |
-| `iceberg-hadoop`      | Iceberg with Hadoop catalog        |
-| `spicecloud-catalog`  | Spice Cloud with catalog namespace |
-| `glue-catalog`        | AWS Glue Data Catalog              |
-| `databricks-catalog`  | Databricks Unity Catalog           |
-| `spicecloud`          | Spice Cloud                        |
-| `dynamodb`            | Amazon DynamoDB                    |
+| Dialect              | Use When Targeting                 |
+| -------------------- | ---------------------------------- |
+| `odbc-databricks`    | Databricks SQL via ODBC            |
+| `databricks-catalog` | Databricks Unity Catalog           |
+| `spicecloud`         | Spice Cloud                        |
+| `spicecloud-catalog` | Spice Cloud with catalog namespace |
 
 Example:
 
 ```bash
-spicebench --query-set tpch --query-overrides spark ...
+spicebench --query-set tpch --query-overrides databricks-catalog ...
 ```
 
 ## Table Format
@@ -185,9 +170,9 @@ SpiceBench attaches metadata to each run for cross-system comparison:
 
 All metadata is sent to the adapter in the `setup` request and attached as OTel resource attributes on exported metrics.
 
-## Spicepod Loading
+## Spicepod Loading (Spice Cloud)
 
-The `spicepod` crate supports loading configuration from multiple sources:
+The `spicepod` crate supports loading Spice Cloud adapter configuration from multiple sources:
 
 | Source     | Method                                  | Example                        |
 | ---------- | --------------------------------------- | ------------------------------ |
