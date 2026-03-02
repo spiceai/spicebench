@@ -7,7 +7,7 @@ This guide covers installing, building, and running SpiceBench for the first tim
 - **Rust** — nightly toolchain (see `rust-toolchain.toml`; currently Rust 1.91.0+, edition 2024)
 - **S3 access** — read access to the source data bucket (default: `spiceai-public-datasets`)
 - **System adapter** — a running or launchable adapter for your target platform (see [System Adapters](system-adapters.md))
-- **ADBC driver** — the appropriate ADBC driver for your target (FlightSQL, Databricks, etc.)
+- **ADBC driver** — the appropriate ADBC driver for your target system
 
 ### Optional
 
@@ -141,5 +141,5 @@ See [Data Generation & ETL](data-generation-and-etl.md) for all sink options.
 
 - [CLI Reference](cli-reference.md) — all flags and options for `spicebench` and `data-generation`
 - [System Adapters](system-adapters.md) — how to build an adapter for your platform
-- [Configuration](configuration.md) — Spicepod YAML format and query sets
+- [Configuration](configuration.md) — Spicepod YAML (Spice Cloud adapter) and query sets
 - [Metrics & Telemetry](metrics-and-telemetry.md) — all collected metrics and how to visualize them

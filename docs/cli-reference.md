@@ -68,31 +68,16 @@ spicebench [OPTIONS]
 | Parameterized TPC-H | `--query-set tpch[parameterized]` | TPC-H with randomized parameter substitution       |
 | Scenario            | `--query-set scenario`            | Custom queries loaded from `--scenario-query-file` |
 
-### SQL Dialect Overrides
+### SQL Overrides
 
-Use `--query-overrides <dialect>` to apply SQL rewrites for a specific engine:
+Use `--query-overrides <dialect>` to apply SQL rewrites for currently supported systems:
 
-| Dialect               | Target System                   |
-| --------------------- | ------------------------------- |
-| `sqlite`              | SQLite                          |
-| `postgresql`          | PostgreSQL                      |
-| `mysql`               | MySQL                           |
-| `dremio`              | Dremio                          |
-| `spark`               | Apache Spark SQL                |
-| `duckdb`              | DuckDB                          |
-| `duckdb-zero-results` | DuckDB (empty result variant)   |
-| `duckdb-partitioned`  | DuckDB (partitioned tables)     |
-| `snowflake`           | Snowflake                       |
-| `oracle`              | Oracle                          |
-| `odbc-athena`         | Amazon Athena via ODBC          |
-| `odbc-databricks`     | Databricks via ODBC             |
-| `iceberg-sf1`         | Iceberg (SF1 variant)           |
-| `iceberg-hadoop`      | Iceberg Hadoop catalog          |
-| `spicecloud-catalog`  | Spice Cloud with catalog prefix |
-| `glue-catalog`        | AWS Glue catalog                |
-| `databricks-catalog`  | Databricks Unity Catalog        |
-| `spicecloud`          | Spice Cloud                     |
-| `dynamodb`            | Amazon DynamoDB                 |
+| Dialect              | Target System            |
+| -------------------- | ------------------------ |
+| `odbc-databricks`    | Databricks SQL via ODBC  |
+| `databricks-catalog` | Databricks Unity Catalog |
+| `spicecloud`         | Spice Cloud              |
+| `spicecloud-catalog` | Spice Cloud with catalog |
 
 ### Examples
 
