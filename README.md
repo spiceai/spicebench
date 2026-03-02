@@ -70,114 +70,30 @@ This extends SpiceBench from ingestion-to-query into ingestion-to-prompt/RAG, so
 
 ```mermaid
 flowchart TB
-    subgraph GHA["GitHub Actions – Workflow Orchestration"]
-        direction TB
-        trigger["Trigger\n(schedule / manual / PR)"]
-        orchestrator["Benchmark Orchestrator"]
-        trigger --> orchestrator
-    end
+    orchestrator["GitHub Actions\nOrchestrator"]
 
     subgraph run["SpiceBench Run"]
         direction TB
+        adapter["System Adapter\n(JSON-RPC 2.0)"]
+        benchmark["Benchmark Engine\n(warm-up → baseline → load test)"]
+        executors["Query Executors\n(ADBC / HTTP)"]
+        sut["System Under Test"]
 
-        subgraph setup_phase["1 · Setup (JSON-RPC)"]
-            adapter_iface["System Adapter Protocol\n(setup / create_tables /\nteardown / metrics)"]
-            spice["Adapter A"]
-            databricks["Adapter B"]
-            other["System Adapters\n(pluggable via JSON-RPC)"]
-            adapter_iface --- spice
-            adapter_iface --- databricks
-            adapter_iface --- other
-        end
-
-        subgraph bench_phase["2 · Benchmark (timed)"]
-            direction TB
-
-            subgraph query_exec["Query Execution"]
-                direction LR
-                warmup["Warm-up\n(1× query set)"]
-                baseline["Baseline\n(10% duration,\n60s–600s)"]
-                loadtest["Load Test\n(full duration,\nconcurrent clients)"]
-                warmup --> baseline --> loadtest
-            end
-
-            subgraph executors["Query Executors"]
-                direction TB
-                adbc_exec["ADBC Direct\n(adapter-selected driver)"]
-                http_exec["HTTP\n(/v1/sql)"]
-                distributed_exec["Distributed\n(/v1/queries)"]
-            end
-
-            subgraph sut["System Under Test"]
-                direction TB
-                query_ep["Query Endpoint"]
-            end
-
-            query_exec -->|"execute queries"| executors
-            executors -->|"SQL queries"| query_ep
-        end
-
-        subgraph teardown_phase["3 · Teardown"]
-            cleanup["Deprovision resources\nvia adapter JSON-RPC"]
-        end
+        adapter -->|"setup + create_tables"| benchmark
+        benchmark --> executors
+        executors -->|"SQL queries"| sut
+        benchmark -->|"teardown"| adapter
     end
 
-    subgraph datagen["Data Generation (standalone)"]
-        direction TB
-        generator["data-generation binary\n(TPC-H datasets)"]
-        s3target["S3 Target\n(Parquet batches)"]
-        generator -->|"write batches"| s3target
-    end
-
-    subgraph metrics["Metrics Collection (OTel)"]
-        direction TB
-        collector["OpenTelemetry SDK"]
-        m_query["Per-Query Metrics\n(iterations, median/min/max/p99\nduration, pass/fail status)"]
-        m_throughput["Throughput\n(queries/s, queries total)"]
-        m_ingestion["Ingestion (from SUT adapter)\n(rows, bytes, rows/s)"]
-        m_resource["Resource Usage (from SUT adapter)\n(CPU%, memory, disk R/W,\ndisk IOPS)"]
-        m_health["Health Probes\n(/health, /v1/ready latency)"]
-        m_memory["Memory\n(peak/median usage)"]
-        m_efficiency["Efficiency\n(queries/s per core)"]
-        m_e2e["E2E Duration\n(benchmark wall-clock time)"]
-        collector --- m_query
-        collector --- m_throughput
-        collector --- m_ingestion
-        collector --- m_resource
-        collector --- m_health
-        collector --- m_memory
-        collector --- m_efficiency
-        collector --- m_e2e
-    end
-
-    subgraph streaming["Streaming Metrics (optional)"]
-        streaming_exporter["StreamingOtlpExporter\n(every 5s to --otlp-endpoint)"]
-    end
-
-    subgraph telemetry["telemetry.spiceai.io"]
-        direction TB
-        arrow_endpoint["Arrow Flight Endpoint"]
-        otel_endpoint["OTLP Endpoint\n(--otlp-endpoint)"]
-    end
-
-    subgraph website["SpiceBench.com"]
-        leaderboard["Leaderboard\n(ranked by E2E benchmark duration)"]
-        run_details["Run Details\n(per-query breakdown,\nresource usage, latency)"]
-        leaderboard --> run_details
-    end
+    datagen["Data Generation\n(TPC-H → S3 Parquet)"]
+    metrics["OTel Metrics\n(query latency, throughput,\ningestion, resource usage)"]
+    telemetry["telemetry.spiceai.io"]
+    website["SpiceBench.com\n(leaderboard + run details)"]
 
     orchestrator -->|"start run"| run
-
-    adapter_iface -->|"setup(run_id, metadata)\n→ ADBC driver + kwargs"| executors
-    adapter_iface -->|"create_tables(run_id, datasets)"| sut
-    setup_phase -->|"system ready"| bench_phase
-    bench_phase -->|"benchmark complete"| teardown_phase
-
-    adapter_iface -.->|"metrics(run_id)\n(every 5s)"| collector
-
-    collector -->|"Arrow export\n(OtelArrowExporter)"| arrow_endpoint
-    streaming_exporter -->|"OTLP export"| otel_endpoint
-    arrow_endpoint -->|"run results"| website
+    adapter -.->|"metrics (every 5s)"| metrics
+    metrics -->|"Arrow Flight export"| telemetry
+    telemetry --> website
 ```
 
 ### SpiceBench Run
