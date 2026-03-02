@@ -14,12 +14,11 @@ SpiceBench currently supports benchmark runs against:
 
 The system adapter protocol defines four JSON-RPC 2.0 methods:
 
-| Method          | Required | Purpose                                                      |
-| --------------- | -------- | ------------------------------------------------------------ |
-| `setup`         | Yes      | Provision the SUT and return ADBC driver configuration       |
-| `create_tables` | Yes      | Create or register destination tables for benchmark datasets |
-| `teardown`      | Yes      | Clean up provisioned resources                               |
-| `metrics`       | No       | Return current resource usage and ingestion metrics          |
+| Method     | Required | Purpose                                                                        |
+| ---------- | -------- | ------------------------------------------------------------------------------ |
+| `setup`    | Yes      | Provision the SUT, create/register benchmark tables, return ADBC driver config |
+| `teardown` | Yes      | Clean up provisioned resources                                                 |
+| `metrics`  | No       | Return current resource usage and ingestion metrics                            |
 
 Additionally, adapters should implement:
 
@@ -99,69 +98,25 @@ Provisions the SUT and returns ADBC connection details.
     "jsonrpc": "2.0",
     "id": 1,
     "result": {
-        "ok": true,
-        "query_method": {
-            "driver": "flightsql",
-            "db_kwargs": {
-                "uri": "grpc+tls://my-platform.example.com:443",
-                "username": "",
-                "password": "my-api-key"
-            }
-        }
+        "driver": "flightsql",
+        "db_kwargs": {
+            "uri": "grpc+tls://my-platform.example.com:443",
+            "username": "",
+            "password": "my-api-key"
+        },
+        "catalog_namespace": "my_catalog.my_schema"
     }
 }
 ```
 
-The `query_method` response tells SpiceBench which ADBC driver to use for query execution:
+The response tells SpiceBench which ADBC driver to use for query execution:
 
-| Driver     | `driver` Value | Description             |
-| ---------- | -------------- | ----------------------- |
-| FlightSQL  | `flightsql`    | Apache Arrow Flight SQL |
-| Databricks | `databricks`   | Databricks ADBC driver  |
-| PostgreSQL | `postgresql`   | PostgreSQL ADBC driver  |
-
-### `create_tables`
-
-Creates or registers tables on the SUT for the benchmark datasets.
-
-**Request:**
-
-```json
-{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "create_tables",
-    "params": {
-        "run_id": "550e8400-e29b-41d4-a716-446655440000",
-        "datasets": {
-            "customer": {
-                "schema": {
-                    "fields": [
-                        { "name": "c_custkey", "data_type": "Int64", "nullable": false },
-                        { "name": "c_name", "data_type": "Utf8", "nullable": false }
-                    ]
-                },
-                "primary_key_columns": ["c_custkey"],
-                "location": "s3://bucket/prefix/customer/",
-                "time_column": "__created_at",
-                "partition_columns": ["__created_at"],
-                "etl_type": "s3",
-                "params": {}
-            }
-        }
-    }
-}
-```
-
-**Response:**
-
-```json
-{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "result": { "ok": true }
-}
-```
+| Field               | Required | Description                                                |
+| ------------------- | -------- | ---------------------------------------------------------- |
+| `driver`            | Yes      | ADBC driver name (`flightsql`, `databricks`, `postgresql`) |
+| `db_kwargs`         | Yes      | Driver-specific connection parameters                      |
+| `catalog_namespace` | No       | Catalog/schema path where tables were created              |
+| `read_driver`       | No       | Optional separate driver + kwargs for read-side queries    |
 
 ### `teardown`
 
@@ -255,7 +210,7 @@ Returns the list of JSON-RPC methods supported by the adapter.
 {
     "jsonrpc": "2.0",
     "id": 5,
-    "result": ["setup", "create_tables", "teardown", "metrics", "rpc.methods"]
+    "result": ["setup", "teardown", "metrics", "rpc.methods"]
 }
 ```
 
@@ -264,10 +219,7 @@ Returns the list of JSON-RPC methods supported by the adapter.
 In `direct-query` mode, SpiceBench calls adapter methods in this order:
 
 ```
-setup(run_id, metadata)
-    │
-    ▼
-create_tables(run_id, datasets)
+setup(run_id, metadata, datasets, etl_sink_type)
     │
     ▼
 benchmark execution
@@ -299,20 +251,18 @@ Templates are available in `system-adapters/templates/` for five languages:
 
 All templates:
 
-- Implement JSON-RPC 2.0 methods: `setup`, `create_tables`, `teardown`, `metrics`, `rpc.methods`
+- Implement JSON-RPC 2.0 methods: `setup`, `teardown`, `metrics`, `rpc.methods`
 - Support both **stdio** (line-delimited requests) and **HTTP** (POST endpoint) transports
 - Include `metrics` stubs with commented examples for SUT monitoring
 - Are intentionally minimal and designed for customization
 
 ### Implementation Checklist
 
-1. **`setup`** — Parse `metadata` and `datasets` from the request. Provision your target system (start services, create schemas). Return an ADBC `driver` name and `db_kwargs` connection map.
+1. **`setup`** — Parse `metadata`, `datasets`, and `etl_sink_type` from the request. Provision your target system (start services, create schemas). Create/register benchmark destination tables from `datasets` (using Arrow schema, `primary_key_columns`, `time_column`, `partition_columns`, and `location` for Hive sources). Return an ADBC `driver` name and `db_kwargs` connection map.
 
-2. **`create_tables`** — Iterate over `datasets`. Create tables using the provided Arrow schema, respecting `primary_key_columns`, `time_column`, `partition_columns`, and `location` (S3 path for Hive sources).
+2. **`teardown`** — Drop tables, stop services, release resources. Track state from `setup` using `run_id`.
 
-3. **`teardown`** — Drop tables, stop services, release resources. Track state from `setup` using `run_id`.
-
-4. **`metrics`** (optional) — Poll your SUT for CPU, memory, disk I/O, and ingestion progress. Return whatever is available; omit unavailable fields.
+3. **`metrics`** (optional) — Poll your SUT for CPU, memory, disk I/O, and ingestion progress. Return whatever is available; omit unavailable fields.
 
 ### Rust Adapter (using `system-adapter-protocol`)
 
