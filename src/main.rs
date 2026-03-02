@@ -231,13 +231,15 @@ async fn run_benchmark(
                 target_db_schema,
             )?);
 
-            let pipeline = ETLPipeline::new(
+            let mut pipeline = ETLPipeline::new(
                 dataset_source,
                 &generation_config,
                 Arc::clone(&data_source),
                 target_sink,
                 &mutations,
             )?;
+
+            pipeline.initialize().await?;
 
             (setup_response, pipeline)
         }
