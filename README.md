@@ -1,6 +1,57 @@
 # SpiceBench
 
-A benchmark for data & AI platforms focused on operational data. Unlike static benchmarks such as ClickBench or TPC-H that run queries on pre-created datasets, SpiceBench measures end-to-end performance across dynamic real-time data generation, ingestion, indexing/acceleration/materialization, and query execution — all running concurrently.
+A benchmark for data & AI platforms that operate on a hybrid data lake + database architecture — where data streams continuously from lakes, databases, and APIs into both object-stores and databases that serves low-latency queries for applications and AI agents. Unlike static benchmarks such as ClickBench or TPC-H that run queries on pre-created datasets, SpiceBench measures end-to-end performance across the full operational lifecycle: real-time data generation, ingestion, indexing/acceleration/materialization, and concurrent query execution.
+
+## Documentation
+
+Detailed documentation is available in the [`docs/`](docs/) directory:
+
+| Document                                                 | Description                                                         |
+| -------------------------------------------------------- | ------------------------------------------------------------------- |
+| [Architecture](docs/architecture.md)                     | System architecture, run lifecycle, benchmark phases, and data flow |
+| [Getting Started](docs/getting-started.md)               | Installation, prerequisites, and first run                          |
+| [CLI Reference](docs/cli-reference.md)                   | Complete `spicebench`, `data-generation`, and `etl` CLI flags       |
+| [System Adapters](docs/system-adapters.md)               | JSON-RPC 2.0 protocol, transport modes, and building new adapters   |
+| [Data Generation & ETL](docs/data-generation-and-etl.md) | Dataset generation, ETL pipeline, sinks, and checkpointing          |
+| [Metrics & Telemetry](docs/metrics-and-telemetry.md)     | All OTel instruments, streaming metrics, and Grafana dashboards     |
+| [Configuration](docs/configuration.md)                   | Spicepod YAML format, query sets, and SQL dialect overrides         |
+| [Crate Reference](docs/crate-reference.md)               | Per-crate API overview for all workspace crates                     |
+
+## Goals
+
+The main goals of SpiceBench are:
+
+### Realism
+
+Modern data platforms don't just run analytical queries on static tables — they combine a data lake (the scalable source of truth) with an acceleration or materialization layer that serves low-latency queries to applications and AI agents. SpiceBench targets this hybrid architecture directly. It generates and streams data continuously into the system under test while concurrently executing query workloads, capturing the real tension between ingestion throughput, materialization freshness, and query latency that operators face every day.
+
+### Reproducibility
+
+Every Run is fully automated and deterministic: a single `spicebench` invocation provisions the system under test, loads data, executes the benchmark, collects metrics, and tears down infrastructure. All results are published to [SpiceBench.com](https://spicebench.com) with full metadata — executor instance type, scale factor, query set, and system adapter version — so any result can be reproduced on equivalent hardware.
+
+### Extensibility
+
+Adding a new system takes one adapter — a JSON-RPC 2.0 process (stdio or HTTP) implementing four methods (`setup`, `create_tables`, `teardown`, `metrics`). Starter templates are provided in Python, Node.js, Rust, Go, and Java. No source-code changes to SpiceBench are required.
+
+### Transparency
+
+All metrics are emitted via OpenTelemetry with well-defined instruments. Raw per-query latencies, ingestion rates, resource utilization, and pass/fail verdicts are available for every Run. The scoring methodology (E2E wall-clock time as primary rank, p99 regression detection for pass/fail) is documented and auditable.
+
+## Limitations
+
+SpiceBench focuses on a specific class of workloads — concurrent data ingestion with analytical query execution. Note these limitations:
+
+1. **Hybrid architecture bias.** The benchmark is designed for systems that combine a data lake or federated source layer with an acceleration/materialization layer for low-latency serving. Pure batch-analytical warehouses and pure OLTP databases are not the target workload and may be at an unfair disadvantage.
+
+2. **Dataset coverage.** The data generator currently produces TPC-H tables, with ClickBench and custom dataset support planned. While TPC-H covers common analytical patterns, it does not represent all real-world data shapes (e.g., time-series, JSON, graph) — additional datasets will expand workload diversity over time.
+
+3. **Scale factor range.** Default runs use modest scale factors that complete in minutes. This allows fast iteration but may not surface bottlenecks that appear only at terabyte scale.
+
+4. **Hardware variance.** Results depend heavily on the executor instance type and the SUT deployment. SpiceBench records instance metadata and encourages apples-to-apples comparisons, but cross-hardware conclusions should be drawn carefully.
+
+5. **No cost modeling.** The benchmark does not measure cloud spend, pricing, or cost-efficiency. Two systems may achieve similar throughput at vastly different price points.
+
+*All Benchmarks Are Liars* — use SpiceBench results as one signal among many, not as an absolute verdict.
 
 ## Architecture
 
@@ -149,7 +200,7 @@ Common CLI/workflow usage:
 | **GitHub Actions**          | Orchestrates Runs on schedule, PR, or manual dispatch. Manages the full Run lifecycle across phases.                                                          |
 | **System Adapter Protocol** | JSON-RPC 2.0 interface (stdio or HTTP) for each platform. Methods: `setup`, `create_tables`, `teardown`, `metrics`.                                           |
 | **Query Executors**         | Pluggable query execution: ADBC direct (FlightSQL/Databricks drivers), HTTP (`/v1/sql`), or distributed (`/v1/queries` with polling).                         |
-| **Data Generator**          | Standalone binary (`data-generation`) that produces TPC-H partitioned Parquet batches and writes them to S3.                                                  |
+| **Data Generator**          | Standalone binary (`data-generation`) that produces partitioned Parquet batches (TPC-H today; ClickBench and custom datasets planned) and writes them to S3.  |
 | **Test Framework**          | Core engine managing the warm-up → baseline → load test pipeline, query sets (TPC-H, TPC-DS, ClickBench, parameterized, scenario), and statistics collection. |
 | **Metrics Collector**       | OpenTelemetry SDK instruments recording per-query, throughput, ingestion, resource, health, and efficiency metrics.                                           |
 | **SUT Metrics Scraper**     | Optional background task (`--scrape-sut-metrics`) that calls the adapter's `metrics` JSON-RPC method every 5s.                                                |
@@ -247,6 +298,17 @@ Starter templates are available in:
 - [Rust template](system-adapters/templates/rust/README.md)
 - [Go template](system-adapters/templates/go/README.md)
 - [Java template](system-adapters/templates/java/README.md)
+
+See the [System Adapters guide](docs/system-adapters.md) for the full JSON-RPC protocol specification, request/response examples, and implementation checklist.
+
+### Rules and Methodology
+
+- **Default configuration.** Systems should be benchmarked with default or recommended settings. Fine-tuned configurations are welcome as separate entries (e.g., `MyDB` and `MyDB-tuned`).
+- **No pre-aggregation.** Materialized views, projections, or pre-computed aggregates created specifically for the benchmark queries are not permitted.
+- **Standard indexing.** Primary keys and default indexes are allowed. Manually created secondary indexes targeting specific benchmark queries are discouraged.
+- **Caching.** Query result caches should be disabled. Data caches (buffer pools, page caches) are allowed as they reflect production behavior.
+- **Incomplete results.** If a system cannot execute certain queries (OOM, unsupported SQL), partial results should still be submitted — the benchmark records per-query pass/fail status.
+- **Scoring.** The primary ranking metric is **E2E benchmark duration** (phase 2 wall-clock time). Secondary metrics include query latency p99, ingestion throughput, and resource efficiency. Each query's load-test p99 is compared against the baseline: >20% regression = FAIL, 10–20% = WARN, ≥3 WARNs = FAIL.
 
 ### System Adapter Transport (stdio or HTTP)
 
@@ -377,21 +439,82 @@ For GitHub Actions runs, select a `system_under_test` value prefixed with `datab
 
 ### Crate Overview
 
-| Crate                     | Description                                                                                |
-| ------------------------- | ------------------------------------------------------------------------------------------ |
-| `spicebench` (binary)     | CLI entry point — connects to adapter, runs setup/benchmark/teardown lifecycle             |
-| `test-framework`          | Core engine: query executors, test pipeline (warm-up/baseline/load), statistics, telemetry |
-| `system-adapter-protocol` | JSON-RPC 2.0 client/server for the system adapter protocol                                 |
-| `data-generation`         | Standalone binary for generating TPC-H datasets and writing Parquet to S3                  |
-| `adbc_client`             | ADBC connection wrapper supporting FlightSQL and Databricks drivers                        |
-| `flight_client`           | Apache Arrow Flight client with TLS, auth, and cookie middleware                           |
-| `telemetry`               | OTel instruments for the Spice runtime and Arrow Flight exporter to telemetry.spiceai.io   |
-| `otel-arrow`              | Converts OTel `ResourceMetrics` to Arrow `RecordBatch` format for export                   |
-| `spicepod`                | YAML-based configuration loader for benchmark infrastructure (datasets, catalogs, runtime) |
-| `app`                     | Central `App` configuration object built from one or more Spicepod files                   |
-| `yaml`                    | Custom YAML serialization/deserialization library                                          |
-| `util`                    | Shared utilities (backoff, formatting, Arrow helpers, retry strategies)                    |
-| `duration-parse`          | Duration string parser                                                                     |
+| Crate                     | Description                                                                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `spicebench` (binary)     | CLI entry point — connects to adapter, runs setup/benchmark/teardown lifecycle                                                      |
+| `test-framework`          | Core engine: query executors, test pipeline (warm-up/baseline/load), statistics, telemetry                                          |
+| `system-adapter-protocol` | JSON-RPC 2.0 client/server for the system adapter protocol                                                                          |
+| `data-generation`         | Standalone binary for generating benchmark datasets (TPC-H today; ClickBench and custom datasets planned) and writing Parquet to S3 |
+| `adbc_client`             | ADBC connection wrapper supporting FlightSQL and Databricks drivers                                                                 |
+| `flight_client`           | Apache Arrow Flight client with TLS, auth, and cookie middleware                                                                    |
+| `telemetry`               | OTel instruments for the Spice runtime and Arrow Flight exporter to telemetry.spiceai.io                                            |
+| `otel-arrow`              | Converts OTel `ResourceMetrics` to Arrow `RecordBatch` format for export                                                            |
+| `spicepod`                | YAML-based configuration loader for benchmark infrastructure (datasets, catalogs, runtime)                                          |
+| `app`                     | Central `App` configuration object built from one or more Spicepod files                                                            |
+| `yaml`                    | Custom YAML serialization/deserialization library                                                                                   |
+| `util`                    | Shared utilities (backoff, formatting, Arrow helpers, retry strategies)                                                             |
+| `duration-parse`          | Duration string parser                                                                                                              |
+| `checkpointer`            | ETL checkpoint capture and expected result validation                                                                               |
+| `etl`                     | ETL pipeline: S3 source → rehydrate → sink (Hive, ADBC, null)                                                                       |
+
+## Similar Projects
+
+Many benchmarks exist for analytical databases, each with different strengths. SpiceBench occupies a distinct niche — concurrent ingestion + query under load — but borrows ideas from several of them.
+
+### ClickBench
+
+[https://benchmark.clickhouse.com](https://benchmark.clickhouse.com/)
+
+A benchmark for analytical databases using a real-world web analytics dataset (100M rows) and 43 queries.
+
+Advantages: real-world data distributions; excellent system coverage (60+ databases); reproducible in ~20 minutes; cold and hot run separation.
+
+Disadvantages: single flat table (no joins); queries run sequentially with no concurrency; static dataset — no ingestion during benchmarking; single-node focused.
+
+### TPC-H
+
+The classic decision-support benchmark from the Transaction Processing Council.
+
+Advantages: well-specified; widely recognized; tests joins, aggregation, and subqueries across a normalized schema.
+
+Disadvantages: requires official certification for published results; synthetic data distributions don't capture real-world skew; many systems are specifically tuned for TPC-H, reducing its discriminative power.
+
+### TPC-DS
+
+A more complex successor to TPC-H with 99 queries, snowflake schemas, and more realistic data distributions.
+
+Advantages: extensive query coverage; tests complex query optimization.
+
+Disadvantages: requires official certification; biased toward complex multi-table joins; no concurrent ingestion.
+
+### TSBS (Time Series Benchmark Suite)
+
+[https://github.com/timescale/tsbs](https://github.com/timescale/tsbs)
+
+A benchmark for time-series databases from InfluxDB / TimescaleDB.
+
+Advantages: tests ingestion and query concurrently; good coverage of time-series systems.
+
+Disadvantages: not applicable for general analytical workloads; limited to time-series data shapes.
+
+### Where SpiceBench Fits
+
+SpiceBench is designed for platforms built on a hybrid data lake + database architecture — systems that continuously ingest streaming data from lakes, databases, and APIs, materialize it into a database layer, and serve low-latency queries to applications and AI agents. This goes beyond analytical dashboards to cover operational workloads: real-time feature serving, agent-driven lookups, and application queries that demand sub-10ms response times while data is actively flowing in.
+
+It complements static benchmarks by measuring what they deliberately exclude: acceleration build times, performance under concurrent write-read pressure, ingestion freshness (E2E latency), and resource efficiency over sustained operational load.
+
+## Further Reading
+
+See the [`docs/`](docs/) directory for detailed documentation on every aspect of SpiceBench, including:
+
+- [Architecture & data flow](docs/architecture.md)
+- [Getting started guide](docs/getting-started.md)
+- [Full CLI reference](docs/cli-reference.md)
+- [Building system adapters](docs/system-adapters.md)
+- [Data generation & ETL pipeline](docs/data-generation-and-etl.md)
+- [Metrics, telemetry & dashboards](docs/metrics-and-telemetry.md)
+- [Configuration & query sets](docs/configuration.md)
+- [Crate API reference](docs/crate-reference.md)
 
 ## License
 
