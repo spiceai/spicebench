@@ -50,9 +50,10 @@ fn jsonrpc_error(id: Value, code: i32, message: &str, data: Option<Value>) -> Va
 fn method_setup(_params: &Value) -> Value {
     // Stub: Provision or initialize your SUT for this run and return
     // query driver details SpiceBench should use.
+    // params contains: run_id, metadata, datasets, etl_sink_type
     // Example:
     // - create run-scoped database/schema
-    // - configure ingestion resources needed before table creation
+    // - create/register destination tables from params.datasets
     // - wait for service readiness checks
     // - resolve connection details from your control plane
     let host = std::env::var("SUT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -64,7 +65,7 @@ fn method_setup(_params: &Value) -> Value {
         .map(|value| value.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    let driver_config = json!({
+    json!({
         "driver": "flightsql",
         "db_kwargs": {
             "uri": format!("grpc{}://{}:{}", if tls { "s" } else { "" }, host, port),
@@ -72,21 +73,7 @@ fn method_setup(_params: &Value) -> Value {
             "password": std::env::var("SUT_PASSWORD").unwrap_or_default(),
             "tls": tls,
         },
-    });
-
-    json!({
-        "ingest_driver": driver_config,
-        "read_driver": driver_config,
     })
-}
-
-fn method_create_tables(_params: &Value) -> Value {
-    // Stub: Create/register destination tables for benchmark datasets.
-    // Example:
-    // - create tables if they do not exist
-    // - iterate datasets passed in params to map each schema to table DDL
-    // - apply expected schema/partitioning
-    json!({"ok": true})
 }
 
 fn method_teardown(_params: &Value) -> Value {
@@ -123,7 +110,7 @@ fn method_metrics(_params: &Value) -> Value {
 
 fn method_rpc_methods() -> Value {
     json!({
-        "methods": ["setup", "create_tables", "teardown", "metrics", "rpc.methods"]
+        "methods": ["setup", "teardown", "metrics", "rpc.methods"]
     })
 }
 
@@ -158,7 +145,6 @@ fn dispatch(request: &Value) -> Value {
 
     let result = match method {
         "setup" => Ok(method_setup(&params)),
-        "create_tables" => Ok(method_create_tables(&params)),
         "teardown" => Ok(method_teardown(&params)),
         "metrics" => Ok(method_metrics(&params)),
         "rpc.methods" => Ok(method_rpc_methods()),

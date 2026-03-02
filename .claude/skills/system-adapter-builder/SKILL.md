@@ -16,8 +16,7 @@ A JSON-RPC 2.0 adapter that supports both transports:
 
 Required methods:
 
-- `setup(run_id, metadata)`
-- `create_tables(run_id, datasets)`
+- `setup(run_id, metadata, datasets, etl_sink_type)`
 - `teardown(run_id)`
 - `metrics(run_id)`
 - `rpc.methods`
@@ -38,7 +37,7 @@ Required methods:
 4. Implement `setup` to return:
    - `driver`: typically `flightsql` or `databricks`
    - `db_kwargs`: real endpoint + auth kwargs for the SUT
-5. Implement `create_tables` so the adapter creates/registers benchmark destination tables.
+5. Implement `setup` to create/register benchmark destination tables from `datasets`.
 6. Implement `teardown` with run-scoped cleanup keyed by `run_id`.
 7. Implement `metrics` to return both objects:
    - `resource`: CPU, memory, disk bytes, disk IOPS
@@ -72,7 +71,7 @@ If any metric is unavailable, return `0`/`0.0` and document why.
 
 - Adapter responds to all required methods over stdio and HTTP.
 - `rpc.methods` includes every exposed method.
-- `create_tables` creates/registers benchmark tables for each dataset.
+- `setup` creates/registers benchmark tables for each dataset.
 - `setup` returns a valid `driver` and complete `db_kwargs`.
 - `metrics` returns both `resource` and `ingestion` objects.
 - Language build/syntax checks pass:
