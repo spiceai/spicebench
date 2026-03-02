@@ -10,8 +10,7 @@ SpiceBench currently supports benchmark runs against:
 - Databricks Lakebase
 - Spice Cloud
 
-
-Additionally, adapters should implement:
+## Protocol Overview
 
 | Method        | Purpose                                       |
 | ------------- | --------------------------------------------- |
