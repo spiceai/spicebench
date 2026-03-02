@@ -23,7 +23,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, EtlType, Handler, QueryMethodResponse, Server, SetupResponse,
+    AdbcDriver, DatasetConfig, EtlSinkType, Handler, Server, SetupResponse,
     TeardownResponse,
 };
 use uuid::Uuid;
@@ -229,37 +229,6 @@ impl DatabricksAdapter {
         }
     }
 
-    fn dataset_location(config: &DatasetConfig) -> Result<String> {
-        if let Some(from) = config.params.get("from").and_then(Value::as_str)
-            && !from.is_empty()
-        {
-            return Ok(from.to_string());
-        }
-
-        if config.etl_type == EtlType::S3 {
-            let bucket = config
-                .params
-                .get("bucket")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("Missing params.bucket for S3 dataset"))?;
-
-            let prefix = config
-                .params
-                .get("prefix")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim_start_matches('/');
-
-            if prefix.is_empty() {
-                return Ok(format!("s3://{bucket}/"));
-            }
-
-            return Ok(format!("s3://{bucket}/{prefix}"));
-        }
-
-        Err(anyhow!("Unsupported dataset configuration: missing location"))
-    }
-
     fn quoted_identifier(identifier: &str) -> String {
         format!("`{}`", identifier.replace('`', "``"))
     }
@@ -312,8 +281,11 @@ impl Handler for DatabricksAdapter {
     async fn setup(
         &mut self,
         run_id: Uuid,
+        metadata: HashMap<String, Value>,
         datasets: HashMap<String, DatasetConfig>,
+        etl_sink_type: Option<EtlSinkType>,
     ) -> std::result::Result<SetupResponse, String> {
+        let _ = (metadata, etl_sink_type);
         eprintln!(
             "[databricks-adapter] setup: run_id={run_id}, datasets={}",
             datasets.len()
@@ -331,8 +303,9 @@ impl Handler for DatabricksAdapter {
         let mut created_tables = Vec::with_capacity(datasets.len());
 
         for (dataset_name, dataset_cfg) in datasets {
-            let location = Self::dataset_location(&dataset_cfg)
-                .map_err(|e| format!("Invalid dataset '{dataset_name}' config: {e}"))?;
+            let location = dataset_cfg.location.as_deref().ok_or_else(|| {
+                format!("Dataset '{dataset_name}' is missing required 'location' field")
+            })?;
 
             let table_name = dataset_name;
             let mut sql = String::new();
@@ -342,7 +315,7 @@ impl Handler for DatabricksAdapter {
                 Self::quoted_identifier(&self.config.catalog),
                 Self::quoted_identifier(&self.config.schema),
                 Self::quoted_identifier(&table_name),
-                Self::sql_string_literal(&location)
+                Self::sql_string_literal(location)
             );
 
             self.execute_sql(&sql)
@@ -353,23 +326,14 @@ impl Handler for DatabricksAdapter {
         }
 
         self.runs.insert(run_id, RunState { created_tables });
-        Ok(SetupResponse { ok: true })
-    }
-
-    async fn query_method(
-        &mut self,
-        run_id: Uuid,
-    ) -> std::result::Result<QueryMethodResponse, String> {
-        if !self.runs.contains_key(&run_id) {
-            return Err(format!("Unknown run_id: {run_id}"));
-        }
-
-        Ok(QueryMethodResponse {
+        Ok(SetupResponse {
             driver: AdbcDriver::Databricks,
             db_kwargs: HashMap::from([(
                 "uri".to_string(),
                 Value::String(self.databricks_uri()),
             )]),
+            catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
+            read_driver: None,
         })
     }
 
