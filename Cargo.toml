@@ -8,7 +8,6 @@ members = [
     "crates/duration-parse", "crates/etl",
     "crates/flight_client",
     "crates/otel-arrow",
-    "crates/spicepod",
     "crates/system-adapter-protocol",
     "crates/telemetry",
     "crates/test-framework",
@@ -37,7 +36,7 @@ async-trait = "0.1.89"
 base64 = "0.22.1"
 byte-unit = "5.1.4"
 bytes = "1.10.0"
-chrono = "0.4.42"
+chrono = "0.4.44"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 duckdb = "1.4.4"
 duration-parse = { path = "crates/duration-parse" }
@@ -84,6 +83,7 @@ schemars = "1.2.0"
 secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"
+spicepod = { git = "https://github.com/spiceai/spice.git", rev = "46155f7fdc27aa1393b0451347f78b6aad66839a" }
 sha2 = "0.10.8"
 snafu = "0.8.6"
 sysinfo = "0.37.2"
