@@ -24,8 +24,9 @@ Detailed documentation for SpiceBench — an end-to-end benchmark for data & AI 
 
 ## Future Ideas
 
-SpiceBench currently benchmarks ingestion-to-query operational performance. A planned extension is a fully AI-native benchmark path from ingestion to prompt/RAG outcomes, including:
+SpiceBench currently benchmarks ingestion-to-query operational performance. Planned extensions include:
 
+- **Warm-up phase** — run the query set once before benchmark timing starts to eliminate cold-start variance
 - text-to-SQL quality and latency
 - search/retrieval quality and freshness under write pressure
 - context engineering quality, token efficiency, and end-to-end readiness latency

@@ -211,7 +211,7 @@ When SpiceBench runs in `direct-query` mode, it manages the ETL pipeline interna
 
 The ETL sink type is selected via `--etl-sink`:
 
-- `hive` — S3 Hive Parquet (default). The adapter's `create_tables` receives S3 `location` paths.
+- `hive` — S3 Hive Parquet (default). The adapter's `setup` receives S3 `location` paths in `datasets`.
 - `adbc` — Direct ADBC ingest. The adapter's `setup` response provides write-side ADBC config.
 
 ---
