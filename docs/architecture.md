@@ -43,7 +43,7 @@ SpiceBench connects to a **system adapter** via JSON-RPC 2.0 (over stdio or HTTP
 1. **`setup(run_id, metadata)`** — Provisions the System Under Test (SUT) and returns ADBC driver configuration (driver name + connection kwargs) for query execution.
 2. **`create_tables(run_id, datasets)`** — Creates or registers destination tables for all benchmark datasets (e.g., TPC-H tables).
 
-The adapter response from `setup` tells SpiceBench which ADBC driver to use (FlightSQL, Databricks, PostgreSQL) and how to connect.
+The adapter response from `setup` tells SpiceBench which ADBC driver to use and how to connect.
 
 ### Phase 2: Benchmark (timed)
 
@@ -114,10 +114,31 @@ See [Data Generation & ETL](data-generation-and-etl.md) for details.
 
 SpiceBench supports pluggable query executors:
 
-| Executor        | Transport                          | Use Case                                 |
-| --------------- | ---------------------------------- | ---------------------------------------- |
-| **ADBC Direct** | FlightSQL / Databricks ADBC driver | Primary executor for `direct-query` mode |
-| **HTTP**        | `POST /v1/sql`                     | HTTP-based query execution               |
+| Executor        | Transport                      | Use Case                                 |
+| --------------- | ------------------------------ | ---------------------------------------- |
+| **ADBC Direct** | ADBC driver (adapter-selected) | Primary executor for `direct-query` mode |
+| **HTTP**        | `POST /v1/sql`                 | HTTP-based query execution               |
+
+## Future AI-Native Extension
+
+SpiceBench currently measures ingestion-to-query behavior. A planned extension is an ingestion-to-prompt/RAG benchmark pipeline that adds evaluation stages above SQL execution:
+
+1. **Text-to-SQL stage**
+      - natural language request → SQL generation
+      - evaluate generation validity, execution success, and result correctness
+
+2. **Search & retrieval stage**
+      - keyword/vector/hybrid retrieval over continuously ingested data
+      - evaluate retrieval quality (`recall@k`, `nDCG`) and retrieval latency
+
+3. **Context engineering stage**
+      - chunk/rank/assemble context for model prompts
+      - evaluate context quality, citation grounding, and token efficiency
+
+4. **End-to-end AI freshness stage**
+      - measure time from source event creation to retrievable context and answer inclusion
+
+This extends SpiceBench from an operational SQL benchmark into an AI-native data benchmark for application and agent workloads.
 | **Distributed** | `POST /v1/queries` + polling       | Async distributed query execution        |
 
 In `direct-query` mode (the most common), SpiceBench uses the ADBC driver returned by the adapter's `setup()` response to execute queries directly against the SUT.

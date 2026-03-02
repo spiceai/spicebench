@@ -2,6 +2,14 @@
 
 System adapters decouple SpiceBench from specific data platforms. Each adapter implements a JSON-RPC 2.0 interface that SpiceBench calls to provision, configure, and tear down the System Under Test (SUT).
 
+## Current Support
+
+SpiceBench currently supports benchmark runs against:
+
+- Databricks SQL
+- Databricks Lakebase
+- Spice Cloud
+
 ## Protocol Overview
 
 The system adapter protocol defines four JSON-RPC 2.0 methods:
@@ -273,7 +281,9 @@ teardown(run_id)
 
 Teardown is **always called**, even if the benchmark encounters errors.
 
-## Building a New Adapter
+## Adapter Development
+
+SpiceBench supports adding new system adapters for benchmark runs. See [Supported Systems](#current-support) for first-class adapters. Additional adapter development is possible using the starter templates below.
 
 ### Starter Templates
 

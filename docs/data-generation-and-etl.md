@@ -136,7 +136,7 @@ s3://{bucket}/{target-prefix}/{scenario}/{run_id}/
 
 #### ADBC Sink
 
-Writes directly to the SUT via ADBC bulk ingest. Supports FlightSQL, Databricks, and PostgreSQL drivers.
+Writes directly to the SUT via ADBC bulk ingest. The driver is selected based on the system adapter configuration.
 
 ```bash
 cargo run -p etl -- \

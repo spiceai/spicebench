@@ -14,7 +14,7 @@ Detailed documentation is available in the [`docs/`](docs/) directory:
 | [System Adapters](docs/system-adapters.md)               | JSON-RPC 2.0 protocol, transport modes, and building new adapters   |
 | [Data Generation & ETL](docs/data-generation-and-etl.md) | Dataset generation, ETL pipeline, sinks, and checkpointing          |
 | [Metrics & Telemetry](docs/metrics-and-telemetry.md)     | All OTel instruments, streaming metrics, and Grafana dashboards     |
-| [Configuration](docs/configuration.md)                   | Spicepod YAML format, query sets, and SQL dialect overrides         |
+| [Configuration](docs/configuration.md)                   | Configuration format, query sets, and SQL dialect overrides         |
 | [Crate Reference](docs/crate-reference.md)               | Per-crate API overview for all workspace crates                     |
 
 ## Goals
@@ -53,6 +53,19 @@ SpiceBench focuses on a specific class of workloads — concurrent data ingestio
 
 *All Benchmarks Are Liars* — use SpiceBench results as one signal among many, not as an absolute verdict.
 
+## Future Ideas: Toward a Fully AI-Native Benchmark
+
+Today, SpiceBench focuses on operational data-plane performance from ingestion to query execution.
+
+The next major extension is to benchmark the full AI-native path from **data ingestion to prompt/RAG outcomes**. Planned areas include:
+
+- **Text-to-SQL evaluation** — measure generation quality, execution success rate, latency, and semantic correctness against ground-truth query intent.
+- **Search & retrieval evaluation** — benchmark hybrid retrieval quality (keyword + vector), recall@k / nDCG, retrieval latency, and freshness under continuous ingest.
+- **Context engineering evaluation** — measure context assembly quality (chunking, ranking, grounding, citation coverage), token efficiency, and end-to-end response readiness latency.
+- **Ingestion-to-answer freshness** — track the time from source event creation to the event being usable in retrieval and reflected in generated answers.
+
+This extends SpiceBench from ingestion-to-query into ingestion-to-prompt/RAG, so teams can evaluate real AI application behavior, not only SQL query speed.
+
 ## Architecture
 
 ```mermaid
@@ -69,9 +82,9 @@ flowchart TB
 
         subgraph setup_phase["1 · Setup (JSON-RPC)"]
             adapter_iface["System Adapter Protocol\n(setup / create_tables /\nteardown / metrics)"]
-            spice["Spice Cloud Adapter"]
-            databricks["Databricks Adapter"]
-            other["... Other Adapters"]
+            spice["Adapter A"]
+            databricks["Adapter B"]
+            other["System Adapters\n(pluggable via JSON-RPC)"]
             adapter_iface --- spice
             adapter_iface --- databricks
             adapter_iface --- other
@@ -90,7 +103,7 @@ flowchart TB
 
             subgraph executors["Query Executors"]
                 direction TB
-                adbc_exec["ADBC Direct\n(FlightSQL / Databricks)"]
+                adbc_exec["ADBC Direct\n(adapter-selected driver)"]
                 http_exec["HTTP\n(/v1/sql)"]
                 distributed_exec["Distributed\n(/v1/queries)"]
             end
@@ -183,10 +196,10 @@ The **E2E benchmark duration** (phase 2, load test stage) is the primary ranking
 
 SpiceBench supports two run-level metadata knobs to keep cross-system comparisons consistent:
 
-| Field                    | Default                                                    | Purpose                                                                            | Propagation                                                                                                             |
-| ------------------------ | ---------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `table_format`           | `parquet`                                                  | Declares the dataset table format used for creation/registration.                  | Passed through data-generation/ETL dataset params and consumed by adapters (for example, Databricks UC table creation). |
-| `executor_instance_type` | `unknown` (CLI) / `github-hosted-ubuntu-latest` (workflow) | Identifies the benchmark executor hardware class for apples-to-apples comparisons. | Sent in adapter `setup` metadata and attached as an OpenTelemetry metric attribute for dashboard filtering.             |
+| Field                    | Default                                                    | Purpose                                                                            | Propagation                                                                                                 |
+| ------------------------ | ---------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `table_format`           | `parquet`                                                  | Declares the dataset table format used for creation/registration.                  | Passed through data-generation/ETL dataset params and consumed by adapters for table creation.              |
+| `executor_instance_type` | `unknown` (CLI) / `github-hosted-ubuntu-latest` (workflow) | Identifies the benchmark executor hardware class for apples-to-apples comparisons. | Sent in adapter `setup` metadata and attached as an OpenTelemetry metric attribute for dashboard filtering. |
 
 Common CLI/workflow usage:
 
@@ -199,7 +212,7 @@ Common CLI/workflow usage:
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **GitHub Actions**          | Orchestrates Runs on schedule, PR, or manual dispatch. Manages the full Run lifecycle across phases.                                                          |
 | **System Adapter Protocol** | JSON-RPC 2.0 interface (stdio or HTTP) for each platform. Methods: `setup`, `create_tables`, `teardown`, `metrics`.                                           |
-| **Query Executors**         | Pluggable query execution: ADBC direct (FlightSQL/Databricks drivers), HTTP (`/v1/sql`), or distributed (`/v1/queries` with polling).                         |
+| **Query Executors**         | Pluggable query execution: ADBC direct (driver selected by adapter), HTTP (`/v1/sql`), or distributed (`/v1/queries` with polling).                           |
 | **Data Generator**          | Standalone binary (`data-generation`) that produces partitioned Parquet batches (TPC-H today; ClickBench and custom datasets planned) and writes them to S3.  |
 | **Test Framework**          | Core engine managing the warm-up → baseline → load test pipeline, query sets (TPC-H, TPC-DS, ClickBench, parameterized, scenario), and statistics collection. |
 | **Metrics Collector**       | OpenTelemetry SDK instruments recording per-query, throughput, ingestion, resource, health, and efficiency metrics.                                           |
@@ -270,7 +283,7 @@ To use it in Grafana:
 | Parameterized TPC-H | `--query-set tpch[parameterized]` | TPC-H with randomized parameter sets        |
 | Scenario            | `--query-set scenario`            | Custom queries from `--scenario-query-file` |
 
-SQL dialect overrides are supported via `--query-overrides` (sqlite, postgresql, mysql, dremio, spark, duckdb, snowflake, oracle, etc.).
+SQL dialect overrides are available for supported systems via `--query-overrides` (see [SQL Overrides](docs/cli-reference.md#sql-overrides) for the full list).
 
 ### SpiceBench.com
 
@@ -280,26 +293,15 @@ Results from every Run are published to [SpiceBench.com](https://spicebench.com)
 - **Run details** — Per-query latency breakdown, ingestion rates over time, resource utilization charts, and E2E event latency distributions.
 - **Cross-system comparison** — Side-by-side views of any two Runs with relative performance ratios.
 
-### Adding a New System Adapter
+### Supported Systems
 
-To benchmark a new platform, implement the JSON-RPC 2.0 adapter with these methods:
+SpiceBench currently supports the following systems for benchmark runs:
 
-1. **`setup(run_id, metadata)`** — Provision infrastructure and configure the target system.
-2. **`create_tables(run_id, datasets)`** — Create/register destination tables for the benchmark datasets.
-3. **`teardown(run_id)`** — Clean up provisioned resources.
-4. **`metrics(run_id)`** *(optional)* — Return current resource usage (CPU, memory, disk, IOPS) and ingestion progress (rows, bytes, rows/s, active connections).
+- **Databricks SQL**
+- **Databricks Lakebase**
+- **Spice Cloud**
 
-The adapter can run as a **stdio** child process or as an **HTTP** server.
-
-Starter templates are available in:
-
-- [Python template](system-adapters/templates/python/README.md)
-- [Node.js template](system-adapters/templates/nodejs/README.md)
-- [Rust template](system-adapters/templates/rust/README.md)
-- [Go template](system-adapters/templates/go/README.md)
-- [Java template](system-adapters/templates/java/README.md)
-
-See the [System Adapters guide](docs/system-adapters.md) for the full JSON-RPC protocol specification, request/response examples, and implementation checklist.
+See the [System Adapters guide](docs/system-adapters.md) for configuration and protocol details.
 
 ### Rules and Methodology
 
@@ -445,12 +447,12 @@ For GitHub Actions runs, select a `system_under_test` value prefixed with `datab
 | `test-framework`          | Core engine: query executors, test pipeline (warm-up/baseline/load), statistics, telemetry                                          |
 | `system-adapter-protocol` | JSON-RPC 2.0 client/server for the system adapter protocol                                                                          |
 | `data-generation`         | Standalone binary for generating benchmark datasets (TPC-H today; ClickBench and custom datasets planned) and writing Parquet to S3 |
-| `adbc_client`             | ADBC connection wrapper supporting FlightSQL and Databricks drivers                                                                 |
+| `adbc_client`             | ADBC connection wrapper supporting pluggable drivers                                                                                |
 | `flight_client`           | Apache Arrow Flight client with TLS, auth, and cookie middleware                                                                    |
 | `telemetry`               | OTel instruments for the Spice runtime and Arrow Flight exporter to telemetry.spiceai.io                                            |
 | `otel-arrow`              | Converts OTel `ResourceMetrics` to Arrow `RecordBatch` format for export                                                            |
-| `spicepod`                | YAML-based configuration loader for benchmark infrastructure (datasets, catalogs, runtime)                                          |
-| `app`                     | Central `App` configuration object built from one or more Spicepod files                                                            |
+| `spicepod`                | YAML-based configuration loader (used by the Spice Cloud adapter for dataset/catalog/runtime config)                                |
+| `app`                     | Central `App` configuration object built from one or more Spicepod files (Spice Cloud adapter)                                      |
 | `yaml`                    | Custom YAML serialization/deserialization library                                                                                   |
 | `util`                    | Shared utilities (backoff, formatting, Arrow helpers, retry strategies)                                                             |
 | `duration-parse`          | Duration string parser                                                                                                              |
