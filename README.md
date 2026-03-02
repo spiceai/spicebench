@@ -66,120 +66,6 @@ The next major extension is to benchmark the full AI-native path from **data ing
 
 This extends SpiceBench from ingestion-to-query into ingestion-to-prompt/RAG, so teams can evaluate real AI application behavior, not only SQL query speed.
 
-## Architecture
-
-```mermaid
-flowchart TB
-    orchestrator["GitHub Actions\nOrchestrator"]
-
-    subgraph run["SpiceBench Run"]
-        direction TB
-        adapter["System Adapter\n(JSON-RPC 2.0)"]
-        benchmark["Benchmark Engine\n(warm-up → baseline → load test)"]
-        executors["Query Executors\n(ADBC / HTTP)"]
-        sut["System Under Test"]
-
-        subgraph setup_phase["1 · Setup (JSON-RPC)"]
-            adapter_iface["System Adapter Protocol\n(setup / teardown / metrics)"]
-            spice["Spice Cloud Adapter"]
-            databricks["Databricks Adapter"]
-            other["... Other Adapters"]
-            adapter_iface --- spice
-            adapter_iface --- databricks
-            adapter_iface --- other
-        end
-
-        subgraph bench_phase["2 · Benchmark (timed)"]
-            direction TB
-
-            subgraph query_exec["Query Execution"]
-                direction LR
-                baseline["Baseline\n(10% duration,\n60s–600s)"]
-                loadtest["Load Test\n(full duration,\nconcurrent clients)"]
-                baseline --> loadtest
-            end
-
-            subgraph executors["Query Executors"]
-                direction TB
-                adbc_exec["ADBC Direct\n(FlightSQL / Databricks)"]
-                http_exec["HTTP\n(/v1/sql)"]
-                distributed_exec["Distributed\n(/v1/queries)"]
-            end
-
-            subgraph sut["System Under Test"]
-                direction TB
-                query_ep["Query Endpoint"]
-            end
-
-            query_exec -->|"execute queries"| executors
-            executors -->|"SQL queries"| query_ep
-        end
-
-        subgraph teardown_phase["3 · Teardown"]
-            cleanup["Deprovision resources\nvia adapter JSON-RPC"]
-        end
-    end
-
-    datagen["Data Generation\n(TPC-H → S3 Parquet)"]
-    metrics["OTel Metrics\n(query latency, throughput,\ningestion, resource usage)"]
-    telemetry["telemetry.spiceai.io"]
-    website["SpiceBench.com\n(leaderboard + run details)"]
-
-    orchestrator -->|"start run"| run
-
-    adapter_iface -->|"setup(run_id, metadata, datasets)\n→ ADBC driver + kwargs"| executors
-    setup_phase -->|"system ready"| bench_phase
-    bench_phase -->|"benchmark complete"| teardown_phase
-
-    adapter_iface -.->|"metrics(run_id)\n(every 5s)"| collector
-
-    collector -->|"Arrow export\n(OtelArrowExporter)"| arrow_endpoint
-    streaming_exporter -->|"OTLP export"| otel_endpoint
-    arrow_endpoint -->|"run results"| website
-```
-
-### SpiceBench Run
-
-A **Run** is a single end-to-end execution of the benchmark for one system. Each Run proceeds through three phases:
-
-| Phase                    | What happens                                                                                                                                                                   | Timed? |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| **1. Setup**             | Connect to system adapter via JSON-RPC (stdio or HTTP). Call `setup(run_id, metadata, datasets)` to provision the SUT, create benchmark tables, and return ADBC driver config. | No     |
-| **2. Benchmark (timed)** | Two sequential stages — baseline (10% of duration, 60s–600s) and load test (full duration with concurrent clients).                                                            | Yes    |
-| **3. Teardown**          | Call `teardown(run_id)` via the adapter to deprovision resources and clean up.                                                                                                 | No     |
-
-The **E2E benchmark duration** (phase 2, load test stage) is the primary ranking metric. After the load test, each query's p99 latency is compared against the baseline: >20% increase = FAIL, 10–20% = WARN, ≥3 WARNs = FAIL.
-
-### Run Metadata
-
-SpiceBench supports two run-level metadata knobs to keep cross-system comparisons consistent:
-
-| Field                    | Default                                                    | Purpose                                                                            | Propagation                                                                                                 |
-| ------------------------ | ---------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `table_format`           | `parquet`                                                  | Declares the dataset table format used for creation/registration.                  | Passed through data-generation/ETL dataset params and consumed by adapters for table creation.              |
-| `executor_instance_type` | `unknown` (CLI) / `github-hosted-ubuntu-latest` (workflow) | Identifies the benchmark executor hardware class for apples-to-apples comparisons. | Sent in adapter `setup` metadata and attached as an OpenTelemetry metric attribute for dashboard filtering. |
-
-Common CLI/workflow usage:
-
-- `spicebench --executor-instance-type "c6i.4xlarge" ...`
-- `data-generation run --table-format parquet --executor-instance-type "c6i.4xlarge" ...`
-
-### Component Overview
-
-| Component                   | Responsibility                                                                                                                                      |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **GitHub Actions**          | Orchestrates Runs on schedule, PR, or manual dispatch. Manages the full Run lifecycle across phases.                                                |
-| **System Adapter Protocol** | JSON-RPC 2.0 interface (stdio or HTTP) for each platform. Methods: `setup`, `teardown`, `metrics`.                                                  |
-| **Query Executors**         | Pluggable query execution: ADBC direct (FlightSQL/Databricks drivers), HTTP (`/v1/sql`), or distributed (`/v1/queries` with polling).               |
-| **Data Generator**          | Standalone binary (`data-generation`) that produces TPC-H partitioned Parquet batches and writes them to S3.                                        |
-| **Test Framework**          | Core engine managing the baseline → load test pipeline, query sets (TPC-H, TPC-DS, ClickBench, parameterized, scenario), and statistics collection. |
-| **Metrics Collector**       | OpenTelemetry SDK instruments recording per-query, throughput, ingestion, resource, health, and efficiency metrics.                                 |
-| **SUT Metrics Scraper**     | Optional background task (`--scrape-sut-metrics`) that calls the adapter's `metrics` JSON-RPC method every 5s.                                      |
-| **Telemetry**               | Emits final metrics via Arrow Flight to `telemetry.spiceai.io`, or via OTLP to a custom endpoint (`--otlp-endpoint`).                               |
-| **StreamingOtlpExporter**   | Optional real-time metrics export every 5s (query duration histogram, success/failure counters) to `--otlp-endpoint`.                               |
-| **Health Monitor**          | Samples `/health` and `/v1/ready` every 100ms, tracks failures and max latency (threshold: 125ms).                                                  |
-| **SpiceBench.com**          | Public results site with leaderboard (ranked by E2E benchmark duration) and per-Run detail views.                                                   |
-
 ### Metrics
 
 | Metric                  | OTel Instrument                                  | Description                                                                           | Status        |
@@ -260,6 +146,17 @@ SpiceBench currently supports the following systems for benchmark runs:
 - **Spice Cloud**
 
 See the [System Adapters guide](docs/system-adapters.md) for configuration and protocol details.
+
+### Rules and Methodology
+
+- **Default configuration.** Systems should be benchmarked with default or recommended settings. Fine-tuned configurations are welcome as separate entries (e.g., `MyDB` and `MyDB-tuned`).
+- **No pre-aggregation.** Materialized views, projections, or pre-computed aggregates created specifically for the benchmark queries are not permitted.
+- **Standard indexing.** Primary keys and default indexes are allowed. Manually created secondary indexes targeting specific benchmark queries are discouraged.
+- **Caching.** Query result caches should be disabled. Data caches (buffer pools, page caches) are allowed as they reflect production behavior.
+- **Incomplete results.** If a system cannot execute certain queries (OOM, unsupported SQL), partial results should still be submitted — the benchmark records per-query pass/fail status.
+- **Scoring.** The primary ranking metric is **E2E benchmark duration** (phase 2 wall-clock time). Secondary metrics include query latency p99, ingestion throughput, and resource efficiency. Each query's load-test p99 is compared against the baseline: >20% regression = FAIL, 10–20% = WARN, ≥3 WARNs = FAIL.
+
+See the [System Adapters guide](docs/system-adapters.md) for the full JSON-RPC protocol specification, request/response examples, and implementation checklist.
 
 ### Rules and Methodology
 

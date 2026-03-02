@@ -10,15 +10,6 @@ SpiceBench currently supports benchmark runs against:
 - Databricks Lakebase
 - Spice Cloud
 
-## Protocol Overview
-
-The system adapter protocol defines four JSON-RPC 2.0 methods:
-
-| Method     | Required | Purpose                                                                        |
-| ---------- | -------- | ------------------------------------------------------------------------------ |
-| `setup`    | Yes      | Provision the SUT, create/register benchmark tables, return ADBC driver config |
-| `teardown` | Yes      | Clean up provisioned resources                                                 |
-| `metrics`  | No       | Return current resource usage and ingestion metrics                            |
 
 Additionally, adapters should implement:
 
