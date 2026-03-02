@@ -82,15 +82,15 @@ Core benchmark engine — orchestrates query execution pipelines, manages scenar
 
 ### Key Modules
 
-| Module      | Description                                             |
-| ----------- | ------------------------------------------------------- |
-| `execution` | Query execution pipeline (warm-up, baseline, load test) |
-| `flight`    | Arrow Flight integration                                |
-| `metrics`   | Internal metrics collection                             |
-| `queries`   | Query set loading, parameterization, and management     |
-| `snapshot`  | Snapshot testing utilities                              |
-| `spicetest` | SpiceTest runner (throughput test orchestrator)         |
-| `telemetry` | Telemetry integration                                   |
+| Module      | Description                                         |
+| ----------- | --------------------------------------------------- |
+| `execution` | Query execution pipeline (baseline, load test)      |
+| `flight`    | Arrow Flight integration                            |
+| `metrics`   | Internal metrics collection                         |
+| `queries`   | Query set loading, parameterization, and management |
+| `snapshot`  | Snapshot testing utilities                          |
+| `spicetest` | SpiceTest runner (throughput test orchestrator)     |
+| `telemetry` | Telemetry integration                               |
 
 ### Re-exports
 
