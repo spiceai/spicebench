@@ -72,6 +72,18 @@ def method_teardown(params: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
+def method_create_tables(params: dict[str, Any]) -> dict[str, Any]:
+    _run_id = params.get("run_id")
+    _datasets = params.get("datasets", {})
+
+    # Stub: Create destination tables for all datasets in this run.
+    # Example:
+    # - iterate dataset names from _datasets
+    # - issue CREATE TABLE statements with matching schema
+
+    return {"ok": True}
+
+
 def method_metrics(params: dict[str, Any]) -> dict[str, Any]:
     _run_id = params.get("run_id")
 
@@ -103,6 +115,7 @@ def method_rpc_methods() -> dict[str, Any]:
     return {
         "methods": [
             "setup",
+            "create_tables",
             "teardown",
             "metrics",
             "rpc.methods",
@@ -127,6 +140,8 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
     try:
         if method == "setup":
             return jsonrpc_success(request_id, method_setup(params))
+        if method == "create_tables":
+            return jsonrpc_success(request_id, method_create_tables(params))
         if method == "teardown":
             return jsonrpc_success(request_id, method_teardown(params))
         if method == "metrics":
