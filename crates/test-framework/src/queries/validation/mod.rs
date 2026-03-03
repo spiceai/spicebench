@@ -148,10 +148,15 @@ fn datatype_equivalent(expected_type: &DataType, actual_type: &DataType) -> bool
         // Existing numeric and string type equivalences
         _ => matches!(
             (expected_type, actual_type),
-            (DataType::Float32, DataType::Float64)
+            (DataType::Decimal128(_, _), DataType::Decimal128(_, _))
+                | (DataType::Float32, DataType::Float64)
                 | (
                     DataType::Float64 | DataType::Int64,
                     DataType::Decimal128(_, _)
+                )
+                | (
+                    DataType::Decimal128(_, _),
+                    DataType::Int64 | DataType::Int32 | DataType::Float64
                 )
                 | (DataType::Int32, DataType::Int64)
                 | (
