@@ -158,6 +158,12 @@ Common CLI/workflow usage:
 | **Health Monitor**          | Samples `/health` and `/v1/ready` every 100ms, tracks failures and max latency (threshold: 125ms).                                                            |
 | **SpiceBench.com**          | Public results site with leaderboard (ranked by E2E benchmark duration) and per-Run detail views.                                                             |
 
+### Codebase Notes
+
+- The workspace no longer includes legacy `app` or `spicepod` crates.
+- SpiceBench runtime and test orchestration paths are implemented directly in `spicebench`, `test-framework`, and `yaml` crates.
+- The test-framework `spiced` instance model is owned-process only; deprecated startup/request wrappers were removed as dead code.
+
 ### Metrics
 
 | Metric                  | OTel Instrument                                  | Description                                                                           | Status        |
