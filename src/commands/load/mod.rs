@@ -61,6 +61,7 @@ fn run_metric_attributes(common_args: &CommonArgs) -> Vec<KeyValue> {
 }
 
 /// Record the latest SUT metrics snapshot on the given streaming instruments.
+#[expect(clippy::too_many_arguments)]
 fn record_sut_metrics(
     response: &MetricsResponse,
     instruments: &SutInstruments,

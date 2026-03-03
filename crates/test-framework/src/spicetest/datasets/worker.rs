@@ -996,6 +996,7 @@ impl SpiceTestQueryWorker {
     }
 
     // run queries as a set-completion based test
+    #[expect(clippy::too_many_arguments)]
     async fn run_single_query(
         &self,
         query: &Query,
@@ -1083,6 +1084,7 @@ impl SpiceTestQueryWorker {
         }
     }
 
+    #[expect(clippy::too_many_arguments)]
     async fn execute_query(
         &self,
         query: &Query,

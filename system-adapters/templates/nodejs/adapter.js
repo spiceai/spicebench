@@ -28,11 +28,15 @@ function jsonrpcError(id, code, message, data) {
 
 function methodSetup(params) {
   void params.run_id;
+  void (params.metadata || {});
+  void (params.datasets || {});
+  void params.etl_sink_type;
 
   // Stub: Provision or initialize your SUT for this run and return
   // query driver details SpiceBench should use.
   // Example:
   // - create a test database or schema for this run_id
+  // - create/register destination tables from params.datasets
   // - block until SUT readiness checks are healthy
   // - resolve endpoint + credentials from your control plane
 
@@ -40,7 +44,7 @@ function methodSetup(params) {
   const port = Number(process.env.SUT_PORT || '50051');
   const useTls = (process.env.SUT_TLS || 'false').toLowerCase() === 'true';
 
-  const driverConfig = {
+  return {
     driver: 'flightsql',
     db_kwargs: {
       uri: `grpc${useTls ? 's' : ''}://${host}:${port}`,
@@ -49,24 +53,6 @@ function methodSetup(params) {
       tls: useTls,
     },
   };
-
-  return {
-    ingest_driver: driverConfig,
-    read_driver: driverConfig,
-  };
-}
-
-function methodCreateTables(params) {
-  void params.run_id;
-  void (params.datasets || {});
-
-  // Stub: Create/register destination tables for benchmark datasets.
-  // Example:
-  // - create tables if they do not exist
-  // - iterate provided datasets and map each schema to target DDL
-  // - apply expected schema/partitioning
-
-  return { ok: true };
 }
 
 function methodTeardown(params) {
@@ -109,7 +95,7 @@ function methodMetrics(params) {
 
 function methodRpcMethods() {
   return {
-    methods: ['setup', 'create_tables', 'teardown', 'metrics', 'rpc.methods'],
+    methods: ['setup', 'teardown', 'metrics', 'rpc.methods'],
   };
 }
 
@@ -135,8 +121,6 @@ function dispatch(request) {
     switch (request.method) {
       case 'setup':
         return jsonrpcSuccess(id, methodSetup(params));
-      case 'create_tables':
-        return jsonrpcSuccess(id, methodCreateTables(params));
       case 'teardown':
         return jsonrpcSuccess(id, methodTeardown(params));
       case 'metrics':
