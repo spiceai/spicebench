@@ -14,13 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{
-    fmt::Display,
-    future::Future,
-    path::PathBuf,
-    process::Child,
-    time::Duration,
-};
+use std::{fmt::Display, future::Future, path::PathBuf, process::Child, time::Duration};
 
 use anyhow::{Result, anyhow};
 use flight_client::{Credentials, FlightClient};
