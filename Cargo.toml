@@ -3,7 +3,7 @@ exclude = ["system-adapters/databricks"]
 members = [
     ".",
     "crates/adbc_client",
-    "crates/app", "crates/checkpointer",
+    "crates/checkpointer",
     "crates/data-generation",
     "crates/duration-parse", "crates/etl",
     "crates/flight_client",
@@ -83,7 +83,6 @@ schemars = "1.2.0"
 secrecy = "0.10.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"
-spicepod = { git = "https://github.com/spiceai/spice.git", rev = "46155f7fdc27aa1393b0451347f78b6aad66839a" }
 sha2 = "0.10.8"
 snafu = "0.8.6"
 sysinfo = "0.37.2"
