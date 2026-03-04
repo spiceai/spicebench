@@ -111,16 +111,16 @@ impl AdbcSink {
     fn target_table_identifier(&self, table_name: &str) -> String {
         let mut parts = Vec::with_capacity(3);
 
-        if let Some(catalog) = self.target_db_catalog.as_deref() {
-            if !catalog.is_empty() {
-                parts.push(Self::quote_identifier(catalog));
-            }
+        if let Some(catalog) = self.target_db_catalog.as_deref()
+            && !catalog.is_empty()
+        {
+            parts.push(Self::quote_identifier(catalog));
         }
 
-        if let Some(schema) = self.target_db_schema.as_deref() {
-            if !schema.is_empty() {
-                parts.push(Self::quote_identifier(schema));
-            }
+        if let Some(schema) = self.target_db_schema.as_deref()
+            && !schema.is_empty()
+        {
+            parts.push(Self::quote_identifier(schema));
         }
 
         parts.push(Self::quote_identifier(table_name));
@@ -134,16 +134,16 @@ impl AdbcSink {
     fn target_table_identifier_unquoted(&self, table_name: &str) -> String {
         let mut parts = Vec::with_capacity(3);
 
-        if let Some(catalog) = self.target_db_catalog.as_deref() {
-            if !catalog.is_empty() {
-                parts.push(catalog.to_string());
-            }
+        if let Some(catalog) = self.target_db_catalog.as_deref()
+            && !catalog.is_empty()
+        {
+            parts.push(catalog.to_string());
         }
 
-        if let Some(schema) = self.target_db_schema.as_deref() {
-            if !schema.is_empty() {
-                parts.push(schema.to_string());
-            }
+        if let Some(schema) = self.target_db_schema.as_deref()
+            && !schema.is_empty()
+        {
+            parts.push(schema.to_string());
         }
 
         parts.push(table_name.to_string());

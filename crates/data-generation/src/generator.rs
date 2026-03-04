@@ -47,6 +47,8 @@ pub struct DataGenerator {
     version_config: VersionConfig,
 }
 
+type WrittenBatches = HashMap<String, HashMap<u64, Vec<usize>>>;
+
 impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
@@ -83,7 +85,7 @@ impl DataGenerator {
         // Track which logical batch IDs were successfully written per table,
         // plus any split part IDs for each logical batch, so we can persist
         // both in table metadata at the end of the run.
-        let written_batches: Arc<std::sync::Mutex<HashMap<String, HashMap<u64, Vec<usize>>>>> =
+        let written_batches: Arc<std::sync::Mutex<WrittenBatches>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
 
         // For each table, spawn a generator task and an uploader task connected
@@ -91,7 +93,8 @@ impl DataGenerator {
         // channel is full, providing backpressure. The uploader drains the
         // channel completely before exiting.
         let mut join_set = JoinSet::new();
-        for table_name in self.dataset.tables().keys().cloned() {
+        for table_name in self.dataset.tables().keys() {
+            let table_name = table_name.clone();
             let (tx, mut rx) = mpsc::channel::<(u64, RecordBatch)>(4);
 
             // --- Generator task ---

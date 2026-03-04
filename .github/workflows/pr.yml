@@ -93,7 +93,7 @@ jobs:
 
   validation-run:
     name: Validation run (Spice Cloud TPCH sf0.001)
-    runs-on: spiceai-macos
+    runs-on: spiceai-dev-runners
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.rust == 'true'

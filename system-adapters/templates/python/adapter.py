@@ -34,11 +34,15 @@ def jsonrpc_error(request_id: Any, code: int, message: str, data: Any | None = N
 
 def method_setup(params: dict[str, Any]) -> dict[str, Any]:
     _run_id = params.get("run_id")
+    _metadata = params.get("metadata", {})
+    _datasets = params.get("datasets", {})
+    _etl_sink_type = params.get("etl_sink_type")
 
     # Stub: Provision or initialize your SUT for this run and return
     # query driver details SpiceBench should use.
     # Example:
     # - create a test database / schema for _run_id
+    # - create/register destination tables from _datasets
     # - wait for SUT readiness checks to pass
     # - resolve connection details from your control plane
 
@@ -46,7 +50,7 @@ def method_setup(params: dict[str, Any]) -> dict[str, Any]:
     port = int(os.getenv("SUT_PORT", "50051"))
     use_tls = os.getenv("SUT_TLS", "false").lower() == "true"
 
-    driver_config = {
+    return {
         "driver": "flightsql",
         "db_kwargs": {
             "uri": f"grpc{'s' if use_tls else ''}://{host}:{port}",
@@ -55,24 +59,6 @@ def method_setup(params: dict[str, Any]) -> dict[str, Any]:
             "tls": use_tls,
         },
     }
-
-    return {
-        "ingest_driver": driver_config,
-        "read_driver": driver_config,
-    }
-
-
-def method_create_tables(params: dict[str, Any]) -> dict[str, Any]:
-    _run_id = params.get("run_id")
-    _datasets = params.get("datasets", {})
-
-    # Stub: Create/register destination tables for benchmark datasets.
-    # Example:
-    # - create tables if they do not exist
-    # - iterate _datasets to map each dataset to a destination table
-    # - apply expected schema/partitioning
-
-    return {"ok": True}
 
 
 def method_teardown(params: dict[str, Any]) -> dict[str, Any]:
@@ -117,7 +103,6 @@ def method_rpc_methods() -> dict[str, Any]:
     return {
         "methods": [
             "setup",
-            "create_tables",
             "teardown",
             "metrics",
             "rpc.methods",
@@ -142,8 +127,6 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
     try:
         if method == "setup":
             return jsonrpc_success(request_id, method_setup(params))
-        if method == "create_tables":
-            return jsonrpc_success(request_id, method_create_tables(params))
         if method == "teardown":
             return jsonrpc_success(request_id, method_teardown(params))
         if method == "metrics":

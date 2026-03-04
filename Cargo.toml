@@ -3,12 +3,11 @@ exclude = ["system-adapters/databricks"]
 members = [
     ".",
     "crates/adbc_client",
-    "crates/app", "crates/checkpointer",
+    "crates/checkpointer",
     "crates/data-generation",
     "crates/duration-parse", "crates/etl",
     "crates/flight_client",
     "crates/otel-arrow",
-    "crates/spicepod",
     "crates/system-adapter-protocol",
     "crates/telemetry",
     "crates/test-framework",
@@ -37,7 +36,7 @@ async-trait = "0.1.89"
 base64 = "0.22.1"
 byte-unit = "5.1.4"
 bytes = "1.10.0"
-chrono = "0.4.42"
+chrono = "0.4.44"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 duckdb = "1.4.4"
 duration-parse = { path = "crates/duration-parse" }
