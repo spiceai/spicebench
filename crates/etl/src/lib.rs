@@ -1463,12 +1463,19 @@ async fn run_pipeline(
     let mut outer_steps_processed: usize = 0;
 
     loop {
-        // Check step budget.
+        // Check step budget using outer_steps_processed rather than
+        // logical_steps_consumed so that steps consumed internally by
+        // batch coalescing (read_batches_until_min_rows) do not count
+        // against the budget.  logical_steps_consumed can be incremented
+        // when a coalescing reservation removes the last table from a
+        // future step, effectively "consuming" that step without the outer
+        // loop ever processing it for the remaining tables.
         if let Some(limit) = step_limit
-            && logical_steps_consumed.load(Ordering::Relaxed) >= limit as u64
+            && outer_steps_processed >= limit
         {
             info!(
-                steps_processed = logical_steps_consumed.load(Ordering::Relaxed),
+                outer_steps_processed,
+                logical_steps_consumed = logical_steps_consumed.load(Ordering::Relaxed),
                 "Step limit reached, pausing pipeline"
             );
             progress_logger.abort();

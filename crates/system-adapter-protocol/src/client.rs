@@ -115,6 +115,11 @@ impl Client {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit());
 
+        // Place the child in its own process group so it doesn't receive
+        // SIGINT when the user presses ctrl+c, allowing orderly teardown.
+        #[cfg(unix)]
+        cmd.process_group(0);
+
         let mut child = cmd.spawn().map_err(|e| {
             ClientError::Transport(format!(
                 "Failed to start stdio command '{command_str}': {e}"

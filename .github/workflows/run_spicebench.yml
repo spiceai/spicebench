@@ -257,7 +257,7 @@ jobs:
           ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
           ETL_VERSION: ${{ github.event.inputs.etl_version }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
-          ETL_SINK: ${{ github.event.inputs.etl_sink || 'hive' }}
+          ETL_SINK: ${{ github.event.inputs.etl_sink || 'adbc' }}
           VALIDATE_CHECKPOINT_RESULTS: ${{ github.event.inputs.validate_checkpoint_results || 'false' }}
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
