@@ -5,12 +5,12 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Scenario/query set to run (e.g. tpch)'
+        description: "Scenario/query set to run (e.g. tpch)"
         required: true
-        default: 'tpch'
+        default: "tpch"
         type: string
       system_under_test:
-        description: 'System under test (spice_cloud via spidapter docker image, or local databricks adapter modes)'
+        description: "System under test (spice_cloud via spidapter docker image, or local databricks adapter modes)"
         required: true
         default: spice_cloud
         type: choice
@@ -19,50 +19,50 @@ on:
           - databricks-sql
           - databricks-lakebase
       etl_bucket:
-        description: 'S3 bucket for ETL source and target data'
+        description: "S3 bucket for ETL source and target data"
         required: true
-        default: 'spiceai-public-datasets'
+        default: "spiceai-public-datasets"
         type: string
       etl_prefix:
-        description: 'S3 key prefix (the {prefix} portion of {prefix}/{scenario}/{version}/)'
+        description: "S3 key prefix (the {prefix} portion of {prefix}/{scenario}/{version}/)"
         required: false
-        default: 'data-gen'
+        default: "data-gen"
         type: string
       etl_version:
-        description: 'Data generation version identifier (the {version} portion of {prefix}/{scenario}/{version}/)'
+        description: "Data generation version identifier (the {version} portion of {prefix}/{scenario}/{version}/)"
         required: true
         type: string
         default: "1"
       etl_region:
-        description: 'AWS region for the ETL S3 bucket'
+        description: "AWS region for the ETL S3 bucket"
         required: false
-        default: 'us-east-1'
+        default: "us-east-1"
         type: string
       etl_sink:
-        description: 'ETL sink (hive or adbc)'
+        description: "ETL sink (hive or adbc)"
         required: false
-        default: 'adbc'
+        default: "adbc"
         type: choice
         options:
           - hive
           - adbc
       num_query_clients:
-        description: 'Number of query clients to run (maps to spicebench --concurrency)'
+        description: "Number of query clients to run (maps to spicebench --concurrency)"
         required: false
-        default: '8'
+        default: "8"
         type: string
       validate_checkpoint_results:
-        description: 'Enable checkpoint-based result validation (maps to spicebench --validate-results)'
+        description: "Enable checkpoint-based result validation (maps to spicebench --validate-results)"
         required: false
         default: false
         type: boolean
       enable_module_debug_logging:
-        description: 'Enable debug logs only for SpiceBench modules (etl, spicebench, data_generation)'
+        description: "Enable debug logs only for SpiceBench modules (etl, spicebench, data_generation)"
         required: false
         default: false
         type: boolean
       runner:
-        description: 'GitHub runner label to use for this workflow run'
+        description: "GitHub runner label to use for this workflow run"
         required: true
         default: ubuntu-latest
         type: choice
@@ -202,7 +202,7 @@ jobs:
         if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: "1.23"
 
       - name: Checkout adbc-databricks Go driver
         if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
@@ -338,6 +338,7 @@ jobs:
           ~/.spice/bin/spicebench \
             --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
+            --scrape-sut-metrics \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
             ${ETL_SINK_ARGS} \
@@ -345,4 +346,3 @@ jobs:
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
-

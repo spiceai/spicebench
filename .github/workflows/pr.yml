@@ -168,6 +168,5 @@ jobs:
             --etl-prefix pr-validation \
             --etl-version "${ETL_VERSION}" \
             --etl-region us-east-1 \
-            --scrape-sut-metrics \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
