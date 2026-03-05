@@ -492,7 +492,7 @@ pub(crate) async fn run(
     // Always create validation channels so we can track query-set iteration
     // completions. When --validate-results is enabled with checkpoint data,
     // these channels are also used for checkpoint-based results validation.
-    let (validation_controller, validation_worker_handles) = create_validation_channels();
+    let (mut validation_controller, validation_worker_handles) = create_validation_channels();
     test_builder = test_builder.with_checkpoint_validation(validation_worker_handles);
 
     let has_checkpoint_validation =
@@ -581,6 +581,10 @@ pub(crate) async fn run(
                                     );
 
                                     let etl_pause_time = tokio::time::Instant::now();
+                                    // Capture std::time::Instant at the same point so
+                                    // we can compare against the worker's
+                                    // first_pass_instant (which uses std::time::Instant).
+                                    let etl_pause_time_std = std::time::Instant::now();
 
                                     // Tell worker 0 to start validating.
                                     let _ = validation_controller.command_tx.send(Some(
@@ -593,16 +597,28 @@ pub(crate) async fn run(
                                     // Poll the validation status until convergence
                                     // (a complete iteration where every query passes)
                                     // or until the timeout is reached.
-                                    const POLL_INTERVAL: Duration = Duration::from_secs(5);
                                     const MAX_WAIT: Duration = Duration::from_secs(600);
+                                    let deadline =
+                                        tokio::time::Instant::now() + MAX_WAIT;
                                     let mut timed_out = false;
-                                    let mut interrupted = false;
+                                    let interrupted = false;
                                     loop {
                                         let status =
                                             validation_controller.status_rx.borrow().clone();
                                         if status.converged() {
-                                            let latency_ms =
-                                                etl_pause_time.elapsed().as_secs_f64() * 1000.0;
+                                            // Use the instant the first query passed
+                                            // as the latency reference point.  This
+                                            // measures when the data was fully ingested
+                                            // (first correct answer), not when the full
+                                            // validation sweep finished.
+                                            let latency_ms = status
+                                                .first_pass_instant()
+                                                .map_or_else(
+                                                    || etl_pause_time_std.elapsed(),
+                                                    |fpi| fpi.duration_since(etl_pause_time_std),
+                                                )
+                                                .as_secs_f64()
+                                                * 1000.0;
                                             println!(
                                                 "Checkpoint {} converged in {:.1}s ({} iterations)",
                                                 checkpoint_idx,
@@ -617,12 +633,17 @@ pub(crate) async fn run(
                                             timed_out = true;
                                             break;
                                         }
-                                        tokio::select! {
-                                            _ = tokio::time::sleep(POLL_INTERVAL) => {}
-                                            _ = signal::ctrl_c() => {
-                                                interrupted = true;
-                                                break;
-                                            }
+                                        // Wait for the worker to publish a new status
+                                        // update rather than polling on a fixed interval.
+                                        if tokio::time::timeout_at(
+                                            deadline,
+                                            validation_controller.status_rx.changed(),
+                                        )
+                                        .await
+                                        .is_err()
+                                        {
+                                            timed_out = true;
+                                            break;
                                         }
                                     }
 
@@ -633,6 +654,7 @@ pub(crate) async fn run(
                                         outcomes,
                                         completed_iterations: iters,
                                         converged,
+                                        ..
                                     } = &status
                                     {
                                         let total_pass: usize =
