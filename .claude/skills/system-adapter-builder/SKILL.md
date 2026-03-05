@@ -1,6 +1,6 @@
 ---
 name: system-adapter-builder
-description: Build or update a SpiceBench system adapter with JSON-RPC over stdio and HTTP, including setup/create_tables/teardown/metrics support and template validation.
+description: Build or update a SpiceBench system adapter with JSON-RPC over stdio and HTTP, including setup/teardown/metrics support and template validation.
 ---
 
 # SpiceBench System Adapter Builder

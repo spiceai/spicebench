@@ -84,6 +84,15 @@ fn method_teardown(_params: &Value) -> Value {
     json!({"ok": true})
 }
 
+fn method_create_tables(_params: &Value) -> Value {
+    // Stub: Create destination tables for all datasets in this run.
+    // params contains: run_id, datasets
+    // Example:
+    // - iterate dataset names from params.datasets
+    // - issue CREATE TABLE statements with matching schema
+    json!({"ok": true})
+}
+
 fn method_metrics(_params: &Value) -> Value {
     // Stub: Poll live SUT telemetry and map values into this metrics response.
     // Example sources:
@@ -110,7 +119,7 @@ fn method_metrics(_params: &Value) -> Value {
 
 fn method_rpc_methods() -> Value {
     json!({
-        "methods": ["setup", "teardown", "metrics", "rpc.methods"]
+        "methods": ["setup", "create_tables", "teardown", "metrics", "rpc.methods"]
     })
 }
 
@@ -145,6 +154,7 @@ fn dispatch(request: &Value) -> Value {
 
     let result = match method {
         "setup" => Ok(method_setup(&params)),
+        "create_tables" => Ok(method_create_tables(&params)),
         "teardown" => Ok(method_teardown(&params)),
         "metrics" => Ok(method_metrics(&params)),
         "rpc.methods" => Ok(method_rpc_methods()),

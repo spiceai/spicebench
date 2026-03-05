@@ -100,6 +100,15 @@ func methodTeardown(_ map[string]interface{}) interface{} {
 	return map[string]interface{}{"ok": true}
 }
 
+func methodCreateTables(_ map[string]interface{}) interface{} {
+	// Stub: Create destination tables for all datasets in this run.
+	// params contains: run_id, datasets
+	// Example:
+	// - iterate dataset names from params["datasets"]
+	// - issue CREATE TABLE statements with matching schema
+	return map[string]interface{}{"ok": true}
+}
+
 func methodMetrics(_ map[string]interface{}) interface{} {
 	// Stub: Poll live SUT telemetry and translate to this metrics schema.
 	// Example sources:
@@ -126,7 +135,7 @@ func methodMetrics(_ map[string]interface{}) interface{} {
 
 func methodRpcMethods() interface{} {
 	return map[string]interface{}{
-		"methods": []string{"setup", "teardown", "metrics", "rpc.methods"},
+		"methods": []string{"setup", "create_tables", "teardown", "metrics", "rpc.methods"},
 	}
 }
 
@@ -156,6 +165,8 @@ func dispatch(request []byte) jsonRpcResponse {
 	switch req.Method {
 	case "setup":
 		return success(id, methodSetup(params))
+	case "create_tables":
+		return success(id, methodCreateTables(params))
 	case "teardown":
 		return success(id, methodTeardown(params))
 	case "metrics":
