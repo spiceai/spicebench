@@ -66,18 +66,6 @@ function methodTeardown(params) {
   return { ok: true };
 }
 
-function methodCreateTables(params) {
-  void params.run_id;
-  void (params.datasets || {});
-
-  // Stub: Create destination tables for all datasets in this run.
-  // Example:
-  // - iterate dataset names from params.datasets
-  // - issue CREATE TABLE statements with matching schema
-
-  return { ok: true };
-}
-
 function methodMetrics(params) {
   void params.run_id;
 
@@ -107,7 +95,7 @@ function methodMetrics(params) {
 
 function methodRpcMethods() {
   return {
-    methods: ['setup', 'create_tables', 'teardown', 'metrics', 'rpc.methods'],
+    methods: ['setup', 'teardown', 'metrics', 'rpc.methods'],
   };
 }
 
@@ -133,8 +121,6 @@ function dispatch(request) {
     switch (request.method) {
       case 'setup':
         return jsonrpcSuccess(id, methodSetup(params));
-      case 'create_tables':
-        return jsonrpcSuccess(id, methodCreateTables(params));
       case 'teardown':
         return jsonrpcSuccess(id, methodTeardown(params));
       case 'metrics':

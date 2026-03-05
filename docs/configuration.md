@@ -1,113 +1,6 @@
 # Configuration
 
-SpiceBench uses CLI flags for runtime behavior. The Spice Cloud system adapter additionally uses **Spicepod YAML** files for dataset and infrastructure configuration.
-
-## Spicepod Format (Spice Cloud)
-
-Spicepod is a declarative YAML configuration format used by the Spice Cloud adapter to define datasets, catalogs, and runtime settings.
-
-### Basic Structure
-
-```yaml
-version: v1
-kind: Spicepod
-name: my-benchmark
-
-datasets:
-  - name: customer
-    from: s3://my-bucket/tpch/customer/customer.parquet
-    params:
-      file_format: parquet
-      s3_auth: public
-
-  - name: orders
-    from: s3://my-bucket/tpch/orders/orders.parquet
-    params:
-      file_format: parquet
-      s3_auth: public
-
-runtime:
-  # Runtime configuration options
-```
-
-### Spicepod Fields
-
-| Field          | Type              | Required | Description                        |
-| -------------- | ----------------- | -------- | ---------------------------------- |
-| `version`      | `v1beta1` \| `v1` | Yes      | Spicepod format version            |
-| `kind`         | `Spicepod`        | Yes      | Must be `Spicepod`                 |
-| `name`         | String            | Yes      | Name of the pod                    |
-| `datasets`     | List              | No       | Dataset definitions                |
-| `catalogs`     | List              | No       | Catalog definitions                |
-| `views`        | List              | No       | View definitions                   |
-| `models`       | List              | No       | Model definitions                  |
-| `embeddings`   | List              | No       | Embedding definitions              |
-| `runtime`      | Object            | No       | Runtime configuration              |
-| `management`   | Object            | No       | Management settings                |
-| `secrets`      | List              | No       | Secret references                  |
-| `extensions`   | List              | No       | Extension configurations           |
-| `dependencies` | List              | No       | References to other Spicepod files |
-
-### Dataset Definition
-
-```yaml
-datasets:
-  - name: customer                    # Table name
-    from: s3://bucket/path/file.parquet  # Data source URI
-    params:                           # Source-specific parameters
-      file_format: parquet
-      s3_auth: public
-    acceleration:                     # Optional acceleration config
-      enabled: true
-      # engine is runtime-specific
-```
-
-#### Dataset Fields
-
-| Field          | Type                  | Description                        |
-| -------------- | --------------------- | ---------------------------------- |
-| `name`         | String                | Table name used in queries         |
-| `from`         | String                | Data source URI (e.g., `s3://`)    |
-| `params`       | Map\<String, String\> | Source-specific parameters         |
-| `acceleration` | Object                | Acceleration/caching configuration |
-| `time_column`  | String                | Column for temporal ordering       |
-| `primary_key`  | String                | Primary key column(s)              |
-
-### TPC-H Example (public S3)
-
-```yaml
-version: v1
-kind: Spicepod
-name: s3-public[parquet]-federated
-
-datasets:
-  - from: s3://spiceai-public-datasets/tpch/customer/customer.parquet
-    name: customer
-    params: &s3_params
-      file_format: parquet
-      s3_auth: public
-  - from: s3://spiceai-public-datasets/tpch/lineitem/lineitem.parquet
-    name: lineitem
-    params: *s3_params
-  - from: s3://spiceai-public-datasets/tpch/nation/nation.parquet
-    name: nation
-    params: *s3_params
-  - from: s3://spiceai-public-datasets/tpch/orders/orders.parquet
-    name: orders
-    params: *s3_params
-  - from: s3://spiceai-public-datasets/tpch/part/part.parquet
-    name: part
-    params: *s3_params
-  - from: s3://spiceai-public-datasets/tpch/partsupp/partsupp.parquet
-    name: partsupp
-    params: *s3_params
-  - from: s3://spiceai-public-datasets/tpch/region/region.parquet
-    name: region
-    params: *s3_params
-  - from: s3://spiceai-public-datasets/tpch/supplier/supplier.parquet
-    name: supplier
-    params: *s3_params
-```
+SpiceBench uses CLI flags for runtime behavior. See the [CLI Reference](cli-reference.md) for a complete list of flags and options.
 
 ## Query Sets
 
@@ -152,7 +45,7 @@ The `--table-format` flag declares the storage format for benchmark tables:
 | Iceberg | `iceberg` | Apache Iceberg           |
 | Delta   | `delta`   | Delta Lake               |
 
-This value is passed to the system adapter in `setup` metadata and used during `create_tables` to create tables in the appropriate format.
+This value is passed to the system adapter in `setup` metadata for table creation in the appropriate format.
 
 ## Run Metadata
 
@@ -169,28 +62,3 @@ SpiceBench attaches metadata to each run for cross-system comparison:
 | `etl_version`            | `--etl-version`            | `1`                       | Data generation version  |
 
 All metadata is sent to the adapter in the `setup` request and attached as OTel resource attributes on exported metrics.
-
-## Spicepod Loading (Spice Cloud)
-
-The `spicepod` crate supports loading Spice Cloud adapter configuration from multiple sources:
-
-| Source     | Method                                  | Example                        |
-| ---------- | --------------------------------------- | ------------------------------ |
-| Local file | `Spicepod::load(path)`                  | `./spicepod.yaml`              |
-| S3         | `Spicepod::load_from_object_store(url)` | `s3://bucket/spicepod.yaml`    |
-| GCS        | `Spicepod::load_from_object_store(url)` | `gs://bucket/spicepod.yaml`    |
-| Azure      | `Spicepod::load_from_object_store(url)` | `az://container/spicepod.yaml` |
-
-### Dependencies
-
-Spicepod files can reference other Spicepod files via `dependencies`:
-
-```yaml
-version: v1
-kind: Spicepod
-name: main
-dependencies:
-  - path: ./common-datasets.yaml
-```
-
-The `App` struct aggregates all components from the root pod and its transitive dependencies into a single configuration object.

@@ -141,5 +141,5 @@ See [Data Generation & ETL](data-generation-and-etl.md) for all sink options.
 
 - [CLI Reference](cli-reference.md) — all flags and options for `spicebench` and `data-generation`
 - [System Adapters](system-adapters.md) — how to build an adapter for your platform
-- [Configuration](configuration.md) — Spicepod YAML (Spice Cloud adapter) and query sets
+- [Configuration](configuration.md) — query sets, SQL overrides, and run metadata
 - [Metrics & Telemetry](metrics-and-telemetry.md) — all collected metrics and how to visualize them

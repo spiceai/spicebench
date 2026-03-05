@@ -12,10 +12,6 @@ spicebench (binary)
 ├── flight_client           Arrow Flight client
 ├── telemetry               OTel metrics + export
 │   └── otel-arrow          OTel → Arrow conversion
-├── app                     Aggregated config
-│   └── spicepod            YAML config loader
-│       ├── yaml            YAML library
-│       └── duration-parse  Duration parsing
 ├── etl                     ETL pipeline + sinks
 │   └── data-generation     Dataset generation
 ├── checkpointer            Checkpoint capture
@@ -329,57 +325,6 @@ trait ArrowExporter {
 ```rust
 fn schema() -> Arc<Schema>  // Flattened OTel metrics Arrow schema
 ```
-
----
-
-## `spicepod`
-
-**Path:** `crates/spicepod/`
-
-YAML-based configuration loader for Spice.ai pod definitions. Used by the Spice Cloud adapter for dataset, catalog, and runtime configuration.
-
-### Public Types
-
-| Type                             | Description                                       |
-| -------------------------------- | ------------------------------------------------- |
-| `Spicepod`                       | Loaded pod with resolved components               |
-| `SpicepodDefinition`             | Raw YAML structure                                |
-| `SpicepodVersion` (enum)         | `V1Beta1`, `V1`                                   |
-| `SpicepodKind` (enum)            | `Spicepod`                                        |
-| `ComponentOrReference<T>` (enum) | `Component(T)` or `Reference(ComponentReference)` |
-
-### Key Methods
-
-| Method                                  | Description                            |
-| --------------------------------------- | -------------------------------------- |
-| `Spicepod::load(path)`                  | Load from local file                   |
-| `Spicepod::load_from_object_store(url)` | Load from S3/GCS/Azure (feature-gated) |
-| `Spicepod::load_definition(path)`       | Load raw definition without resolution |
-
-### Submodules
-
-Components: `catalog`, `dataset`, `model`, `view`, `embeddings`, `eval`, `tool`, `worker`, `runtime`, `management`, `secret`, `snapshot`, `access`, `caching`
-
----
-
-## `app`
-
-**Path:** `crates/app/`
-
-Aggregates components from the root Spicepod and dependencies into a single `App`. Used by the Spice Cloud adapter.
-
-### Public Types
-
-| Type         | Description                                                 |
-| ------------ | ----------------------------------------------------------- |
-| `App`        | Aggregated configuration (datasets, catalogs, models, etc.) |
-| `AppBuilder` | `new(name)`, `with_spicepod()`, `build()`                   |
-
-### Key Methods
-
-- `datasets_of_connector_type()` — Filter datasets by connector
-- `get_runtime_param()` — Get a runtime parameter with error on missing
-- `get_runtime_param_opt()` — Get optional runtime parameter
 
 ---
 

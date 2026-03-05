@@ -119,7 +119,6 @@ public final class AdapterServer {
 
     return switch (method) {
       case "setup" -> jsonrpcSuccess(id, methodSetup(params));
-      case "create_tables" -> jsonrpcSuccess(id, methodCreateTables(params));
       case "teardown" -> jsonrpcSuccess(id, methodTeardown(params));
       case "metrics" -> jsonrpcSuccess(id, methodMetrics(params));
       case "rpc.methods" -> jsonrpcSuccess(id, methodRpcMethods());
@@ -200,29 +199,6 @@ public final class AdapterServer {
     return result;
   }
 
-  private static JsonNode methodCreateTables(JsonNode params) {
-    JsonNode runId = params.get("run_id");
-    if (runId == null) {
-      runId = MAPPER.nullNode();
-    }
-
-    JsonNode datasets = params.get("datasets");
-    if (datasets == null) {
-      datasets = MAPPER.createObjectNode();
-    }
-
-    // Stub: Create destination tables for all datasets in this run.
-    // Example:
-    // - iterate dataset names from params.datasets
-    // - issue CREATE TABLE statements with matching schema
-    runId.asText();
-    datasets.toString();
-
-    ObjectNode result = MAPPER.createObjectNode();
-    result.put("ok", true);
-    return result;
-  }
-
   private static JsonNode methodMetrics(JsonNode params) {
     JsonNode runId = params.get("run_id");
     if (runId == null) {
@@ -259,7 +235,6 @@ public final class AdapterServer {
   private static JsonNode methodRpcMethods() {
     ArrayNode methods = MAPPER.createArrayNode();
     methods.add("setup");
-    methods.add("create_tables");
     methods.add("teardown");
     methods.add("metrics");
     methods.add("rpc.methods");

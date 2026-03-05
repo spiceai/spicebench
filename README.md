@@ -14,7 +14,7 @@ Detailed documentation is available in the [`docs/`](docs/) directory:
 | [System Adapters](docs/system-adapters.md)               | JSON-RPC 2.0 protocol, transport modes, and building new adapters   |
 | [Data Generation & ETL](docs/data-generation-and-etl.md) | Dataset generation, ETL pipeline, sinks, and checkpointing          |
 | [Metrics & Telemetry](docs/metrics-and-telemetry.md)     | All OTel instruments, streaming metrics, and Grafana dashboards     |
-| [Configuration](docs/configuration.md)                   | Configuration format, query sets, and SQL dialect overrides         |
+| [Configuration](docs/configuration.md)                   | Query sets, SQL overrides, table formats, and run metadata          |
 | [Crate Reference](docs/crate-reference.md)               | Per-crate API overview for all workspace crates                     |
 
 ## Goals
@@ -31,7 +31,7 @@ Every Run is fully automated and deterministic: a single `spicebench` invocation
 
 ### Extensibility
 
-Adding a new system takes one adapter — a JSON-RPC 2.0 process (stdio or HTTP) implementing four methods (`setup`, `create_tables`, `teardown`, `metrics`). Starter templates are provided in Python, Node.js, Rust, Go, and Java. No source-code changes to SpiceBench are required.
+Adding a new system takes one adapter — a JSON-RPC 2.0 process (stdio or HTTP) implementing three methods (`setup`, `teardown`, `metrics`). Starter templates are provided in Python, Node.js, Rust, Go, and Java. No source-code changes to SpiceBench are required.
 
 ### Transparency
 

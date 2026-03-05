@@ -1,6 +1,8 @@
 # Architecture
 
-SpiceBench is an end-to-end benchmark for data & AI platforms built on a hybrid data lake + accelerator architecture — systems that continuously ingest data from lakes, databases, and APIs into an acceleration layer that serves low-latency queries to applications and AI agents. Unlike static benchmarks (ClickBench, TPC-H) that run queries on pre-created datasets, SpiceBench runs data generation, ingestion, acceleration/materialization, and query execution **concurrently**.
+## Introduction
+
+SpiceBench is an open-source benchmark for data and AI platforms. It measures the full operational data lifecycle — ingestion, acceleration, and query serving — under the conditions AI applications and agents actually face. Unlike static benchmarks (ClickBench, TPC-H) that run queries on pre-created datasets, SpiceBench runs data generation, ingestion, acceleration/materialization, and query execution **concurrently**, capturing the real tension between ingestion throughput, materialization freshness, and query latency.
 
 ## System Overview
 
@@ -18,8 +20,7 @@ SpiceBench is an end-to-end benchmark for data & AI platforms built on a hybrid 
 │  │ 1. Setup │──▶│ 2. Benchmark   │──▶│  3. Teardown     │    │
 │  │ (JSON-RPC│   │    (timed)     │   │  (JSON-RPC)      │    │
 │  │  adapter)│   │                │   │                  │    │
-│  └──────────┘   │ warm-up        │   └──────────────────┘    │
-│                 │ baseline       │                           │
+│  └──────────┘   │ baseline       │   └──────────────────┘    │
 │                 │ load test      │                           │
 │                 └────────────────┘                           │
 └──────────────────────────────────────────────────────────────┘
@@ -40,18 +41,16 @@ A **Run** is a single end-to-end execution of the benchmark targeting one system
 
 SpiceBench connects to a **system adapter** via JSON-RPC 2.0 (over stdio or HTTP) and calls:
 
-1. **`setup(run_id, metadata)`** — Provisions the System Under Test (SUT) and returns ADBC driver configuration (driver name + connection kwargs) for query execution.
-2. **`create_tables(run_id, datasets)`** — Creates or registers destination tables for all benchmark datasets (e.g., TPC-H tables).
+1. **`setup(run_id, metadata, datasets, etl_sink_type)`** — Provisions the System Under Test (SUT), creates/registers benchmark tables, and returns ADBC driver configuration (driver name + connection kwargs) for query execution.
 
 The adapter response from `setup` tells SpiceBench which ADBC driver to use and how to connect.
 
 ### Phase 2: Benchmark (timed)
 
-The benchmark phase has three sequential stages:
+The benchmark phase has two sequential stages:
 
 | Stage         | Duration                                 | Purpose                                                                       |
 | ------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| **Warm-up**   | 1× query set                             | Primes caches, JIT compilation, connection pools                              |
 | **Baseline**  | 10% of total duration (clamped 60s–600s) | Establishes per-query p99 latency baselines without concurrent data ingestion |
 | **Load test** | Full configured duration                 | Runs concurrent query clients alongside active ETL data ingestion             |
 
@@ -139,7 +138,6 @@ SpiceBench currently measures ingestion-to-query behavior. A planned extension i
       - measure time from source event creation to retrievable context and answer inclusion
 
 This extends SpiceBench from an operational SQL benchmark into an AI-native data benchmark for application and agent workloads.
-| **Distributed** | `POST /v1/queries` + polling       | Async distributed query execution        |
 
 In `direct-query` mode (the most common), SpiceBench uses the ADBC driver returned by the adapter's `setup()` response to execute queries directly against the SUT.
 
@@ -187,14 +185,13 @@ See [Metrics & Telemetry](metrics-and-telemetry.md) for the full instrument list
 
 ## System Adapter Protocol
 
-The system adapter protocol is a JSON-RPC 2.0 interface that decouples SpiceBench from any specific data platform. Each adapter implements four methods:
+The system adapter protocol is a JSON-RPC 2.0 interface that decouples SpiceBench from any specific data platform. Each adapter implements three methods:
 
-| Method                            | Purpose                                              |
-| --------------------------------- | ---------------------------------------------------- |
-| `setup(run_id, metadata)`         | Provision the SUT, return ADBC driver config         |
-| `create_tables(run_id, datasets)` | Create/register benchmark tables                     |
-| `teardown(run_id)`                | Deprovision resources                                |
-| `metrics(run_id)`                 | Return resource usage and ingestion stats (optional) |
+| Method                                             | Purpose                                                                |
+| -------------------------------------------------- | ---------------------------------------------------------------------- |
+| `setup(run_id, metadata, datasets, etl_sink_type)` | Provision the SUT, create tables, return ADBC driver config            |
+| `teardown(run_id)`                                 | Deprovision resources                                                  |
+| `metrics(run_id)`                                  | Return resource usage and ingestion stats (optional)                   |
 
 Adapters communicate over **stdio** (SpiceBench spawns the adapter as a child process) or **HTTP** (SpiceBench connects to a running adapter server).
 
@@ -207,7 +204,7 @@ SpiceBench supports two execution modes controlled by `--system-adapter-executio
 | Mode                | Flag                        | Behavior                                                                                        |
 | ------------------- | --------------------------- | ----------------------------------------------------------------------------------------------- |
 | **adapter-command** | `adapter-command` (default) | Delegates the entire benchmark run to the adapter via `run.load` JSON-RPC                       |
-| **direct-query**    | `direct-query`              | SpiceBench drives queries directly via ADBC; adapter handles setup/tables/teardown/metrics only |
+| **direct-query**    | `direct-query`              | SpiceBench drives queries directly via ADBC; adapter handles setup/teardown/metrics only |
 
 `direct-query` is the standard mode for benchmarking external systems where SpiceBench controls the query workload.
 
@@ -232,10 +229,6 @@ spicebench (binary)
 ├── flight_client           Arrow Flight client
 ├── telemetry               OTel metrics + export
 │   └── otel-arrow          OTel → Arrow conversion
-├── app                     Aggregated config
-│   └── spicepod            YAML config loader
-│       ├── yaml            YAML library
-│       └── duration-parse  Duration parsing
 ├── etl                     ETL pipeline + sinks
 │   └── data-generation     Dataset generation
 ├── checkpointer            Checkpoint capture
