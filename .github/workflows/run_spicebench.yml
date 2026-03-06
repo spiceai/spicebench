@@ -69,6 +69,11 @@ on:
         options:
           - ubuntu-latest
           - spiceai-dev-runners
+      scheduler_state_location:
+        description: "S3 URI for shared scheduler state (e.g. s3://bucket/scheduler-state/). If empty, scheduler state is not configured."
+        required: false
+        default: ""
+        type: string
 
 jobs:
   run-spicebench:
@@ -258,6 +263,7 @@ jobs:
           ETL_VERSION: ${{ github.event.inputs.etl_version }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_SINK: ${{ github.event.inputs.etl_sink || 'adbc' }}
+          SCHEDULER_STATE_LOCATION: ${{ github.event.inputs.scheduler_state_location || '' }}
           VALIDATE_CHECKPOINT_RESULTS: ${{ github.event.inputs.validate_checkpoint_results || 'false' }}
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
@@ -304,6 +310,11 @@ jobs:
             VALIDATION_ARGS="--validate-results"
           fi
 
+          SCHEDULER_ARGS=""
+          if [ -n "${SCHEDULER_STATE_LOCATION}" ]; then
+            SCHEDULER_ARGS="--scheduler-state-location ${SCHEDULER_STATE_LOCATION}"
+          fi
+
           if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
@@ -342,6 +353,7 @@ jobs:
             ${ETL_ARGS} \
             ${ETL_SINK_ARGS} \
             ${VALIDATION_ARGS} \
+            ${SCHEDULER_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \

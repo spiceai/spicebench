@@ -139,6 +139,11 @@ pub struct CommonArgs {
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
 
+    /// S3 URI for shared scheduler state (e.g. `s3://bucket/scheduler-state/`).
+    /// Passed to the system adapter as `scheduler_state_location` metadata.
+    #[arg(long)]
+    pub(crate) scheduler_state_location: Option<String>,
+
     /// Ordered list of columns used for hive-style partitioning of ETL output.
     ///
     /// Example: `--etl-partition-by __created_at,product_type`
