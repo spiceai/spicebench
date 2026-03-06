@@ -447,6 +447,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(ref state_loc) = cli.common.scheduler_state_location {
+        setup_metadata.insert(
+            "scheduler_state_location".to_string(),
+            serde_json::Value::String(state_loc.clone()),
+        );
+    }
+
     if let Ok(system_under_test) = std::env::var("SYSTEM_UNDER_TEST") {
         setup_metadata.insert(
             "system_under_test".to_string(),
