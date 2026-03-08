@@ -233,13 +233,15 @@ async fn run_benchmark(
                 target_db_schema,
             )?);
 
-            let pipeline = ETLPipeline::new(
+            let mut pipeline = ETLPipeline::new(
                 dataset_source,
                 &generation_config,
                 Arc::clone(&data_source),
                 target_sink,
                 &mutations,
             )?;
+
+            pipeline.initialize().await?;
 
             (setup_response, pipeline)
         }
@@ -460,6 +462,13 @@ async fn main() -> anyhow::Result<()> {
                 )),
             );
         }
+    }
+
+    if let Some(ref state_loc) = cli.common.scheduler_state_location {
+        setup_metadata.insert(
+            "scheduler_state_location".to_string(),
+            serde_json::Value::String(state_loc.clone()),
+        );
     }
 
     if let Ok(system_under_test) = std::env::var("SYSTEM_UNDER_TEST") {

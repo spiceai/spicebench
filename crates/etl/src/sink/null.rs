@@ -30,6 +30,12 @@ impl NullSink {
     }
 }
 
+impl Default for NullSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Sink for NullSink {
     async fn write(

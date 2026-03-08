@@ -28,6 +28,7 @@ limitations under the License.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow::array::RecordBatch;
 
@@ -85,6 +86,12 @@ pub enum ValidationStatus {
         /// every validated query passing. Once set, stays `true` for the
         /// remainder of this validation window.
         converged: bool,
+        /// The instant at which the first query passed in the iteration
+        /// that ultimately converged.  `None` until a pass is recorded in
+        /// the current (non-converged) iteration.  Reset at the start of
+        /// each new iteration so that a failing iteration's timestamp is
+        /// discarded.
+        first_pass_instant: Option<Instant>,
     },
 }
 
@@ -129,6 +136,18 @@ impl ValidationStatus {
                 completed_iterations,
                 ..
             } => *completed_iterations,
+        }
+    }
+
+    /// Returns the [`Instant`] at which the first query passed in the
+    /// converging iteration, or `None` if not yet available.
+    #[must_use]
+    pub fn first_pass_instant(&self) -> Option<Instant> {
+        match self {
+            ValidationStatus::Inactive => None,
+            ValidationStatus::Active {
+                first_pass_instant, ..
+            } => *first_pass_instant,
         }
     }
 }

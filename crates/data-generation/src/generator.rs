@@ -45,6 +45,8 @@ pub struct DataGenerator {
     version_config: VersionConfig,
 }
 
+type WrittenBatches = HashMap<String, HashMap<u64, Vec<usize>>>;
+
 impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
@@ -81,7 +83,7 @@ impl DataGenerator {
         // Track which logical batch IDs were successfully written per table,
         // plus any split part IDs for each logical batch, so we can persist
         // both in table metadata at the end of the run.
-        let written_batches: Arc<std::sync::Mutex<HashMap<String, HashMap<u64, Vec<usize>>>>> =
+        let written_batches: Arc<std::sync::Mutex<WrittenBatches>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
 
         // For each table, spawn a single task that generates and writes inline.

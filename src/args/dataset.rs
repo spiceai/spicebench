@@ -279,9 +279,6 @@ impl From<QueryOverridesArg> for QueryOverrides {
 pub struct DataConsistencyArgs {
     #[command(flatten)]
     pub(crate) test_args: DatasetTestArgs,
-
-    #[arg(long)]
-    pub(crate) compare_spicepod: PathBuf,
 }
 
 #[derive(Parser, Debug)]

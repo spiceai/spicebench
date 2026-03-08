@@ -97,6 +97,9 @@ struct CheckpointValidationState {
     /// Set to `true` once a complete iteration finishes with every query
     /// passing. Sticky — once set, stays `true` for the validation window.
     converged: bool,
+    /// The instant at which the first query passed in the current
+    /// (non-converged) iteration.  Reset at each iteration boundary.
+    first_pass_instant: Option<Instant>,
 }
 
 impl CheckpointValidationState {
@@ -111,6 +114,7 @@ impl CheckpointValidationState {
             command_rx: handles.command_rx,
             current_iteration_results: HashMap::new(),
             converged: false,
+            first_pass_instant: None,
         }
     }
 
@@ -134,6 +138,7 @@ impl CheckpointValidationState {
                 self.completed_iterations = 0;
                 self.current_iteration_results.clear();
                 self.converged = false;
+                self.first_pass_instant = None;
                 eprintln!(
                     "Checkpoint validation enabled for checkpoint {}",
                     checkpoint_idx
@@ -147,6 +152,7 @@ impl CheckpointValidationState {
                 self.outcomes.clear();
                 self.current_iteration_results.clear();
                 self.converged = false;
+                self.first_pass_instant = None;
                 eprintln!("Checkpoint validation disabled");
                 let _ = self.status_tx.send(ValidationStatus::Inactive);
                 true
@@ -182,6 +188,9 @@ impl CheckpointValidationState {
                 if !self.converged {
                     self.current_iteration_results
                         .insert(Arc::clone(query_name), true);
+                    if self.first_pass_instant.is_none() {
+                        self.first_pass_instant = Some(Instant::now());
+                    }
                 }
             }
             Ok(QueryValidationResult::Fail(reason)) => {
@@ -261,11 +270,17 @@ impl CheckpointValidationState {
             let all_passed = self.current_iteration_results.values().all(|&v| v);
             if all_passed {
                 self.converged = true;
+                // first_pass_instant is preserved — it holds the instant
+                // the first query passed (possibly in an earlier iteration)
+                // indicating when the data first became correct.
                 eprintln!(
                     "Checkpoint {} validation converged after {} iterations",
                     self.checkpoint_idx, self.completed_iterations
                 );
             }
+            // Do NOT reset first_pass_instant on failure — it marks
+            // when the data first became queryable, even if a mixed
+            // iteration didn't fully converge yet.
         }
         self.current_iteration_results.clear();
 
@@ -278,6 +293,7 @@ impl CheckpointValidationState {
             outcomes: self.outcomes.values().cloned().collect(),
             completed_iterations: self.completed_iterations,
             converged: self.converged,
+            first_pass_instant: self.first_pass_instant,
         };
         let _ = self.status_tx.send(status);
     }
@@ -996,6 +1012,7 @@ impl SpiceTestQueryWorker {
     }
 
     // run queries as a set-completion based test
+    #[expect(clippy::too_many_arguments)]
     async fn run_single_query(
         &self,
         query: &Query,
@@ -1083,6 +1100,7 @@ impl SpiceTestQueryWorker {
         }
     }
 
+    #[expect(clippy::too_many_arguments)]
     async fn execute_query(
         &self,
         query: &Query,

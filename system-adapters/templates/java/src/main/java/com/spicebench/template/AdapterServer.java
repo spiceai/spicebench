@@ -159,9 +159,10 @@ public final class AdapterServer {
 
     // Stub: Provision or initialize your SUT for this run and return
     // query driver details SpiceBench should use.
+    // params contains: run_id, metadata, datasets, etl_sink_type
     // Example:
     // - create run-scoped schema/database
-    // - configure ingestion resources needed before table creation
+    // - create/register destination tables from params.datasets
     // - wait for readiness checks to pass
     // - resolve endpoint and credentials from your control plane
     runId.asText();
@@ -169,8 +170,8 @@ public final class AdapterServer {
     int port = getenvIntOr("SUT_PORT", 50051);
     boolean tls = "true".equalsIgnoreCase(getenvOr("SUT_TLS", "false"));
 
-    ObjectNode driverConfig = MAPPER.createObjectNode();
-    driverConfig.put("driver", "flightsql");
+    ObjectNode result = MAPPER.createObjectNode();
+    result.put("driver", "flightsql");
 
     ObjectNode dbKwargs = MAPPER.createObjectNode();
     dbKwargs.put("uri", String.format("grpc%s://%s:%d", tls ? "s" : "", host, port));
@@ -178,34 +179,7 @@ public final class AdapterServer {
     dbKwargs.put("password", getenvOr("SUT_PASSWORD", ""));
     dbKwargs.put("tls", tls);
 
-    driverConfig.set("db_kwargs", dbKwargs);
-
-    ObjectNode result = MAPPER.createObjectNode();
-    result.set("ingest_driver", driverConfig);
-    result.set("read_driver", driverConfig.deepCopy());
-    return result;
-  }
-
-  private static JsonNode methodCreateTables(JsonNode params) {
-    JsonNode runId = params.get("run_id");
-    JsonNode datasets = params.get("datasets");
-    if (runId == null) {
-      runId = MAPPER.nullNode();
-    }
-    if (datasets == null) {
-      datasets = MAPPER.createObjectNode();
-    }
-
-    // Stub: Create/register destination tables for benchmark datasets.
-    // Example:
-    // - create tables if they do not exist
-    // - iterate datasets and map each schema to table DDL
-    // - apply expected schema/partitioning
-    runId.asText();
-    datasets.isObject();
-
-    ObjectNode result = MAPPER.createObjectNode();
-    result.put("ok", true);
+    result.set("db_kwargs", dbKwargs);
     return result;
   }
 
@@ -220,6 +194,29 @@ public final class AdapterServer {
     // - drop run-scoped schema/database
     // - stop ingestion workers/jobs
     runId.asText();
+
+    ObjectNode result = MAPPER.createObjectNode();
+    result.put("ok", true);
+    return result;
+  }
+
+  private static JsonNode methodCreateTables(JsonNode params) {
+    JsonNode runId = params.get("run_id");
+    if (runId == null) {
+      runId = MAPPER.nullNode();
+    }
+
+    JsonNode datasets = params.get("datasets");
+    if (datasets == null) {
+      datasets = MAPPER.createObjectNode();
+    }
+
+    // Stub: Create destination tables for all datasets in this run.
+    // Example:
+    // - iterate dataset names from params.datasets
+    // - issue CREATE TABLE statements with matching schema
+    runId.asText();
+    datasets.toString();
 
     ObjectNode result = MAPPER.createObjectNode();
     result.put("ok", true);
