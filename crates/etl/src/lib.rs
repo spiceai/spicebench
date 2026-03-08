@@ -575,10 +575,7 @@ fn strip_internal_columns(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
 ///   the batch cannot be guaranteed to be insert-only.
 /// - If `_op` is missing, treat the batch as insert-only.
 /// - If `_op` exists, every non-null value must be `"c"`.
-fn batch_is_insert_only(
-    batch: &RecordBatch,
-    mutations: &MutationConfig,
-) -> anyhow::Result<bool> {
+fn batch_is_insert_only(batch: &RecordBatch, mutations: &MutationConfig) -> anyhow::Result<bool> {
     // Naive check: if the dataset was generated with non-zero update or delete
     // ratios, batches may contain `_op` values other than "c".
     if mutations.update_ratio == 0.0 && mutations.delete_ratio == 0.0 {
@@ -751,10 +748,10 @@ async fn write_segments_for_batch(
 
     if !insert_only {
         for segment in segments {
-            let output_batch = append_created_at(&segment.batch, output_schema, batch_ts)
-            .map_err(|e| {
-                format!("append __created_at to {table_name_owned} batch {batch_id}: {e}")
-            })?;
+            let output_batch =
+                append_created_at(&segment.batch, output_schema, batch_ts).map_err(|e| {
+                    format!("append __created_at to {table_name_owned} batch {batch_id}: {e}")
+                })?;
 
             data_sink
                 .write(
@@ -795,9 +792,9 @@ async fn write_segments_for_batch(
 
         join_set.spawn(async move {
             let output_batch = append_created_at(&segment.batch, &output_schema, batch_ts)
-            .map_err(|e| {
-                format!("append __created_at to {table_name} batch {batch_id}: {e}")
-            })?;
+                .map_err(|e| {
+                    format!("append __created_at to {table_name} batch {batch_id}: {e}")
+                })?;
 
             data_sink
                 .write(
@@ -1110,7 +1107,8 @@ impl ETLPipeline {
             .tables()
             .into_iter()
             .map(|(name, table)| {
-                let schema = schema_with_created_at(&schema_without_internal_columns(&table.schema));
+                let schema =
+                    schema_with_created_at(&schema_without_internal_columns(&table.schema));
                 let primary_key_columns = dataset.primary_key(&name);
                 let config = ProtocolDatasetConfig {
                     schema,
@@ -1232,9 +1230,12 @@ impl ETLPipeline {
                     format!("coalesce batches for {table_name} batch {first_batch_id}: {e}")
                 })?;
                 for batch in &coalesced {
-                    let segments = build_segments_for_batch(batch, key_columns, &mutations).map_err(|e| {
-                        format!("split batch by op for {table_name} batch {first_batch_id}: {e}")
-                    })?;
+                    let segments = build_segments_for_batch(batch, key_columns, &mutations)
+                        .map_err(|e| {
+                            format!(
+                                "split batch by op for {table_name} batch {first_batch_id}: {e}"
+                            )
+                        })?;
 
                     write_segments_for_batch(
                         Arc::clone(&target),

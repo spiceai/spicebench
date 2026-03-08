@@ -91,8 +91,7 @@ async fn run_benchmark(
     let checkpoint_dir = tempfile::tempdir()?;
 
     let derived_version = format_scale_factor(common.scale_factor);
-    let version_prefix =
-        build_version_prefix(&common.etl_prefix, &scenario_name, &derived_version);
+    let version_prefix = build_version_prefix(&common.etl_prefix, &scenario_name, &derived_version);
     let checkpoint_store = CheckpointStore::new(
         &common.etl_bucket,
         &version_prefix,
@@ -334,11 +333,8 @@ async fn main() -> anyhow::Result<()> {
 
     let scenario_name = cli.common.scenario.to_string();
     let derived_version = format_scale_factor(cli.common.scale_factor);
-    let version_prefix = build_version_prefix(
-        &cli.common.etl_prefix,
-        &scenario_name,
-        &derived_version,
-    );
+    let version_prefix =
+        build_version_prefix(&cli.common.etl_prefix, &scenario_name, &derived_version);
     tracing::info!(
         etl_source = %format!("s3://{}/{}/", cli.common.etl_bucket, version_prefix),
         etl_bucket = %cli.common.etl_bucket,
@@ -374,15 +370,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Step 2: Create FileStorage from extracted data and read version metadata.
     let file_storage = Arc::new(FileStorage::new(extract_dir.path()));
-    let version_metadata = file_storage
-        .read_version_metadata()
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No version.json found in extracted data at {}. Was data generation run?",
-                extract_dir.path().display(),
-            )
-        })?;
+    let version_metadata = file_storage.read_version_metadata().await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No version.json found in extracted data at {}. Was data generation run?",
+            extract_dir.path().display(),
+        )
+    })?;
 
     // --- Connect to the system adapter ---
     let system_adapter_client = match connect_system_adapter(&cli.common).await {

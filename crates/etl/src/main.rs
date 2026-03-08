@@ -147,9 +147,7 @@ impl Cli {
         let bucket = self
             .bucket
             .as_ref()
-            .ok_or_else(|| {
-                anyhow::anyhow!("--bucket is required when not using --archive-file")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("--bucket is required when not using --archive-file"))?;
         let version = self.derived_version();
         let version_prefix = build_version_prefix(&self.prefix, &self.scenario, &version);
         Ok(TargetConfig {
@@ -193,11 +191,7 @@ async fn main() -> anyhow::Result<()> {
         // Download from S3.
         let source_config = cli.source_config()?;
         let s3_storage = Arc::new(S3Storage::new(&source_config)?);
-        ETLPipeline::download(
-            s3_storage as Arc<dyn DataStorage>,
-            &extract_dir,
-        )
-        .await?;
+        ETLPipeline::download(s3_storage as Arc<dyn DataStorage>, &extract_dir).await?;
     }
 
     // Step 2: Create FileStorage from extracted data and read version metadata.
@@ -306,9 +300,10 @@ async fn main() -> anyhow::Result<()> {
                 )
             };
 
-            let bucket = cli.bucket.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("--bucket is required for --sink s3-hive")
-            })?;
+            let bucket = cli
+                .bucket
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("--bucket is required for --sink s3-hive"))?;
 
             let hive_config = TargetConfig {
                 bucket: bucket.clone(),
@@ -355,8 +350,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let mut pipeline =
-        ETLPipeline::new(dataset_source, &dataset_config, file_storage, target, &mutations)?;
+    let mut pipeline = ETLPipeline::new(
+        dataset_source,
+        &dataset_config,
+        file_storage,
+        target,
+        &mutations,
+    )?;
     if let Some(target_config) = target_config {
         pipeline = pipeline.with_target_config(target_config);
     }
