@@ -26,6 +26,7 @@ use data_generation::dataset::tpch::TpchDataset;
 use data_generation::dataset::{Dataset, MutationConfig};
 use data_generation::storage::{DataStorage, ReadResult};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc as StdArc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -86,6 +87,16 @@ fn schema_with_created_at(schema: &SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
+fn schema_without_internal_columns(schema: &SchemaRef) -> SchemaRef {
+    let fields: Vec<_> = schema
+        .fields()
+        .iter()
+        .filter(|f| !INTERNAL_COLUMNS.contains(&f.name().as_str()))
+        .cloned()
+        .collect();
+    Arc::new(Schema::new(fields))
+}
+
 /// Returns the current wall-clock time as microseconds since the UNIX epoch.
 ///
 /// Call this **once per input batch** and pass the result to every
@@ -101,14 +112,16 @@ fn now_micros() -> i64 {
 /// Appends a `__created_at` column with the supplied `created_at_us` timestamp
 /// (microsecond UTC) to every row in the batch and stores the value in
 /// `last_created_at`.
-fn append_created_at(batch: &RecordBatch, created_at_us: i64) -> anyhow::Result<RecordBatch> {
-    let timestamps = TimestampMicrosecondArray::from(vec![Some(created_at_us); batch.num_rows()]);
-
-    let new_schema = schema_with_created_at(&batch.schema());
+fn append_created_at(
+    batch: &RecordBatch,
+    output_schema: &SchemaRef,
+    created_at_us: i64,
+) -> anyhow::Result<RecordBatch> {
+    let timestamps = TimestampMicrosecondArray::from_value(created_at_us, batch.num_rows());
     let mut columns: Vec<_> = batch.columns().to_vec();
     columns.push(Arc::new(timestamps));
 
-    Ok(RecordBatch::try_new(new_schema, columns)?)
+    Ok(RecordBatch::try_new(Arc::clone(output_schema), columns)?)
 }
 
 fn build_partition_columns(dataset_columns: Vec<String>) -> Vec<String> {
@@ -566,6 +579,43 @@ fn strip_internal_columns(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
     )?)
 }
 
+/// Returns `true` when the batch is insert-only and can skip operation
+/// segmentation.
+///
+/// Fast-path rules:
+/// - If the mutation config specifies non-zero update or delete ratios,
+///   the batch cannot be guaranteed to be insert-only.
+/// - If `_op` is missing, treat the batch as insert-only.
+/// - If `_op` exists, every non-null value must be `"c"`.
+fn batch_is_insert_only(batch: &RecordBatch, mutations: &MutationConfig) -> anyhow::Result<bool> {
+    // Naive check: if the dataset was generated with non-zero update or delete
+    // ratios, batches may contain `_op` values other than "c".
+    if mutations.update_ratio == 0.0 && mutations.delete_ratio == 0.0 {
+        return Ok(true);
+    }
+
+    let schema = batch.schema();
+
+    let op_idx = match schema.index_of("_op") {
+        Ok(idx) => idx,
+        Err(_) => return Ok(true),
+    };
+
+    let op_array = batch
+        .column(op_idx)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| anyhow::anyhow!("_op column is not a StringArray"))?;
+
+    for row_idx in 0..op_array.len() {
+        if op_array.is_null(row_idx) || op_array.value(row_idx) != "c" {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
 /// A sub-batch of rows sharing the same operation type, derived from the
 /// `_op` column values.
 struct OpSegment {
@@ -625,6 +675,11 @@ fn split_batch_by_op(
         return Ok(Vec::new());
     }
 
+    // Strip internal columns once for the sorted batch, then slice this
+    // projected batch per op-run to avoid rebuilding schema/column vectors for
+    // every segment.
+    let projected_batch = strip_internal_columns(&sorted_batch)?;
+
     // Walk through rows and group consecutive runs of the same operation.
     let mut segments = Vec::new();
     let mut run_start = 0usize;
@@ -634,8 +689,7 @@ fn split_batch_by_op(
         let row_op = op_array.value(i);
         if row_op != current_op {
             // Flush the current run.
-            let slice = sorted_batch.slice(run_start, i - run_start);
-            let stripped = strip_internal_columns(&slice)?;
+            let stripped = projected_batch.slice(run_start, i - run_start);
             segments.push(OpSegment {
                 op: op_str_to_insert_op(current_op, key_columns),
                 batch: stripped,
@@ -646,14 +700,33 @@ fn split_batch_by_op(
     }
 
     // Flush the final run.
-    let slice = sorted_batch.slice(run_start, num_rows - run_start);
-    let stripped = strip_internal_columns(&slice)?;
+    let stripped = projected_batch.slice(run_start, num_rows - run_start);
     segments.push(OpSegment {
         op: op_str_to_insert_op(current_op, key_columns),
         batch: stripped,
     });
 
     Ok(segments)
+}
+
+/// Builds sink op-segments for a batch, using a cheap insert-only fast path.
+///
+/// If all operations are create/insert (`_op == "c"` for every row), avoids
+/// sorting and run-based segmentation and returns a single insert segment.
+fn build_segments_for_batch(
+    batch: &RecordBatch,
+    key_columns: &[String],
+    mutations: &MutationConfig,
+) -> anyhow::Result<Vec<OpSegment>> {
+    if batch_is_insert_only(batch, mutations)? {
+        let stripped = strip_internal_columns(batch)?;
+        return Ok(vec![OpSegment {
+            op: InsertOp::Insert,
+            batch: stripped,
+        }]);
+    }
+
+    split_batch_by_op(batch, key_columns)
 }
 
 /// Maps a `_op` column value (`"c"`, `"u"`, `"d"`) to an [`InsertOp`].
@@ -676,6 +749,7 @@ async fn write_segments_for_batch(
     batch_id: u64,
     batch_ts: i64,
     segments: Vec<OpSegment>,
+    output_schema: &SchemaRef,
     partition_columns: &[String],
 ) -> Result<(), String> {
     let table_name_owned = table_name.to_string();
@@ -686,9 +760,10 @@ async fn write_segments_for_batch(
 
     if !insert_only {
         for segment in segments {
-            let output_batch = append_created_at(&segment.batch, batch_ts).map_err(|e| {
-                format!("append __created_at to {table_name_owned} batch {batch_id}: {e}")
-            })?;
+            let output_batch =
+                append_created_at(&segment.batch, output_schema, batch_ts).map_err(|e| {
+                    format!("append __created_at to {table_name_owned} batch {batch_id}: {e}")
+                })?;
 
             data_sink
                 .write(
@@ -725,11 +800,13 @@ async fn write_segments_for_batch(
         let data_sink = Arc::clone(&data_sink);
         let table_name = table_name_owned.clone();
         let partition_columns = partition_columns.to_vec();
+        let output_schema = Arc::clone(output_schema);
 
         join_set.spawn(async move {
-            let output_batch = append_created_at(&segment.batch, batch_ts).map_err(|e| {
-                format!("append __created_at to {table_name} batch {batch_id}: {e}")
-            })?;
+            let output_batch = append_created_at(&segment.batch, &output_schema, batch_ts)
+                .map_err(|e| {
+                    format!("append __created_at to {table_name} batch {batch_id}: {e}")
+                })?;
 
             data_sink
                 .write(
@@ -864,6 +941,7 @@ pub struct ETLPipeline {
     dataset: Arc<dyn Dataset>,
     data_storage: Arc<dyn DataStorage>,
     data_sink: Arc<dyn Sink>,
+    mutations: MutationConfig,
     state_rx: watch::Receiver<PipelineState>,
     state_tx: Arc<watch::Sender<PipelineState>>,
     cancel_token: CancellationToken,
@@ -911,6 +989,7 @@ impl ETLPipeline {
             dataset,
             data_storage,
             data_sink,
+            mutations: mutations.clone(),
             target_config: None,
             state_rx,
             state_tx: Arc::new(state_tx),
@@ -929,6 +1008,46 @@ impl ETLPipeline {
     pub fn with_target_config(mut self, target_config: TargetConfig) -> Self {
         self.target_config = Some(target_config);
         self
+    }
+
+    /// Downloads the data archive from the given archive storage and extracts
+    /// it to `extract_dir`.
+    ///
+    /// This is a preparation step that must be called **before** creating the
+    /// pipeline (since `new()` requires version metadata to already be
+    /// available). In the spicebench CLI, call this before benchmark timing
+    /// begins so the download time is excluded from measurements.
+    ///
+    /// After this method returns, a [`FileStorage`](data_generation::storage::file::FileStorage)
+    /// pointing to `extract_dir` can be used as the pipeline's `data_storage`.
+    pub async fn download(
+        archive_storage: Arc<dyn DataStorage>,
+        extract_dir: &Path,
+    ) -> anyhow::Result<()> {
+        std::fs::create_dir_all(extract_dir)?;
+
+        let archive_path = extract_dir.join(data_generation::archive::ARCHIVE_FILENAME);
+        info!(
+            archive_path = %archive_path.display(),
+            extract_dir = %extract_dir.display(),
+            "Downloading data archive"
+        );
+
+        archive_storage.download_archive(&archive_path).await?;
+
+        info!(
+            extract_dir = %extract_dir.display(),
+            "Extracting archive"
+        );
+        data_generation::archive::extract_archive(&archive_path, extract_dir)?;
+
+        // Clean up the downloaded archive file to save disk space.
+        if let Err(e) = std::fs::remove_file(&archive_path) {
+            debug!("Could not remove archive file after extraction: {e}");
+        }
+
+        info!("Archive download and extraction complete");
+        Ok(())
     }
 
     /// Returns the current state of the pipeline.
@@ -1000,17 +1119,8 @@ impl ETLPipeline {
             .tables()
             .into_iter()
             .map(|(name, table)| {
-                // Strip internal columns (_op, _op_index) from the schema, as
-                // these are removed before data is written to the sink.
-                let fields: Vec<_> = table
-                    .schema
-                    .fields()
-                    .iter()
-                    .filter(|f| !INTERNAL_COLUMNS.contains(&f.name().as_str()))
-                    .cloned()
-                    .collect();
-                let schema: SchemaRef = Arc::new(Schema::new(fields));
-                let schema = schema_with_created_at(&schema);
+                let schema =
+                    schema_with_created_at(&schema_without_internal_columns(&table.schema));
                 let primary_key_columns = dataset.primary_key(&name);
                 let config = ProtocolDatasetConfig {
                     schema,
@@ -1051,7 +1161,8 @@ impl ETLPipeline {
         let tables = self.dataset.tables();
         let mut init_batches: Vec<(String, u64)> = Vec::new();
         let mut table_partition_columns: HashMap<String, Vec<String>> = HashMap::new();
-        for table_name in tables.keys() {
+        let mut table_output_schemas: HashMap<String, SchemaRef> = HashMap::new();
+        for (table_name, table) in &tables {
             let ids = self.dataset.clone().batch_ids(table_name).await;
             if let Some(first_id) = ids.front().copied() {
                 init_batches.push((table_name.clone(), first_id));
@@ -1062,6 +1173,10 @@ impl ETLPipeline {
             table_partition_columns.insert(
                 table_name.clone(),
                 build_partition_columns(self.dataset.partition_columns(table_name)),
+            );
+            table_output_schemas.insert(
+                table_name.clone(),
+                schema_with_created_at(&schema_without_internal_columns(&table.schema)),
             );
         }
         let total_tables = init_batches.len();
@@ -1103,10 +1218,15 @@ impl ETLPipeline {
             let source = Arc::clone(&self.data_storage);
             let target = Arc::clone(&self.data_sink);
             let last_created_at = Arc::clone(&self.last_created_at_us);
+            let mutations = self.mutations.clone();
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
                 .unwrap_or_else(|| vec![CREATED_AT_COLUMN.to_string()]);
+            let output_schema = table_output_schemas
+                .get(&table_name)
+                .cloned()
+                .expect("table missing from output schema map");
 
             join_set.spawn(async move {
                 let read_result = read_logical_batch(&source, &table_name, first_batch_id)
@@ -1122,9 +1242,12 @@ impl ETLPipeline {
                     format!("coalesce batches for {table_name} batch {first_batch_id}: {e}")
                 })?;
                 for batch in &coalesced {
-                    let segments = split_batch_by_op(batch, key_columns).map_err(|e| {
-                        format!("split batch by op for {table_name} batch {first_batch_id}: {e}")
-                    })?;
+                    let segments = build_segments_for_batch(batch, key_columns, &mutations)
+                        .map_err(|e| {
+                            format!(
+                                "split batch by op for {table_name} batch {first_batch_id}: {e}"
+                            )
+                        })?;
 
                     write_segments_for_batch(
                         Arc::clone(&target),
@@ -1132,6 +1255,7 @@ impl ETLPipeline {
                         first_batch_id,
                         batch_ts,
                         segments,
+                        &output_schema,
                         &partition_columns,
                     )
                     .await?;
@@ -1330,6 +1454,7 @@ impl ETLPipeline {
         let state_tx = Arc::clone(&self.state_tx);
         let work_state = Arc::clone(&self.work_state);
         let last_created_at = Arc::clone(&self.last_created_at_us);
+        let mutations = self.mutations.clone();
         let table_partition_columns = Arc::new(
             self.dataset
                 .tables()
@@ -1338,6 +1463,18 @@ impl ETLPipeline {
                     (
                         table_name.clone(),
                         build_partition_columns(self.dataset.partition_columns(table_name)),
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+        );
+        let table_output_schemas = Arc::new(
+            self.dataset
+                .tables()
+                .into_iter()
+                .map(|(table_name, table)| {
+                    (
+                        table_name,
+                        schema_with_created_at(&schema_without_internal_columns(&table.schema)),
                     )
                 })
                 .collect::<HashMap<_, _>>(),
@@ -1352,6 +1489,8 @@ impl ETLPipeline {
                 step_limit,
                 last_created_at,
                 table_partition_columns,
+                table_output_schemas,
+                mutations,
             )
             .await;
             let _ = state_tx.send(outcome);
@@ -1387,6 +1526,8 @@ async fn run_pipeline(
     step_limit: Option<usize>,
     last_created_at_us: Arc<HashMap<String, AtomicI64>>,
     table_partition_columns: Arc<HashMap<String, Vec<String>>>,
+    table_output_schemas: Arc<HashMap<String, SchemaRef>>,
+    mutations: MutationConfig,
 ) -> PipelineState {
     // Take a snapshot of total counts for logging.
     let (total_steps, total_batches) = {
@@ -1559,10 +1700,15 @@ async fn run_pipeline(
             let last_created_at = Arc::clone(&last_created_at_us);
             let batch_retrieval_samples_ms = StdArc::clone(&batch_retrieval_samples_ms);
             let sink_write_samples_ms = StdArc::clone(&sink_write_samples_ms);
+            let mutations = mutations.clone();
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
                 .unwrap_or_else(|| vec![CREATED_AT_COLUMN.to_string()]);
+            let output_schema = table_output_schemas
+                .get(&table_name)
+                .cloned()
+                .expect("table missing from output schema map");
 
             join_set.spawn(async move {
                 let retrieval_started_at = Instant::now();
@@ -1623,7 +1769,7 @@ async fn run_pipeline(
                 );
 
                 for batch in &coalesced {
-                    let segments = match split_batch_by_op(batch, &key_columns) {
+                    let segments = match build_segments_for_batch(batch, &key_columns, &mutations) {
                         Ok(s) => s,
                         Err(e) => {
                             error!(
@@ -1646,6 +1792,7 @@ async fn run_pipeline(
                         batch_id,
                         batch_ts,
                         segments,
+                        &output_schema,
                         &partition_columns,
                     )
                     .await

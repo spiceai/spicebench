@@ -28,24 +28,16 @@ on:
         required: false
         default: 'data-gen'
         type: string
-      etl_version:
-        description: 'Data generation version identifier (the {version} portion of {prefix}/{scenario}/{version}/)'
+      scale_factor:
+        description: 'TPC-H scale factor used to derive the ETL version path segment automatically'
         required: true
         type: string
-        default: "1"
+        default: '1.0'
       etl_region:
         description: 'AWS region for the ETL S3 bucket'
         required: false
         default: 'us-east-1'
         type: string
-      etl_sink:
-        description: 'ETL sink (hive or adbc)'
-        required: false
-        default: 'adbc'
-        type: choice
-        options:
-          - hive
-          - adbc
       num_query_clients:
         description: 'Number of query clients to run (maps to spicebench --concurrency)'
         required: false
@@ -54,7 +46,7 @@ on:
       validate_checkpoint_results:
         description: 'Enable checkpoint-based result validation (maps to spicebench --validate-results)'
         required: false
-        default: false
+        default: true
         type: boolean
       enable_module_debug_logging:
         description: 'Enable debug logs only for SpiceBench modules (etl, spicebench, data_generation)'
@@ -70,9 +62,9 @@ on:
           - ubuntu-latest
           - spiceai-dev-runners
       scheduler_state_location:
-        description: "S3 URI for shared scheduler state (e.g. s3://bucket/scheduler-state/). If empty, scheduler state is not configured."
+        description: 'S3 URI for shared scheduler state (e.g. s3://bucket/scheduler-state/). If empty, scheduler state is not configured.'
         required: false
-        default: ""
+        default: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state/'
         type: string
 
 jobs:
@@ -80,8 +72,6 @@ jobs:
     name: Run spicebench
     runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 600
-    concurrency:
-      group: spicebench-run-${{ github.event.inputs.system_under_test || 'spice_cloud' }}-${{ github.event.inputs.scenario || 'tpch' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -90,8 +80,8 @@ jobs:
       - uses: ./.github/actions/management-login
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
         with:
-          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+          client-id: ${{ secrets.PEASEE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ secrets.PEASEE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
@@ -232,7 +222,9 @@ jobs:
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          export PATH="$HOME/.local/bin:$PATH"
+          if [ "${{ github.event.inputs.runner || 'ubuntu-latest' }}" = "spiceai-dev-runners" ]; then
+            source "$HOME/.local/bin/env"
+          fi
           dbc install postgresql
 
       - name: Install ADBC FlightSQL driver
@@ -240,7 +232,9 @@ jobs:
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          export PATH="$HOME/.local/bin:$PATH"
+          if [ "${{ github.event.inputs.runner || 'ubuntu-latest' }}" = "spiceai-dev-runners" ]; then
+            source "$HOME/.local/bin/env"
+          fi
           dbc install flightsql
 
       - name: Run spicebench
@@ -260,9 +254,9 @@ jobs:
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '8' }}
           ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
           ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
-          ETL_VERSION: ${{ github.event.inputs.etl_version }}
+          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1.0' }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
-          ETL_SINK: ${{ github.event.inputs.etl_sink || 'adbc' }}
+          ETL_SINK: 'adbc'
           SCHEDULER_STATE_LOCATION: ${{ github.event.inputs.scheduler_state_location || '' }}
           VALIDATE_CHECKPOINT_RESULTS: ${{ github.event.inputs.validate_checkpoint_results || 'false' }}
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
@@ -289,7 +283,7 @@ jobs:
           ETL_ENDPOINT=""
           DATABRICKS_TABLE_FORMAT="${TABLE_FORMAT}"
           SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
-          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --etl-version ${ETL_VERSION}"
+          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"
           if [ -n "${ETL_PREFIX}" ]; then
             ETL_ARGS="${ETL_ARGS} --etl-prefix ${ETL_PREFIX}"
           fi
@@ -357,4 +351,3 @@ jobs:
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
-

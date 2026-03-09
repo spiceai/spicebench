@@ -19,8 +19,9 @@ use std::sync::Arc;
 
 use checkpointer::CheckpointStore;
 use clap::Parser;
-use data_generation::config::{TargetConfig, build_version_prefix};
+use data_generation::config::{TargetConfig, build_version_prefix, format_scale_factor};
 use data_generation::storage::DataStorage;
+use data_generation::storage::file::FileStorage;
 use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
 use etl::sink::Sink;
@@ -83,14 +84,14 @@ async fn run_benchmark(
     run_id: uuid::Uuid,
     setup_metadata: HashMap<String, serde_json::Value>,
     version_metadata: &VersionMetadata,
-    source: Arc<S3Storage>,
+    file_storage: Arc<FileStorage>,
 ) -> anyhow::Result<()> {
     // --- Download checkpoints from S3 ---
     let scenario_name = common.scenario.to_string();
     let checkpoint_dir = tempfile::tempdir()?;
 
-    let version_prefix =
-        build_version_prefix(&common.etl_prefix, &scenario_name, &common.etl_version);
+    let derived_version = format_scale_factor(common.scale_factor);
+    let version_prefix = build_version_prefix(&common.etl_prefix, &scenario_name, &derived_version);
     let checkpoint_store = CheckpointStore::new(
         &common.etl_bucket,
         &version_prefix,
@@ -137,7 +138,7 @@ async fn run_benchmark(
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let generation_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
-    let data_source: Arc<dyn DataStorage> = source.clone();
+    let data_source: Arc<dyn DataStorage> = file_storage.clone();
 
     let etl_sink_type = match common.etl_sink {
         EtlSink::Hive => system_adapter_protocol::EtlSinkType::Hive,
@@ -331,16 +332,15 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let scenario_name = cli.common.scenario.to_string();
-    let version_prefix = build_version_prefix(
-        &cli.common.etl_prefix,
-        &scenario_name,
-        &cli.common.etl_version,
-    );
+    let derived_version = format_scale_factor(cli.common.scale_factor);
+    let version_prefix =
+        build_version_prefix(&cli.common.etl_prefix, &scenario_name, &derived_version);
     tracing::info!(
-        etl_source = %format!("s3://{}/{}/tables/", cli.common.etl_bucket, version_prefix),
+        etl_source = %format!("s3://{}/{}/", cli.common.etl_bucket, version_prefix),
         etl_bucket = %cli.common.etl_bucket,
         etl_prefix = %cli.common.etl_prefix,
-        etl_version = %cli.common.etl_version,
+        scale_factor = cli.common.scale_factor,
+        derived_version = %derived_version,
         etl_region = ?cli.common.etl_region,
         table_format = %cli.common.table_format,
         etl_sink = ?cli.common.etl_sink,
@@ -349,21 +349,31 @@ async fn main() -> anyhow::Result<()> {
         "ETL configuration"
     );
 
+    // Step 1: Download and extract the data archive to a TempDir.
+    // This happens before benchmark timing begins.
+    let extract_dir = tempfile::tempdir()?;
+
     let source_config = TargetConfig {
         bucket: cli.common.etl_bucket.clone(),
-        prefix: version_prefix,
+        prefix: version_prefix.clone(),
         region: cli.common.etl_region.clone(),
         endpoint: cli.common.etl_endpoint.clone(),
         partition_columns: vec![],
     };
+    let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
 
-    let source = Arc::new(S3Storage::new(&source_config)?);
+    tracing::info!(
+        extract_dir = %extract_dir.path().display(),
+        "Downloading and extracting data archive"
+    );
+    ETLPipeline::download(archive_storage, extract_dir.path()).await?;
 
-    // Read version metadata to derive dataset config and mutations.
-    let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
+    // Step 2: Create FileStorage from extracted data and read version metadata.
+    let file_storage = Arc::new(FileStorage::new(extract_dir.path()));
+    let version_metadata = file_storage.read_version_metadata().await?.ok_or_else(|| {
         anyhow::anyhow!(
-            "No version.json found at {}. Was data generation run for this version?",
-            source_config.prefix,
+            "No version.json found in extracted data at {}. Was data generation run?",
+            extract_dir.path().display(),
         )
     })?;
 
@@ -401,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
         ),
         (
             "etl_version".to_string(),
-            serde_json::Value::String(cli.common.etl_version.clone()),
+            serde_json::Value::String(derived_version.clone()),
         ),
         (
             "etl_region".to_string(),
@@ -484,7 +494,7 @@ async fn main() -> anyhow::Result<()> {
         run_id,
         setup_metadata,
         &version_metadata,
-        source,
+        file_storage,
     )
     .await;
 

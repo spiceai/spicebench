@@ -619,6 +619,7 @@ impl Dataset for TpchDataset {
 mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet, VecDeque};
+    use std::sync::Arc;
 
     use crate::storage::{ReadResult, WriteResult};
     use crate::version::VersionMetadata;
@@ -657,7 +658,7 @@ mod tests {
             Ok(())
         }
 
-        async fn read_version_metadata(&self) -> anyhow::Result<Option<VersionMetadata>> {
+        async fn read_version_metadata(&self) -> anyhow::Result<Option<Arc<VersionMetadata>>> {
             Ok(None)
         }
 

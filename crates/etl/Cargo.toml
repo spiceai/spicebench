@@ -31,6 +31,7 @@ object_store = { workspace = true }
 serde_json.workspace = true
 parquet.workspace = true
 system-adapter-protocol = { path = "../system-adapter-protocol" }
+tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

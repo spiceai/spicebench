@@ -127,20 +127,16 @@ jobs:
           cargo build -p data-generation
           install -m 755 target/debug/data-generation ~/.spice/bin/data-generation
 
-      - name: Generate test data (sf 0.01)
+      - name: Generate test data (sf 0.001)
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          ETL_VERSION="auto-tpch-sf0p0001-spice-cloud-s3-hive-parquet-na-createdat"
-          echo "ETL_VERSION=${ETL_VERSION}" >> "$GITHUB_ENV"
-
           ~/.spice/bin/data-generation run \
             --dataset tpch \
             --scenario tpch \
-            --version "${ETL_VERSION}" \
-            --scale-factor 0.0001 \
+            --scale-factor 0.001 \
             --bucket spiceai-public-datasets \
             --prefix pr-validation \
             --max-concurrency 4 \
@@ -169,7 +165,7 @@ jobs:
             --scenario tpch \
             --etl-bucket spiceai-public-datasets \
             --etl-prefix pr-validation \
-            --etl-version "${ETL_VERSION}" \
+            --scale-factor 0.001 \
             --etl-region us-east-1 \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
