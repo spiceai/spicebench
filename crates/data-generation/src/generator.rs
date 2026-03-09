@@ -18,8 +18,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use arrow::array::RecordBatch;
-use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use super::config::IngestorConfig;
@@ -27,11 +25,11 @@ use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
 use super::storage::DataStorage;
 use super::version::{MutationsMetadata, TableMetadata, VersionMetadata, arrow_schema_to_json};
+use crate::config::format_scale_factor;
 
 /// Configuration for the version metadata that will be written at the end
 /// of a data generation run.
 pub struct VersionConfig {
-    pub version: String,
     pub scenario: String,
     pub scale_factor: f64,
     pub num_steps: u16,
@@ -67,10 +65,10 @@ impl DataGenerator {
 
     /// Ingest data from the dataset into the target.
     ///
-    /// Spawns one background task per table. Each table task generates the next
-    /// batch, waits for it, uploads it, and waits for the upload to complete
-    /// before moving to the next batch. All table tasks run concurrently, and
-    /// any error from a table task is propagated immediately.
+    /// Spawns one task per table. Each table task generates the next batch,
+    /// writes it directly to file storage, and moves to the next batch.
+    /// All table tasks run concurrently. With file-based storage there is no
+    /// upload backpressure, so channels are not needed.
     pub async fn run(&self) -> anyhow::Result<IngestResult> {
         // Spawn periodic metrics logger (every 1 second)
         let metrics_logger = self.metrics.clone();
@@ -88,53 +86,32 @@ impl DataGenerator {
         let written_batches: Arc<std::sync::Mutex<WrittenBatches>> =
             Arc::new(std::sync::Mutex::new(HashMap::new()));
 
-        // For each table, spawn a generator task and an uploader task connected
-        // by a bounded channel (capacity 4). The generator blocks when the
-        // channel is full, providing backpressure. The uploader drains the
-        // channel completely before exiting.
+        // For each table, spawn a single task that generates and writes inline.
         let mut join_set = JoinSet::new();
-        for table_name in self.dataset.tables().keys() {
-            let table_name = table_name.clone();
-            let (tx, mut rx) = mpsc::channel::<(u64, RecordBatch)>(4);
-
-            // --- Generator task ---
+        for table_name in self.dataset.tables().keys().cloned() {
             let dataset = Arc::clone(&self.dataset);
-            let metrics_gen = self.metrics.clone();
-            let table_gen = table_name.clone();
+            let target = self.target.clone();
+            let metrics = self.metrics.clone();
+            let written_ids = Arc::clone(&written_batches);
+
             join_set.spawn(async move {
                 let mut batch_id: u64 = 0;
                 loop {
-                    let batch = match dataset.next_batch(&table_gen).await {
+                    let batch = match dataset.next_batch(&table_name).await {
                         Ok(Some(b)) => b,
                         Ok(None) => break,
                         Err(e) => {
                             return Err(anyhow::anyhow!(
-                                "Dataset error for table {table_gen}: {e}"
+                                "Dataset error for table {table_name}: {e}"
                             ));
                         }
                     };
-                    metrics_gen.record_generation(&batch);
-                    // Blocks here when the channel holds 4 unread batches.
-                    if tx.send((batch_id, batch)).await.is_err() {
-                        // Uploader dropped the receiver; stop generating.
-                        break;
-                    }
-                    batch_id += 1;
-                }
-                // Dropping `tx` closes the channel, signalling the uploader.
-                Ok::<(), anyhow::Error>(())
-            });
+                    metrics.record_generation(&batch);
 
-            // --- Uploader task ---
-            let target = self.target.clone();
-            let metrics_up = self.metrics.clone();
-            let written_ids = Arc::clone(&written_batches);
-            join_set.spawn(async move {
-                while let Some((batch_id, batch)) = rx.recv().await {
                     let start = Instant::now();
                     match target.write(&table_name, batch_id, batch).await {
                         Ok(result) => {
-                            metrics_up.record_write(&result, start.elapsed());
+                            metrics.record_write(&result, start.elapsed());
                             written_ids
                                 .lock()
                                 .expect("written_batches lock poisoned")
@@ -143,10 +120,11 @@ impl DataGenerator {
                                 .insert(batch_id, result.part_ids.clone());
                         }
                         Err(e) => {
-                            metrics_up.record_error();
+                            metrics.record_error();
                             tracing::error!(batch_id, table = %table_name, "Write failed: {e}");
                         }
                     }
+                    batch_id += 1;
                 }
                 Ok::<(), anyhow::Error>(())
             });
@@ -219,7 +197,7 @@ impl DataGenerator {
         }
 
         let version_metadata = VersionMetadata {
-            version: self.version_config.version.clone(),
+            version: format_scale_factor(self.version_config.scale_factor),
             scenario: self.version_config.scenario.clone(),
             scale_factor: self.version_config.scale_factor,
             num_steps: self.version_config.num_steps,
@@ -478,7 +456,6 @@ mod tests {
             &IngestorConfig { max_concurrency: 4 },
             Metrics::new(),
             VersionConfig {
-                version: "v1".to_string(),
                 scenario: "test".to_string(),
                 scale_factor: 1.0,
                 num_steps: 3,

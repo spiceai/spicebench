@@ -14,11 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
-use data_generation::config::{TargetConfig, build_version_prefix};
+use data_generation::config::{TargetConfig, build_version_prefix, format_scale_factor};
 use data_generation::storage::DataStorage;
+use data_generation::storage::file::FileStorage;
 use data_generation::storage::s3::S3Storage;
 use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
@@ -43,20 +45,30 @@ enum SinkType {
 
 #[derive(Parser)]
 #[command(
-    about = "Run an ETL pipeline that reads from S3, rehydrates data, and writes to S3 Hive, ADBC, or a null sink"
+    about = "Run an ETL pipeline that reads from a data archive, rehydrates data, and writes to S3 Hive, ADBC, or a null sink"
 )]
 struct Cli {
     /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
     #[arg(long, default_value = "tpch")]
     scenario: String,
 
-    /// Version identifier for the data generation to read from.
-    #[arg(long)]
-    version: String,
+    /// Scale factor for the dataset. The version is derived automatically as
+    /// `format_scale_factor(scale_factor)` (e.g. 1.0 → "1.0").
+    #[arg(long, default_value_t = 1.0)]
+    scale_factor: f64,
 
-    /// S3 bucket name (used for both source and target)
+    /// Path to a local archive file (`.tar.zst`). When specified, the archive
+    /// is extracted locally without downloading from S3.
     #[arg(long)]
-    bucket: String,
+    archive_file: Option<PathBuf>,
+
+    /// Directory to extract the archive into. Defaults to a temporary directory.
+    #[arg(long)]
+    extract_dir: Option<PathBuf>,
+
+    /// S3 bucket name (required unless --archive-file is specified)
+    #[arg(long)]
+    bucket: Option<String>,
 
     /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
     #[arg(long, default_value = "")]
@@ -122,17 +134,29 @@ struct Cli {
 }
 
 impl Cli {
+    /// Derives the version string from the scale factor.
+    fn derived_version(&self) -> String {
+        format_scale_factor(self.scale_factor)
+    }
+
     /// Builds the source config with the versioned prefix:
     /// `{prefix}/{scenario}/{version}`
-    fn source_config(&self) -> TargetConfig {
-        let version_prefix = build_version_prefix(&self.prefix, &self.scenario, &self.version);
-        TargetConfig {
-            bucket: self.bucket.clone(),
+    ///
+    /// Requires `--bucket` to be set.
+    fn source_config(&self) -> anyhow::Result<TargetConfig> {
+        let bucket = self
+            .bucket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--bucket is required when not using --archive-file"))?;
+        let version = self.derived_version();
+        let version_prefix = build_version_prefix(&self.prefix, &self.scenario, &version);
+        Ok(TargetConfig {
+            bucket: bucket.clone(),
             prefix: version_prefix,
             region: self.region.clone(),
             endpoint: self.endpoint.clone(),
             partition_columns: vec![],
-        }
+        })
     }
 }
 
@@ -143,15 +167,39 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let version = cli.derived_version();
 
-    let source_config = cli.source_config();
-    let version_prefix = source_config.prefix.clone();
-    let source = Arc::new(S3Storage::new(&source_config)?);
+    // Determine where to extract the archive data.
+    let extract_temp_dir;
+    let extract_dir = if let Some(ref dir) = cli.extract_dir {
+        dir.clone()
+    } else {
+        extract_temp_dir = tempfile::tempdir()?;
+        extract_temp_dir.path().to_path_buf()
+    };
 
-    // Read version metadata to derive dataset config and mutations.
-    let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
+    // Step 1: Obtain the data archive and extract it.
+    if let Some(ref archive_file) = cli.archive_file {
+        // Local archive mode - extract directly, no S3 required.
+        tracing::info!(
+            archive_file = %archive_file.display(),
+            extract_dir = %extract_dir.display(),
+            "Extracting local archive"
+        );
+        data_generation::archive::extract_archive(archive_file, &extract_dir)?;
+    } else {
+        // Download from S3.
+        let source_config = cli.source_config()?;
+        let s3_storage = Arc::new(S3Storage::new(&source_config)?);
+        ETLPipeline::download(s3_storage as Arc<dyn DataStorage>, &extract_dir).await?;
+    }
+
+    // Step 2: Create FileStorage from extracted data and read version metadata.
+    let file_storage: Arc<dyn DataStorage> = Arc::new(FileStorage::new(&extract_dir));
+    let version_metadata = file_storage.read_version_metadata().await?.ok_or_else(|| {
         anyhow::anyhow!(
-            "No version.json found at {version_prefix}. Was data generation run for this version?"
+            "No version.json found in extracted data at {}. Was data generation run?",
+            extract_dir.display()
         )
     })?;
 
@@ -241,19 +289,24 @@ async fn main() -> anyhow::Result<()> {
                     "{}/{}/{}",
                     cli.prefix.trim_matches('/'),
                     cli.scenario,
-                    cli.version
+                    version
                 )
             } else {
                 format!(
                     "{}/{}/{}",
                     cli.target_prefix.trim_matches('/'),
                     cli.scenario,
-                    cli.version
+                    version
                 )
             };
 
+            let bucket = cli
+                .bucket
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("--bucket is required for --sink s3-hive"))?;
+
             let hive_config = TargetConfig {
-                bucket: cli.bucket.clone(),
+                bucket: bucket.clone(),
                 prefix: hive_prefix,
                 region: cli.region.clone(),
                 endpoint: cli.endpoint.clone(),
@@ -289,7 +342,7 @@ async fn main() -> anyhow::Result<()> {
             let datasets = ETLPipeline::create_tables_request_datasets(
                 dataset_source.clone(),
                 &dataset_config,
-                source.clone() as Arc<dyn DataStorage>,
+                file_storage.clone(),
                 &mutations,
                 target_config.clone(),
             )?;
@@ -297,18 +350,24 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let mut pipeline =
-        ETLPipeline::new(dataset_source, &dataset_config, source, target, &mutations)?;
+    let mut pipeline = ETLPipeline::new(
+        dataset_source,
+        &dataset_config,
+        file_storage,
+        target,
+        &mutations,
+    )?;
     if let Some(target_config) = target_config {
         pipeline = pipeline.with_target_config(target_config);
     }
 
     tracing::info!(
         scenario = %cli.scenario,
-        version = %cli.version,
+        version = %version,
         dataset = %version_metadata.dataset_type,
-        bucket = %cli.bucket,
+        bucket = ?cli.bucket,
         prefix = %cli.prefix,
+        extract_dir = %extract_dir.display(),
         target = %target_kind,
         adbc_driver = ?cli.adbc_driver,
         adbc_catalog = ?cli.adbc_catalog,

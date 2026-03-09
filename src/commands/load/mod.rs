@@ -406,7 +406,10 @@ pub(crate) async fn run(
             KeyValue::new("type", "spicebench"),
             KeyValue::new("adapter_name", common_args.system_adapter_name.clone()),
             KeyValue::new("scenario", scenario.to_string()),
-            KeyValue::new("data_gen_version", common_args.etl_version.clone()),
+            KeyValue::new(
+                "data_gen_version",
+                data_generation::config::format_scale_factor(common_args.scale_factor),
+            ),
             KeyValue::new("scale_factor", version_metadata.scale_factor.to_string()),
         ])
         .build();

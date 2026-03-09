@@ -19,6 +19,7 @@ object_store = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 parquet.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
