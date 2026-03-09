@@ -17,7 +17,7 @@ limitations under the License.
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use adbc_client::{AdbcConnection, IngestMode};
+use adbc_client::{AdbcConnection, AdbcConnectionPool, IngestMode, create_pool};
 use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::{DataType, Schema};
 use arrow_cast::display::array_value_to_string;
@@ -31,12 +31,18 @@ use super::{InsertOp, Sink};
 const MAX_ADBC_INGEST_BATCH_BYTES: usize = 75 * 1024 * 1024;
 const MAX_ADBC_INGEST_BATCH_BYTES_ENV: &str = "SPICEBENCH_ADBC_MAX_INGEST_BATCH_BYTES";
 
+/// Default number of connections in the ADBC sink pool.
+const DEFAULT_ADBC_SINK_POOL_SIZE: u32 = 8;
+const ADBC_SINK_POOL_SIZE_ENV: &str = "SPICEBENCH_ADBC_SINK_POOL_SIZE";
+
 /// ETL sink that writes transformed batches directly to an ADBC target.
 ///
 /// Inserts use ADBC bulk ingest, while updates and deletes execute row-level
 /// SQL statements derived from key columns in each batch.
+///
+/// Backed by a connection pool to allow concurrent writes across tables.
 pub struct AdbcSink {
-    conn: Mutex<AdbcConnection>,
+    pool: AdbcConnectionPool,
     target_db_catalog: Option<String>,
     target_db_schema: Option<String>,
 }
@@ -50,18 +56,28 @@ impl AdbcSink {
             .unwrap_or(MAX_ADBC_INGEST_BATCH_BYTES)
     }
 
-    /// Creates a new [`AdbcSink`] backed by a single ADBC connection.
+    fn pool_size() -> u32 {
+        std::env::var(ADBC_SINK_POOL_SIZE_ENV)
+            .ok()
+            .and_then(|raw| raw.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_ADBC_SINK_POOL_SIZE)
+    }
+
+    /// Creates a new [`AdbcSink`] backed by a connection pool.
     pub fn new(
         driver_name: &str,
         db_kwargs: HashMap<String, serde_json::Value>,
         target_db_catalog: Option<String>,
         target_db_schema: Option<String>,
     ) -> anyhow::Result<Self> {
-        let conn = AdbcConnection::create(driver_name, db_kwargs)
-            .map_err(|e| anyhow::anyhow!("Failed to create ADBC connection: {e}"))?;
+        let pool_size = Self::pool_size();
+        let pool = create_pool(driver_name, db_kwargs, Some(pool_size))
+            .map_err(|e| anyhow::anyhow!("Failed to create ADBC connection pool: {e}"))?;
+        eprintln!("[adbc] Connection pool created (driver: {driver_name}, size: {pool_size})");
 
         Ok(Self {
-            conn: Mutex::new(conn),
+            pool,
             target_db_catalog,
             target_db_schema,
         })
@@ -185,9 +201,9 @@ impl AdbcSink {
         }
 
         let mut conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
+            .pool
+            .get()
+            .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
 
         for sql in statements {
             conn.execute_update(&sql)
@@ -520,9 +536,9 @@ impl Sink for AdbcSink {
         }
 
         let mut conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("ADBC connection lock poisoned: {e}"))?;
+            .pool
+            .get()
+            .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
 
         match op {
             InsertOp::Insert => {
