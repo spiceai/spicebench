@@ -13,24 +13,17 @@ on:
         default: '0.01'
         type: string
       bucket:
-        required: true
+        required: false
+        default: 'spiceai-public-datasets'
         type: string
       prefix:
         required: false
         default: 'data-gen'
         type: string
-      max_concurrency:
-        required: false
-        default: '8'
-        type: string
       region:
         required: false
         default: 'us-east-1'
         type: string
-      skip_initial:
-        required: false
-        default: false
-        type: boolean
       num_steps:
         required: false
         default: '25'
@@ -67,28 +60,19 @@ on:
         type: string
       bucket:
         description: 'S3 bucket name'
-        required: true
+        required: false
+        default: 'spiceai-public-datasets'
         type: string
       prefix:
         description: 'Base S3 key prefix for generated files (scenario is appended automatically)'
         required: false
         default: 'data-gen'
         type: string
-      max_concurrency:
-        description: 'Maximum number of concurrent S3 writes'
-        required: true
-        default: '8'
-        type: string
       region:
         description: 'AWS region'
         required: true
         default: 'us-east-1'
         type: string
-      skip_initial:
-        description: 'Skip data ingested by running --initial command'
-        required: false
-        default: false
-        type: boolean
       num_steps:
         description: 'Number of data generation steps (partitions for TPC-H dbgen)'
         required: false
@@ -137,9 +121,7 @@ jobs:
           SCALE_FACTOR: ${{ inputs.scale_factor || github.event.inputs.scale_factor || '0.01' }}
           BUCKET: ${{ inputs.bucket || github.event.inputs.bucket }}
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
-          MAX_CONCURRENCY: ${{ inputs.max_concurrency || github.event.inputs.max_concurrency || '8' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
-          SKIP_INITIAL: ${{ inputs.skip_initial || github.event.inputs.skip_initial || false }}
           NUM_STEPS: ${{ inputs.num_steps || github.event.inputs.num_steps || '25' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -150,13 +132,8 @@ jobs:
           ARGS="${ARGS} --scale-factor ${SCALE_FACTOR}"
           ARGS="${ARGS} --bucket ${BUCKET}"
           ARGS="${ARGS} --prefix ${PREFIX}"
-          ARGS="${ARGS} --max-concurrency ${MAX_CONCURRENCY}"
           ARGS="${ARGS} --region ${REGION}"
           ARGS="${ARGS} --num-steps ${NUM_STEPS}"
-
-          if [ "${SKIP_INITIAL}" = "true" ]; then
-            ARGS="${ARGS} --skip-initial"
-          fi
 
           echo "Running: data-generation run ${ARGS}"
           ~/.spice/bin/data-generation run ${ARGS}
