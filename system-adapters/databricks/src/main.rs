@@ -2229,30 +2229,28 @@ impl Handler for DatabricksAdapter {
     async fn metrics(&mut self, run_id: Uuid) -> std::result::Result<MetricsResponse, String> {
         let _ = run_id;
 
-        let info = match &self.config.compute_target {
+        match &self.config.compute_target {
             ComputeTarget::SqlWarehouse => {
                 let info = self
                     .get_warehouse_info()
                     .await
                     .map_err(|e| format!("Failed to get warehouse info: {e}"))?;
 
-                eprintln!("[databricks-adapter] metrics: warehouse_info={info:?}");
+                eprintln!("[databricks-adapter] SUT metrics: warehouse_info={info:?}");
 
-                Some(info)
+                Ok(MetricsResponse {
+                    resource: ResourceMetrics {
+                        num_compute_nodes: info.num_clusters,
+                        ..Default::default()
+                    },
+                    ingestion: IngestionMetrics {
+                        active_connections: info.num_active_sessions,
+                        ..Default::default()
+                    },
+                })
             }
-            _ => None,
-        };
-
-        Ok(MetricsResponse {
-            resource: ResourceMetrics {
-                num_compute_nodes: info.as_ref().and_then(|i| i.num_clusters),
-                ..Default::default()
-            },
-            ingestion: IngestionMetrics {
-                active_connections: info.as_ref().and_then(|i| i.num_active_sessions),
-                ..Default::default()
-            },
-        })
+            _ => Ok(MetricsResponse::default()),
+        }
     }
 }
 
