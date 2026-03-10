@@ -1,37 +1,87 @@
-# Metrics Tracking
+# Metrics Reference
 
-This document tracks every benchmark metric listed in the README, its OTel instrument, where it is recorded, and whether it is fully wired through the pipeline to `telemetry.spiceai.io`.
+This document catalogs every benchmark metric listed in the README, its OTel instrument, where it is recorded, and how it flows through the pipeline to `telemetry.spiceai.io`.
 
 ## Pipeline Overview
 
-```
+```text
 SpiceBench (OTel instruments)
   ├─ Query Driver ──► per-query gauges ──► Telemetry.emit() ──► telemetry.spiceai.io
   ├─ StreamingOtlpExporter ──► real-time histograms/counters ──► --otlp-endpoint
   └─ SUT Adapter (JSON-RPC `metrics`) ──► scraped gauges ──► Telemetry.emit() ──► telemetry.spiceai.io
 ```
 
-## Metric Checklist
+## Metric Inventory
 
-| #   | Metric                               | OTel Instrument                                                                                           | Source                                                                                                    | Emitted to telemetry     | Status        |
-| --- | ------------------------------------ | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------ | ------------- |
-| 1   | **Data Size** (total bytes ingested) | `ingestion_bytes_total` (Gauge\<u64\>)                                                                    | SUT adapter `metrics` → `ingestion.bytes_ingested`                                                        | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 2   | **Ingestion records/s**              | `ingestion_rows_per_sec` (Gauge\<f64\>)                                                                   | SUT adapter `metrics` → `ingestion.rows_per_sec`                                                          | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 3   | **Ingestion rows total**             | `ingestion_rows_total` (Gauge\<u64\>)                                                                     | SUT adapter `metrics` → `ingestion.rows_ingested`                                                         | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 4   | **Connections / Clients**            | `active_connections` (Gauge\<u64\>)                                                                       | CLI `--concurrency` + SUT adapter `metrics` → `ingestion.active_connections`                              | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 5   | **Queries/s, Requests/s**            | `queries_per_sec` (Gauge\<f64\>), `queries_total` (Counter\<u64\>)                                        | Computed from total iterations / test duration                                                            | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 6   | **Query Latency (p50)**              | `median_duration_ms` (Gauge\<u64\>)                                                                       | Query driver per-query statistics                                                                         | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 7   | **Query Latency (p99)**              | `p99_duration_ms` (Gauge\<u64\>)                                                                          | Query driver per-query statistics                                                                         | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 8   | **Efficiency (cores)**               | `efficiency_queries_per_core` (Gauge\<f64\>)                                                              | Computed: `queries_per_sec / cpu_cores`                                                                   | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 9   | **Resource Usage – CPU**             | `sut_cpu_usage_percent` (Gauge\<f64\>)                                                                    | SUT adapter `metrics` → `resource.cpu_usage_percent`                                                      | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 10  | **Resource Usage – Memory**          | `peak_memory_usage_mb` / `median_memory_usage_mb` (Gauge\<f64\>), `sut_memory_usage_bytes` (Gauge\<u64\>) | Local process via `sysinfo` + SUT adapter `metrics`                                                       | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 11  | **Resource Usage – Disk**            | `sut_disk_read_bytes` / `sut_disk_write_bytes` (Gauge\<u64\>)                                             | SUT adapter `metrics` → `resource.disk_read_bytes` / `disk_write_bytes`                                   | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 12  | **Resource Usage – IOPS**            | `sut_disk_read_iops` / `sut_disk_write_iops` (Gauge\<u64\>)                                               | SUT adapter `metrics` → `resource.disk_read_iops` / `disk_write_iops`                                     | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 13  | **E2E Latency**                      | `e2e_latency_ms` (Histogram\<f64\>)                                                                       | Raw freshness scraper samples (`MAX(__created_at)` deltas); percentiles are computed in dashboard queries | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 14  | **E2E Duration**                     | `test_duration_ms` (Gauge\<u64\>)                                                                         | Wall-clock time of benchmark phase                                                                        | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 15  | **Query Queue Length**               | `query_queue_length` (Gauge\<u64\>)                                                                       | Query worker queue depth at query execution start (attributes: `query_name`, `client_id`)                 | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 16  | **Query Queue Duration**             | `query_queue_duration_ms` (Histogram\<f64\>)                                                              | Query worker queue wait time before execution (attributes: `query_name`, `client_id`)                     | ✅ via `Telemetry.emit()` | ✅ Implemented |
-| 17  | **Checkpoint In-flight Queries**     | `checkpoint_in_flight_queries` (Gauge\<u64\>)                                                             | Active in-flight query count while checkpoint validation windows are enabled (`client_id`)                | ✅ via `Telemetry.emit()` | ✅ Implemented |
+All metrics in this inventory are emitted through `Telemetry.emit()` after the benchmark run completes.
+
+1. **Data Size (total bytes ingested)**
+  OTel instrument: `ingestion_bytes_total` (`Gauge\<u64\>`).
+  Source: SUT adapter `metrics` -> `ingestion.bytes_ingested`.
+
+2. **Ingestion records/s**
+  OTel instrument: `ingestion_rows_per_sec` (`Gauge\<f64\>`).
+  Source: SUT adapter `metrics` -> `ingestion.rows_per_sec`.
+
+3. **Ingestion rows total**
+  OTel instrument: `ingestion_rows_total` (`Gauge\<u64\>`).
+  Source: SUT adapter `metrics` -> `ingestion.rows_ingested`.
+
+4. **Connections / Clients**
+  OTel instrument: `active_connections` (`Gauge\<u64\>`).
+  Source: CLI `--concurrency` plus SUT adapter `metrics` -> `ingestion.active_connections`.
+
+5. **Queries/s, Requests/s**
+  OTel instruments: `queries_per_sec` (`Gauge\<f64\>`), `queries_total` (`Counter\<u64\>`).
+  Source: Computed from total iterations and benchmark duration.
+
+6. **Query Latency (p50)**
+  OTel instrument: `median_duration_ms` (`Gauge\<u64\>`).
+  Source: Query driver per-query statistics.
+
+7. **Query Latency (p99)**
+  OTel instrument: `p99_duration_ms` (`Gauge\<u64\>`).
+  Source: Query driver per-query statistics.
+
+8. **Efficiency (cores)**
+  OTel instrument: `efficiency_queries_per_core` (`Gauge\<f64\>`).
+  Source: Computed as `queries_per_sec / cpu_cores`.
+
+9. **Resource Usage - CPU**
+  OTel instrument: `sut_cpu_usage_percent` (`Gauge\<f64\>`).
+  Source: SUT adapter `metrics` -> `resource.cpu_usage_percent`.
+
+10. **Resource Usage - Memory**
+   OTel instruments: `peak_memory_usage_mb` (`Gauge\<f64\>`), `median_memory_usage_mb` (`Gauge\<f64\>`), `sut_memory_usage_bytes` (`Gauge\<u64\>`).
+   Source: Local process via `sysinfo` plus SUT adapter `metrics`.
+
+11. **Resource Usage - Disk**
+   OTel instruments: `sut_disk_read_bytes` and `sut_disk_write_bytes` (`Gauge\<u64\>`).
+   Source: SUT adapter `metrics` -> `resource.disk_read_bytes` and `resource.disk_write_bytes`.
+
+12. **Resource Usage - IOPS**
+   OTel instruments: `sut_disk_read_iops` and `sut_disk_write_iops` (`Gauge\<u64\>`).
+   Source: SUT adapter `metrics` -> `resource.disk_read_iops` and `resource.disk_write_iops`.
+
+13. **E2E Latency**
+   OTel instrument: `e2e_latency_ms` (`Histogram\<f64\>`).
+   Source: Raw freshness scraper samples from `MAX(__created_at)` deltas; percentiles are computed in dashboard queries.
+
+14. **E2E Duration**
+   OTel instrument: `test_duration_ms` (`Gauge\<u64\>`).
+   Source: Wall-clock time of the timed benchmark phase.
+
+15. **Query Queue Length**
+   OTel instrument: `query_queue_length` (`Gauge\<u64\>`).
+   Source: Query worker queue depth at query execution start, with `query_name` and `client_id` attributes.
+
+16. **Query Queue Duration**
+   OTel instrument: `query_queue_duration_ms` (`Histogram\<f64\>`).
+   Source: Query worker queue wait time before execution, with `query_name` and `client_id` attributes.
+
+17. **Checkpoint In-flight Queries**
+   OTel instrument: `checkpoint_in_flight_queries` (`Gauge\<u64\>`).
+   Source: Active in-flight query count while checkpoint validation windows are enabled, with a `client_id` attribute.
 
 ## Streaming Metrics (real-time, optional)
 

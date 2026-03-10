@@ -36,8 +36,7 @@ cargo run --manifest-path system-adapters/templates/rust/Cargo.toml -- --transpo
 
 ```bash
 spicebench \
-  --query-set tpch \
-  --spicepod-path ./spicepod.yaml \
+  --scenario tpch \
   --system-adapter-name rust-template \
   --system-adapter-stdio-cmd cargo \
   --system-adapter-stdio-args "run --manifest-path system-adapters/templates/rust/Cargo.toml -- --transport stdio"
@@ -47,8 +46,7 @@ spicebench \
 
 ```bash
 spicebench \
-  --query-set tpch \
-  --spicepod-path ./spicepod.yaml \
+  --scenario tpch \
   --system-adapter-name rust-template \
   --system-adapter-http-url http://127.0.0.1:8080/jsonrpc
 ```
@@ -58,4 +56,4 @@ spicebench \
 - `setup` returns a placeholder FlightSQL connection in `db_kwargs` and receives dataset definitions to create/register benchmark tables.
 - Update `setup` to match your real target system and credentials.
 - `metrics` returns zero values by default and includes commented examples for where to poll real SUT telemetry.
-- If you use `--system-adapter-execution-mode adapter-command`, implement custom RPC methods such as `run.load` for your adapter runtime.
+- The current `spicebench` benchmark path uses `setup`, `metrics`, and `teardown` plus the ADBC connection returned from `setup`.
