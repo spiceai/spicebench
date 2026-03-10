@@ -129,8 +129,11 @@ pub fn create_pool(
             reason: e.to_string(),
         })?;
 
-    let manager =
-        AdbcConnectionManager::new(db, driver_name == "databricks", driver_name == "postgresql");
+    let manager = AdbcConnectionManager::new(
+        db,
+        driver_name == "databricks",
+        driver_name == "postgresql" || driver_name == "databricks",
+    );
 
     r2d2::Pool::builder()
         .max_size(pool_size)
