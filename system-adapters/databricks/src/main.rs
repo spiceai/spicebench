@@ -895,6 +895,45 @@ impl DatabricksAdapter {
         }
     }
 
+    /// Execute a SQL query via the Statements API and return inline result rows.
+    async fn execute_sql_query(&self, statement: &str) -> Result<Vec<Vec<Option<String>>>> {
+        let execute_url = format!("https://{}/api/2.0/sql/statements/", self.config.endpoint);
+        let payload = json!({
+            "warehouse_id": self.config.warehouse_id,
+            "catalog": self.config.catalog,
+            "schema": self.config.schema,
+            "statement": statement,
+            "wait_timeout": "30s",
+        });
+
+        let response = self
+            .client
+            .post(execute_url)
+            .bearer_auth(&self.config.token)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("SQL query failed ({status}): {body}"));
+        }
+
+        let body: StatementWithResultResponse = response.json().await?;
+        match body.status.state {
+            StatementState::Succeeded => Ok(body.result.map(|r| r.data_array).unwrap_or_default()),
+            StatementState::Failed => {
+                Err(anyhow!("SQL query failed: {}", body.status.error_message()))
+            }
+            StatementState::Canceled => Err(anyhow!("SQL query canceled")),
+            StatementState::Pending | StatementState::Running => Err(anyhow!(
+                "SQL query timed out (statement_id={})",
+                body.statement_id
+            )),
+        }
+    }
+
     /// Fire a tagged marker query and wait for it to appear in the Query History
     /// API.  Once the marker is visible, all earlier queries from this warehouse
     /// are also guaranteed to be visible.
@@ -962,13 +1001,57 @@ impl DatabricksAdapter {
         }
     }
 
-    /// Query the Query History API and sum `read_bytes` + `write_bytes` across
-    /// all FINISHED queries on this warehouse since `start_time_ms`.
-    async fn sum_query_history_io(
-        &self,
-        start_time_ms: u64,
-        end_time_ms: u64,
-    ) -> Result<(u64, u64)> {
+    /// Sum `read_bytes` + `write_remote_bytes` from query history for all
+    /// FINISHED queries on this warehouse since `start_time_ms`.
+    ///
+    /// Uses the REST Query History API (`/api/2.0/sql/history/queries`).
+    ///
+    /// An alternative is querying `system.query.history` via SQL (see
+    /// `sum_query_history_io_sql`) which avoids pagination, but requires the
+    /// service principal to have `USE SCHEMA` on `system.query` — a privilege
+    /// most workspace-scoped tokens lack.
+    async fn sum_query_history_io(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        self.sum_query_history_io_rest(start_time_ms).await
+    }
+
+    /// SQL path: query `system.query.history` for aggregated I/O bytes.
+    /// Currently unused — requires elevated permission `USE SCHEMA` on `system.query`.
+    #[allow(dead_code)]
+    async fn sum_query_history_io_sql(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        let query = format!(
+            "SELECT COALESCE(SUM(read_bytes), 0), COALESCE(SUM(write_remote_bytes), 0) \
+             FROM system.query.history \
+             WHERE warehouse_id = '{}' \
+               AND start_time >= TIMESTAMP_MILLIS({}) \
+               AND status = 'FINISHED'",
+            self.config.warehouse_id, start_time_ms
+        );
+
+        let rows = self.execute_sql_query(&query).await?;
+        let row = rows
+            .first()
+            .ok_or_else(|| anyhow!("No rows returned from system.query.history sum"))?;
+
+        let total_read = row
+            .first()
+            .and_then(|v| v.as_deref())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let total_write = row
+            .get(1)
+            .and_then(|v| v.as_deref())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        eprintln!(
+            "[databricks-adapter] query history totals (SQL): read_bytes={total_read} write_bytes={total_write}"
+        );
+        Ok((total_read, total_write))
+    }
+
+    /// REST path: paginate through `/api/2.0/sql/history/queries` and sum
+    /// per-query `metrics.read_bytes` and `metrics.write_remote_bytes`.
+    async fn sum_query_history_io_rest(&self, start_time_ms: u64) -> Result<(u64, u64)> {
         let history_url = format!(
             "https://{}/api/2.0/sql/history/queries",
             self.config.endpoint
@@ -983,8 +1066,7 @@ impl DatabricksAdapter {
                 "filter_by": {
                     "warehouse_ids": [self.config.warehouse_id],
                     "query_start_time_range": {
-                        "start_time_ms": start_time_ms,
-                        "end_time_ms": end_time_ms,
+                        "start_time_ms": start_time_ms
                     },
                     "statuses": ["FINISHED"]
                 },
@@ -992,7 +1074,7 @@ impl DatabricksAdapter {
                 "max_results": 100
             });
 
-            if let Some(token) = &page_token {
+            if let Some(ref token) = page_token {
                 filter["page_token"] = json!(token);
             }
 
@@ -1007,24 +1089,17 @@ impl DatabricksAdapter {
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
-                return Err(anyhow!("Query History API failed ({status}): {body}"));
+                return Err(anyhow!("Query History REST API failed ({status}): {body}"));
             }
 
             let body: QueryHistoryResponse = response.json().await?;
 
             for entry in &body.res {
-                if let Some(metrics) = &entry.metrics {
-                    total_read += metrics.read_bytes.unwrap_or(0);
-                    total_write += metrics.write_bytes.unwrap_or(0);
+                if let Some(ref m) = entry.metrics {
+                    total_read += m.read_bytes.unwrap_or(0);
+                    total_write += m.write_remote_bytes.unwrap_or(0);
                 }
             }
-
-            eprintln!(
-                "[databricks-adapter] query history page: queries={} running_total_read={} running_total_write={}",
-                body.res.len(),
-                total_read,
-                total_write
-            );
 
             if body.has_next_page {
                 page_token = body.next_page_token;
@@ -1929,6 +2004,21 @@ enum StatementState {
     Canceled,
 }
 
+/// Statement response that includes inline result data.
+#[derive(Debug, Deserialize)]
+struct StatementWithResultResponse {
+    statement_id: String,
+    status: StatementStatus,
+    #[serde(default)]
+    result: Option<StatementResultData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatementResultData {
+    #[serde(default)]
+    data_array: Vec<Vec<Option<String>>>,
+}
+
 #[derive(Debug, Serialize)]
 struct UcSchemaCreateRequest {
     catalog_name: String,
@@ -2009,10 +2099,15 @@ struct QueryHistoryEntry {
 
 #[derive(Debug, Deserialize)]
 struct QueryHistoryMetrics {
+    /// Total bytes read by the query, including both remote cloud storage (`read_remote_bytes`)
+    /// and local SSD/disk cache (`read_cache_bytes`). Maps to `disk_read_bytes`.
     #[serde(default)]
     read_bytes: Option<u64>,
+    /// Bytes written to remote cloud storage (S3/ADLS/GCS). This is the only write metric
+    /// available in the REST API — non-zero for DDL/DML that materializes data (e.g. CTAS).
+    /// Maps to `disk_write_bytes`.
     #[serde(default)]
-    write_bytes: Option<u64>,
+    write_remote_bytes: Option<u64>,
 }
 
 /// Response from GET /api/2.0/sql/history/queries
@@ -2434,46 +2529,38 @@ impl Handler for DatabricksAdapter {
                     ..Default::default()
                 };
 
+                // Get run start time
+                let started_at_ms = self.runs.get(&run_id).map(|s| s.started_at_ms).unwrap_or(0);
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
                 if final_scrape {
-                    eprintln!(
-                        "[databricks-adapter] final scrape: collecting query history I/O and ingestion bytes"
-                    );
-
-                    // Get run start time
-                    let started_at_ms =
-                        self.runs.get(&run_id).map(|s| s.started_at_ms).unwrap_or(0);
-
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-
                     // Fire marker query and wait for it to appear in Query History.
                     // Once visible, all earlier queries from this warehouse are also available.
                     let marker_tag = format!("{run_id}_{now_ms}");
                     if let Err(e) = self.fire_marker_and_wait(&marker_tag).await {
                         eprintln!("[databricks-adapter] warning: marker wait failed: {e}");
-                    } else {
-                        // Sum read_bytes and write_bytes from all queries in the time window
-                        let end_time_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
+                    }
+                }
 
-                        match self.sum_query_history_io(started_at_ms, end_time_ms).await {
-                            Ok((total_read, total_write)) => {
-                                eprintln!(
-                                    "[databricks-adapter] query history totals: read_bytes={total_read} write_bytes={total_write}"
-                                );
-                                resource.disk_read_bytes = Some(total_read);
-                                resource.disk_write_bytes = Some(total_write);
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "[databricks-adapter] warning: query history I/O sum failed: {e}"
-                                );
-                            }
-                        }
+                // Sum read_bytes and write_bytes from all queries since the run started.
+                // On periodic scrapes this is best-effort (Query History has ~5 min lag).
+                // On final scrape the marker wait above ensures completeness.
+                match self.sum_query_history_io(started_at_ms).await {
+                    Ok((total_read, total_write)) => {
+                        eprintln!(
+                            "[databricks-adapter] query history totals: read_bytes={total_read} write_remote_bytes={total_write}"
+                        );
+                        resource.disk_read_bytes = Some(total_read);
+                        resource.disk_write_bytes = Some(total_write);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[databricks-adapter] warning: query history I/O sum failed: {e}"
+                        );
                     }
                 }
 
