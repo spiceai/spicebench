@@ -25,8 +25,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::{collections::HashMap, time::Duration};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, EtlSinkType, Handler, IngestionMetrics, MetricsResponse, Server,
-    SetupResponse, TeardownResponse,
+    AdbcDriver, DatasetConfig, EtlSinkType, Handler, IngestionMetrics, MetricsResponse,
+    ResourceMetrics, Server, SetupResponse, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -1658,8 +1658,8 @@ print("OK")
         ))
     }
 
-    /// Query the SQL Warehouse GET API to retrieve `num_active_sessions`.
-    async fn get_warehouse_num_active_sessions(&self) -> Result<Option<u64>> {
+    /// Query the SQL Warehouse GET API to retrieve warehouse info (num_active_sessions, num_clusters).
+    async fn get_warehouse_info(&self) -> Result<WarehouseInfoResponse> {
         let url = format!(
             "https://{}/api/2.0/sql/warehouses/{}",
             self.config.endpoint, self.config.warehouse_id
@@ -1681,7 +1681,7 @@ print("OK")
         }
 
         let info: WarehouseInfoResponse = response.json().await?;
-        Ok(info.num_active_sessions)
+        Ok(info)
     }
 
     async fn generate_lakebase_pg_token(&self) -> Result<String> {
@@ -1843,6 +1843,8 @@ struct UcTableCreateRequest {
 struct WarehouseInfoResponse {
     #[serde(default)]
     num_active_sessions: Option<u64>,
+    #[serde(default)]
+    num_clusters: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2225,22 +2227,26 @@ impl Handler for DatabricksAdapter {
     async fn metrics(&mut self, run_id: Uuid) -> std::result::Result<MetricsResponse, String> {
         let _ = run_id;
 
-        let active_connections = match &self.config.compute_target {
-            ComputeTarget::SqlWarehouse => self
-                .get_warehouse_num_active_sessions()
-                .await
-                .map_err(|e| format!("Failed to get warehouse active sessions: {e}"))?,
+        let info = match &self.config.compute_target {
+            ComputeTarget::SqlWarehouse => Some(
+                self.get_warehouse_info()
+                    .await
+                    .map_err(|e| format!("Failed to get warehouse info: {e}"))?,
+            ),
             _ => None,
         };
 
-        eprintln!("__DEBUG__[databricks-adapter] metrics: active_connections={active_connections:?}");
+        eprintln!("[databricks-adapter] metrics: warehouse_info={info:?}");
 
         Ok(MetricsResponse {
-            ingestion: IngestionMetrics {
-                active_connections,
+            resource: ResourceMetrics {
+                num_compute_nodes: info.as_ref().and_then(|i| i.num_clusters),
                 ..Default::default()
             },
-            ..Default::default()
+            ingestion: IngestionMetrics {
+                active_connections: info.as_ref().and_then(|i| i.num_active_sessions),
+                ..Default::default()
+            },
         })
     }
 }

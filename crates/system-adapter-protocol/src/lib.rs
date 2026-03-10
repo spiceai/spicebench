@@ -240,6 +240,9 @@ pub struct ResourceMetrics {
     /// Cumulative disk write operations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disk_write_iops: Option<u64>,
+    /// Number of active compute nodes / clusters backing the SUT
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_compute_nodes: Option<u64>,
 }
 
 /// Ingestion progress snapshot from the system under test

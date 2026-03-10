@@ -127,6 +127,9 @@ fn record_sut_metrics(
     if let Some(v) = response.ingestion.active_connections {
         crate::metrics::ACTIVE_CONNECTIONS.record(v, attributes);
     }
+    if let Some(v) = response.resource.num_compute_nodes {
+        crate::metrics::NUM_COMPUTE_NODES.record(v, attributes);
+    }
 }
 
 /// Spawn a task that periodically scrapes SUT metrics from the system adapter.
