@@ -60,6 +60,14 @@ fn run_metric_attributes(common_args: &CommonArgs) -> Vec<KeyValue> {
     )]
 }
 
+fn log_sut_metrics_snapshot(response: &MetricsResponse) {
+    tracing::debug!(
+        resource = ?response.resource,
+        ingestion = ?response.ingestion,
+        "SUT metrics snapshot retrieved before export"
+    );
+}
+
 /// Record the latest SUT metrics snapshot on the given streaming instruments.
 #[expect(clippy::too_many_arguments)]
 fn record_sut_metrics(
@@ -155,6 +163,7 @@ fn spawn_sut_metrics_scraper(
                     let metrics_result = adapter.lock().await.metrics(run_id).await;
                     match metrics_result {
                         Ok(resp) => {
+                            log_sut_metrics_snapshot(&resp);
                             record_sut_metrics(
                                 &resp,
                                 &instruments,
@@ -175,6 +184,7 @@ fn spawn_sut_metrics_scraper(
                 () = token.cancelled() => {
                     // Final scrape before exiting
                     if let Ok(resp) = adapter.lock().await.metrics(run_id).await {
+                        log_sut_metrics_snapshot(&resp);
                         record_sut_metrics(
                             &resp,
                             &instruments,
