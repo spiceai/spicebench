@@ -1675,9 +1675,7 @@ print("OK")
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Failed to get warehouse info ({status}): {body}"
-            ));
+            return Err(anyhow!("Failed to get warehouse info ({status}): {body}"));
         }
 
         let info: WarehouseInfoResponse = response.json().await?;
@@ -1845,6 +1843,10 @@ struct WarehouseInfoResponse {
     num_active_sessions: Option<u64>,
     #[serde(default)]
     num_clusters: Option<u64>,
+    #[serde(default)]
+    warehouse_type: Option<String>,
+    #[serde(default)]
+    cluster_size: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2228,15 +2230,18 @@ impl Handler for DatabricksAdapter {
         let _ = run_id;
 
         let info = match &self.config.compute_target {
-            ComputeTarget::SqlWarehouse => Some(
-                self.get_warehouse_info()
+            ComputeTarget::SqlWarehouse => {
+                let info = self
+                    .get_warehouse_info()
                     .await
-                    .map_err(|e| format!("Failed to get warehouse info: {e}"))?,
-            ),
+                    .map_err(|e| format!("Failed to get warehouse info: {e}"))?;
+
+                eprintln!("[databricks-adapter] metrics: warehouse_info={info:?}");
+
+                Some(info)
+            }
             _ => None,
         };
-
-        eprintln!("[databricks-adapter] metrics: warehouse_info={info:?}");
 
         Ok(MetricsResponse {
             resource: ResourceMetrics {
