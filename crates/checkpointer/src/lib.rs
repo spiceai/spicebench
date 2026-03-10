@@ -72,8 +72,6 @@ pub struct ScenarioCheckpoint {
 /// S3‑backed store for uploading and downloading checkpoint artefacts.
 pub struct CheckpointStore {
     store: Arc<dyn ObjectStore>,
-    #[allow(dead_code)]
-    bucket: String,
     prefix: String,
 }
 
@@ -105,7 +103,6 @@ impl CheckpointStore {
         let store = Arc::new(builder.build()?);
         Ok(Self {
             store,
-            bucket: bucket.to_owned(),
             prefix: prefix.to_owned(),
         })
     }

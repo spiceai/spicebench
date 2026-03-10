@@ -208,7 +208,6 @@ enum TableFormat {
 }
 
 impl TableFormat {
-    #[allow(dead_code)]
     fn as_sql_using(self) -> &'static str {
         match self {
             Self::Parquet => "PARQUET",
@@ -229,7 +228,6 @@ impl TableFormat {
 
 #[derive(Debug, Clone)]
 struct RunState {
-    #[allow(dead_code)]
     table_format: TableFormat,
     variant: DatabricksVariant,
     scenario_slug: String,
@@ -691,7 +689,6 @@ impl DatabricksAdapter {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn delete_uc_table_if_exists(&self, table_name: &str) -> Result<()> {
         let full_name = self.uc_table_full_name(table_name);
         let delete_url = format!(
@@ -998,7 +995,6 @@ impl DatabricksAdapter {
 
     /// SQL path: query `system.query.history` for aggregated I/O bytes.
     /// Currently unused — requires elevated permission `USE SCHEMA` on `system.query`.
-    #[allow(dead_code)]
     async fn sum_query_history_io_sql(&self, start_time_ms: u64) -> Result<(u64, u64)> {
         let query = format!(
             "SELECT COALESCE(SUM(read_bytes), 0), COALESCE(SUM(write_remote_bytes), 0) \
@@ -1307,7 +1303,6 @@ impl DatabricksAdapter {
         Ok(None)
     }
 
-    #[allow(dead_code)]
     fn uc_column_type_for_arrow(data_type: &DataType) -> Result<UcColumnType> {
         match data_type {
             DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN", "\"boolean\"")),
@@ -1339,7 +1334,6 @@ impl DatabricksAdapter {
         }
     }
 
-    #[allow(dead_code)]
     async fn uc_table_exists(&self, table_name: &str) -> Result<bool> {
         let full_name = self.uc_table_full_name(table_name);
         let get_url = format!(
@@ -1369,7 +1363,6 @@ impl DatabricksAdapter {
         ))
     }
 
-    #[allow(dead_code)]
     async fn create_uc_table_if_not_exists(
         &self,
         table_name: &str,
@@ -1889,7 +1882,6 @@ struct UcSchemaCreateRequest {
     name: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 struct UcColumnType {
     type_name: String,
@@ -1897,7 +1889,6 @@ struct UcColumnType {
     type_json: String,
 }
 
-#[allow(dead_code)]
 impl UcColumnType {
     fn new(
         type_name: impl Into<String>,
@@ -1912,7 +1903,6 @@ impl UcColumnType {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct UcTableColumnCreateRequest {
     name: String,
@@ -1923,7 +1913,6 @@ struct UcTableColumnCreateRequest {
     nullable: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct UcTableCreateRequest {
     name: String,
@@ -1941,10 +1930,8 @@ struct WarehouseInfoResponse {
     #[serde(default)]
     num_clusters: Option<u64>,
     #[serde(default)]
-    #[allow(dead_code)]
     warehouse_type: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     cluster_size: Option<String>,
 }
 
@@ -1952,10 +1939,8 @@ struct WarehouseInfoResponse {
 #[derive(Debug, Deserialize)]
 struct QueryHistoryEntry {
     #[serde(default)]
-    #[allow(dead_code)]
     query_id: String,
     #[serde(default)]
-    #[allow(dead_code)]
     status: Option<String>,
     #[serde(default)]
     metrics: Option<QueryHistoryMetrics>,
