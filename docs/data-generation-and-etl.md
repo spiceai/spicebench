@@ -6,22 +6,28 @@ The main `spicebench` binary benchmarks ingestion and querying against a pre-gen
 
 ## Data Generation
 
-The `data-generation` crate produces versioned datasets and writes the result either to S3 or to a local `.tar.zst` archive.
+The `data-generation` crate produces versioned datasets locally and then packages them into a `.tar.zst` archive. The archive is either written to a local path or uploaded to S3.
 
 ### S3 Layout
 
+Only the finalized archive is uploaded to S3. Individual Parquet files are never uploaded directly.
+
 ```text
 s3://{bucket}/{prefix}/{scenario}/{version}/
-├── archive.tar.zst                 # Archive uploaded by the generator
-├── version.json                    # Version metadata
-├── {table_name}/
-│   ├── metadata.json               # Table metadata (schema, keys, batch info)
-│   ├── batch_{id}/
-│   │   ├── part_0.parquet          # Parquet batch data
-│   │   ├── part_1.parquet
-│   │   └── ...
-│   └── ...
-└── ...
+└── data.tar.zst                    # Archive uploaded by the generator
+```
+
+### Archive Contents
+
+The archive contains the generated data in the following layout:
+
+```text
+version.json
+tables/{table_name}/batch-000000.parquet
+tables/{table_name}/batch-000001.parquet
+tables/{table_name}/batch-000002-part-000.parquet
+tables/{table_name}/batch-000002-part-001.parquet
+...
 ```
 
 ### Version Metadata (`version.json`)
@@ -46,7 +52,7 @@ The full file also includes per-table metadata used by ETL.
 
 ### Table Metadata
 
-Each table directory contains a `metadata.json` with:
+Per-table metadata is embedded in `version.json` and includes:
 
 - Schema
 - Primary key columns
@@ -128,30 +134,6 @@ cargo run -p etl -- \
 
 ### Sinks
 
-#### S3 Hive Sink (default)
-
-Writes hive-partitioned Parquet to S3. Each batch becomes one or more Parquet files partitioned by `__created_at` or a custom partition key list.
-
-```bash
-cargo run -p etl -- \
-    --scenario tpch \
-    --scale-factor 1 \
-    --bucket my-data \
-    --prefix raw \
-    --sink s3-hive \
-    --target-prefix rehydrated \
-    --partition-by __created_at
-```
-
-Output layout:
-
-```text
-s3://{bucket}/{target-prefix}/{scenario}/{run_id}/
-└── {table_name}/
-    └── __created_at={timestamp}/
-        └── part_0.parquet
-```
-
 #### ADBC Sink
 
 Writes directly to the SUT via ADBC bulk ingest.
@@ -231,7 +213,6 @@ In the current main benchmark path:
 
 The ETL sink type is selected with `--etl-sink`:
 
-- `hive`: S3 Hive Parquet output. The adapter receives S3 dataset locations in `setup`
 - `adbc`: direct ADBC ingest. The adapter's `setup` response provides write-side ADBC config
 
 ---

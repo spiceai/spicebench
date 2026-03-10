@@ -2,8 +2,7 @@
 
 `etl` reads a generated archive, rehydrates records, and writes to either:
 
-- S3 as hive-partitioned Parquet (default)
-- an ADBC target via bulk ingest
+- an ADBC target via bulk ingest (default)
 - a null sink that discards writes for throughput benchmarking
 
 Dataset configuration is read from the extracted `version.json` metadata written by `data-generation`.
@@ -16,25 +15,6 @@ Provide one of these source modes:
 - `--bucket <bucket>` plus the S3 source flags to download the archive from S3
 
 The version path is derived automatically from `--scale-factor`, so `--scale-factor 1` reads from the `1.0` version path.
-
-## S3 Hive Sink (default)
-
-Use `--sink s3-hive` to write hive-partitioned Parquet to S3.
-
-- `--target-prefix`: Base S3 key prefix for ETL output. Defaults to the source prefix when empty.
-- `--partition-by`: Comma-separated partition columns. Defaults to `__created_at`.
-
-### Example
-
-```bash
-cargo run -p etl -- \
-    --scenario tpch \
-    --scale-factor 1 \
-    --bucket peasee-indexes \
-    --prefix raw \
-    --target-prefix rehydrated \
-    --partition-by __created_at
-```
 
 ## ADBC Sink
 

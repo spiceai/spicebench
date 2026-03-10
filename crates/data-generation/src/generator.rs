@@ -20,7 +20,6 @@ use std::time::Instant;
 
 use tokio::task::JoinSet;
 
-use super::config::IngestorConfig;
 use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
 use super::storage::DataStorage;
@@ -51,7 +50,6 @@ impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
         target: Arc<dyn DataStorage>,
-        _config: &IngestorConfig,
         metrics: Metrics,
         version_config: VersionConfig,
     ) -> Self {
@@ -453,7 +451,6 @@ mod tests {
         let generator = DataGenerator::new(
             dataset,
             target,
-            &IngestorConfig { max_concurrency: 4 },
             Metrics::new(),
             VersionConfig {
                 scenario: "test".to_string(),

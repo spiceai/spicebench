@@ -15,7 +15,6 @@ limitations under the License.
 */
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use adbc_client::{AdbcConnection, AdbcConnectionPool, IngestMode, create_pool};
 use arrow::array::{Array, RecordBatch};

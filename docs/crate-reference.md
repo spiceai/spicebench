@@ -144,7 +144,7 @@ JSON-RPC 2.0 protocol definitions for system adapter communication. Supports bot
 
 **Path:** `crates/data-generation/`
 
-Generates Arrow data (TPC-H or simple sequences) with mutation support and writes to S3 as Parquet.
+Generates Arrow data (TPC-H or simple sequences) with mutation support, packages results into a `.tar.zst` archive, and uploads the archive to S3 or writes it to a local path.
 
 ### `data-generation` Public Types
 
@@ -152,7 +152,6 @@ Generates Arrow data (TPC-H or simple sequences) with mutation support and write
 | -------------------------- | -------------------------------------------------------------- |
 | `DatasetConfig`            | Dataset type, scale factor, number of steps                    |
 | `TargetConfig`             | S3 target bucket, prefix, region, endpoint, partition columns  |
-| `IngestorConfig`           | Upload concurrency settings                                    |
 | `DataGenerator`            | Main generator. Method: `run()`                                |
 | `VersionConfig`            | Version configuration for reproducible generation              |
 | `VersionMetadata`          | Metadata read from/written to S3 (`version.json`)              |
@@ -200,7 +199,6 @@ ETL pipeline - reads from S3, rehydrates, and writes to configurable sinks.
 
 | Struct       | Description                                                      |
 | ------------ | ---------------------------------------------------------------- |
-| `S3HiveSink` | Hive-partitioned Parquet to S3 with concurrency control          |
 | `AdbcSink`   | ADBC bulk ingest. Method: `create_tables_from_dataset_configs()` |
 | `NullSink`   | Discards all writes (for benchmarking pipeline throughput)       |
 
