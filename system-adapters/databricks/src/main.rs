@@ -1802,6 +1802,217 @@ print("OK")
         }
     }
 
+    /// Connect to Lakebase Postgres and scrape available metrics from pg_stat views.
+    /// Probes each view individually so we can discover what's accessible in the managed environment.
+    /// Resets PostgreSQL cumulative statistics counters so that subsequent
+    /// `scrape_lakebase_pg_metrics` calls return values that reflect only the
+    /// current benchmark run.
+    ///
+    /// **Important:** This calls `pg_stat_reset()` which clears *all* statistics
+    /// for the current database.  It is safe on a **dedicated** Lakebase
+    /// instance used exclusively for benchmarking, but must **never** be run
+    /// against a shared or production database.
+    async fn reset_lakebase_pg_stats(&self) -> Result<()> {
+        eprintln!(
+            "[databricks-adapter] WARNING: Resetting PostgreSQL statistics counters via pg_stat_reset(). \
+             This operation clears all cumulative statistics for the current database. \
+             Do NOT use this adapter against shared or production Lakebase instances — \
+             it is intended for dedicated benchmarking environments only."
+        );
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| anyhow!("Failed to configure TLS: {e}"))?
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+
+        let pg_uri = self.lakebase_pg_uri().await?;
+        let (client, connection) = tokio_postgres::connect(&pg_uri, tls)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to Lakebase PG for stats reset: {e}"))?;
+        tokio::spawn(connection);
+
+        client
+            .execute("SELECT pg_stat_reset()", &[])
+            .await
+            .map_err(|e| anyhow!("pg_stat_reset() failed: {e}"))?;
+
+        eprintln!("[databricks-adapter] pg_stat_reset() completed — statistics counters zeroed");
+        Ok(())
+    }
+
+    async fn scrape_lakebase_pg_metrics(&self) -> Result<(ResourceMetrics, IngestionMetrics)> {
+        let lakebase_config = match &self.config.compute_target {
+            ComputeTarget::Lakebase(cfg) => cfg,
+            _ => return Err(anyhow!("scrape_lakebase_pg_metrics called without Lakebase compute target")),
+        };
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| anyhow!("Failed to configure TLS: {e}"))?
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+
+        let pg_uri = self.lakebase_pg_uri().await?;
+        let (client, connection) = tokio_postgres::connect(&pg_uri, tls)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to Lakebase PG for metrics: {e}"))?;
+        tokio::spawn(connection);
+
+        let mut resource = ResourceMetrics::default();
+        let mut ingestion = IngestionMetrics::default();
+
+        // 1. active_connections from pg_stat_activity
+        match client
+            .query_one("SELECT count(*)::bigint FROM pg_stat_activity WHERE state = 'active'", &[])
+            .await
+        {
+            Ok(row) => {
+                let count: i64 = row.get(0);
+                eprintln!("[databricks-adapter] lakebase pg_stat_activity: active_connections={count}");
+                ingestion.active_connections = Some(count as u64);
+            }
+            Err(e) => {
+                eprintln!("[databricks-adapter] lakebase pg_stat_activity: FAILED — {e}");
+            }
+        }
+
+        // 2. rows_ingested from pg_stat_user_tables (cumulative n_tup_ins since stats reset)
+        match client
+            .query_one(
+                "SELECT COALESCE(SUM(n_tup_ins), 0)::bigint FROM pg_stat_user_tables WHERE schemaname = $1",
+                &[&lakebase_config.schema],
+            )
+            .await
+        {
+            Ok(row) => {
+                let rows: i64 = row.get(0);
+                eprintln!("[databricks-adapter] lakebase pg_stat_user_tables: rows_ingested(n_tup_ins)={rows}");
+                ingestion.rows_ingested = Some(rows as u64);
+            }
+            Err(e) => {
+                eprintln!("[databricks-adapter] lakebase pg_stat_user_tables (n_tup_ins): FAILED — {e}");
+            }
+        }
+
+        // 3. disk_read_bytes from pg_stat_user_tables (heap_blks_read + idx_blks_read) * 8192
+        match client
+            .query_one(
+                "SELECT COALESCE(SUM(heap_blks_read + idx_blks_read), 0)::bigint FROM pg_stat_user_tables WHERE schemaname = $1",
+                &[&lakebase_config.schema],
+            )
+            .await
+        {
+            Ok(row) => {
+                let blocks: i64 = row.get(0);
+                let bytes = blocks as u64 * 8192;
+                eprintln!("[databricks-adapter] lakebase pg_stat_user_tables: disk_read_blocks={blocks} disk_read_bytes={bytes}");
+                resource.disk_read_bytes = Some(bytes);
+            }
+            Err(e) => {
+                eprintln!("[databricks-adapter] lakebase pg_stat_user_tables (blks_read): FAILED — {e}");
+            }
+        }
+
+        // 4. disk_read_iops from pg_stat_user_tables (heap_blks_read + idx_blks_read as total read ops)
+        // Already computed above — reuse blocks count
+        // (disk_read_bytes / 8192 = block count = logical read ops)
+
+        // 5. bytes_ingested from pg_total_relation_size (approximate total table size)
+        match client
+            .query_one(
+                &format!(
+                    "SELECT COALESCE(SUM(pg_total_relation_size(schemaname || '.' || tablename)), 0)::bigint \
+                     FROM pg_tables WHERE schemaname = '{}'",
+                    lakebase_config.schema.replace('\'', "''")
+                ),
+                &[],
+            )
+            .await
+        {
+            Ok(row) => {
+                let size: i64 = row.get(0);
+                eprintln!("[databricks-adapter] lakebase pg_total_relation_size: bytes_ingested={size}");
+                ingestion.bytes_ingested = Some(size as u64);
+            }
+            Err(e) => {
+                eprintln!("[databricks-adapter] lakebase pg_total_relation_size: FAILED — {e}");
+            }
+        }
+
+        // 6. Try pg_stat_io (PG16+) for more accurate I/O metrics
+        match client
+            .query_one(
+                "SELECT COALESCE(SUM(reads), 0)::bigint, COALESCE(SUM(writes), 0)::bigint, \
+                 COALESCE(MIN(op_bytes), 8192)::bigint FROM pg_stat_io",
+                &[],
+            )
+            .await
+        {
+            Ok(row) => {
+                let reads: i64 = row.get(0);
+                let writes: i64 = row.get(1);
+                let op_bytes: i64 = row.get(2);
+                let read_bytes = reads as u64 * op_bytes as u64;
+                let write_bytes = writes as u64 * op_bytes as u64;
+                eprintln!(
+                    "[databricks-adapter] lakebase pg_stat_io: reads={reads} writes={writes} op_bytes={op_bytes} \
+                     read_bytes={read_bytes} write_bytes={write_bytes}"
+                );
+                // pg_stat_io is more accurate — override pg_stat_user_tables if available
+                resource.disk_read_bytes = Some(read_bytes);
+                resource.disk_write_bytes = Some(write_bytes);
+            }
+            Err(e) => {
+                eprintln!("[databricks-adapter] lakebase pg_stat_io: FAILED (expected if PG<16) — {e}");
+            }
+        }
+
+        // 7. Try pg_stat_bgwriter for write-related stats
+        match client
+            .query_one(
+                "SELECT buffers_backend::bigint, buffers_clean::bigint, buffers_checkpoint::bigint FROM pg_stat_bgwriter",
+                &[],
+            )
+            .await
+        {
+            Ok(row) => {
+                let backend: i64 = row.get(0);
+                let clean: i64 = row.get(1);
+                let checkpoint: i64 = row.get(2);
+                let total_write_buffers = backend + clean + checkpoint;
+                let write_bytes = total_write_buffers as u64 * 8192;
+                eprintln!(
+                    "[databricks-adapter] lakebase pg_stat_bgwriter: backend={backend} clean={clean} \
+                     checkpoint={checkpoint} total_write_bytes={write_bytes}"
+                );
+                // Only use if pg_stat_io wasn't available
+                if resource.disk_write_bytes.is_none() {
+                    resource.disk_write_bytes = Some(write_bytes);
+                }
+            }
+            Err(e) => {
+                eprintln!("[databricks-adapter] lakebase pg_stat_bgwriter: FAILED — {e}");
+            }
+        }
+
+        eprintln!(
+            "[databricks-adapter] lakebase metrics summary: resource={resource:?} ingestion={ingestion:?}"
+        );
+
+        Ok((resource, ingestion))
+    }
+
     async fn delete_lakebase_pg_tables(
         &self,
         table_names: &[String],
@@ -2340,6 +2551,11 @@ impl Handler for DatabricksAdapter {
                     .collect();
 
                 created_tables = futures::future::try_join_all(sync_futs).await?;
+
+                // Reset PG cumulative statistics so metrics reflect only this run.
+                self.reset_lakebase_pg_stats()
+                    .await
+                    .map_err(|e| format!("Failed to reset Lakebase PG stats: {e}"))?;
             }
         }
 
@@ -2568,6 +2784,18 @@ impl Handler for DatabricksAdapter {
                     resource,
                     ingestion,
                 })
+            }
+            ComputeTarget::Lakebase(_) => {
+                match self.scrape_lakebase_pg_metrics().await {
+                    Ok((resource, ingestion)) => Ok(MetricsResponse {
+                        resource,
+                        ingestion,
+                    }),
+                    Err(e) => {
+                        eprintln!("[databricks-adapter] warning: lakebase metrics scrape failed: {e}");
+                        Ok(MetricsResponse::default())
+                    }
+                }
             }
             _ => Ok(MetricsResponse::default()),
         }
