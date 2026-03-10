@@ -335,6 +335,7 @@ jobs:
             --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
+            --scrape-sut-metrics \
             ${ETL_ARGS} \
             ${ETL_SINK_ARGS} \
             ${VALIDATION_ARGS} \

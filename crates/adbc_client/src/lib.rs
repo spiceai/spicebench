@@ -115,7 +115,7 @@ impl AdbcConnection {
         Ok(Self::new(
             conn,
             driver_name == "databricks",
-            driver_name == "postgresql",
+            driver_name == "postgresql" || driver_name == "databricks",
         ))
     }
 
@@ -292,26 +292,42 @@ fn downcast_utf8view(batch: &RecordBatch) -> RecordBatch {
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
 }
 
-/// Returns `true` if the field uses the Arrow opaque extension type for
-/// PostgreSQL `numeric`.
+/// Returns `true` if the field is a `Utf8` column that represents a
+/// numeric/decimal value and should be cast to `Decimal128`.
+///
+/// Recognised patterns:
+/// - **PostgreSQL ADBC**: `ARROW:extension:name = "arrow.opaque"` with
+///   `type_name = "numeric"` in the extension metadata JSON.
+/// - **Databricks ADBC**: `Spark:DataType:SqlName` starting with `DECIMAL(`.
 fn is_opaque_numeric(field: &Field) -> bool {
     if !matches!(field.data_type(), DataType::Utf8) {
         return false;
     }
     let metadata = field.metadata();
-    let Some(ext_name) = metadata.get("ARROW:extension:name") else {
-        return false;
-    };
-    if ext_name != "arrow.opaque" {
-        return false;
+
+    // PostgreSQL: arrow.opaque extension type for numeric
+    if let Some(ext_name) = metadata.get("ARROW:extension:name") {
+        if ext_name == "arrow.opaque" {
+            if let Some(ext_meta) = metadata.get("ARROW:extension:metadata") {
+                if serde_json::from_str::<serde_json::Value>(ext_meta)
+                    .ok()
+                    .and_then(|v| v.get("type_name")?.as_str().map(|s| s == "numeric"))
+                    .unwrap_or(false)
+                {
+                    return true;
+                }
+            }
+        }
     }
-    let Some(ext_meta) = metadata.get("ARROW:extension:metadata") else {
-        return false;
-    };
-    serde_json::from_str::<serde_json::Value>(ext_meta)
-        .ok()
-        .and_then(|v| v.get("type_name")?.as_str().map(|s| s == "numeric"))
-        .unwrap_or(false)
+
+    // Databricks Spark: decimal type serialised as Utf8 with Spark metadata
+    if let Some(sql_name) = metadata.get("Spark:DataType:SqlName") {
+        if sql_name.starts_with("DECIMAL(") {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Determine the maximum decimal scale (digits after the decimal point)
