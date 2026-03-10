@@ -1,39 +1,16 @@
 # Configuration
 
-SpiceBench uses CLI flags for runtime behavior. See the [CLI Reference](cli-reference.md) for a complete list of flags and options.
+SpiceBench uses CLI flags for runtime behavior. See the [CLI Reference](cli-reference.md) for the complete flag list.
 
-## Query Sets
+## Benchmark Scenario
 
-SpiceBench ships with several built-in query sets:
+The current main `spicebench` binary exposes one built-in benchmark scenario:
 
-| Query Set           | Flag                              | Description                                  |
-| ------------------- | --------------------------------- | -------------------------------------------- |
-| TPC-H               | `--query-set tpch`                | 22 standard TPC-H analytical queries         |
-| TPC-DS              | `--query-set tpcds`               | Standard TPC-DS decision support queries     |
-| ClickBench          | `--query-set clickbench`          | ClickBench web analytics queries             |
-| Parameterized TPC-H | `--query-set tpch[parameterized]` | TPC-H with randomized parameter substitution |
-| Scenario            | `--query-set scenario`            | Custom queries from file                     |
+| Scenario | Flag              | Description                                |
+| -------- | ----------------- | ------------------------------------------ |
+| TPC-H    | `--scenario tpch` | Built-in TPC-H scenario and query workload |
 
-### Custom Query Files
-
-Use `--query-set scenario --scenario-query-file path/to/queries.sql` to load custom queries. The file should contain SQL statements separated by semicolons.
-
-## SQL Overrides
-
-SpiceBench supports SQL query rewrites for supported systems using `--query-overrides`.
-
-| Dialect              | Use When Targeting                 |
-| -------------------- | ---------------------------------- |
-| `odbc-databricks`    | Databricks SQL via ODBC            |
-| `databricks-catalog` | Databricks Unity Catalog           |
-| `spicecloud`         | Spice Cloud                        |
-| `spicecloud-catalog` | Spice Cloud with catalog namespace |
-
-Example:
-
-```bash
-spicebench --query-set tpch --query-overrides databricks-catalog ...
-```
+The main binary does not currently expose separate `--query-set`, `--scenario-query-file`, or `--query-overrides` flags.
 
 ## Table Format
 
@@ -49,16 +26,18 @@ This value is passed to the system adapter in `setup` metadata for table creatio
 
 ## Run Metadata
 
-SpiceBench attaches metadata to each run for cross-system comparison:
+SpiceBench attaches metadata to each run for cross-system comparison and adapter setup:
 
-| Field                    | CLI Flag                   | Default                   | Description              |
-| ------------------------ | -------------------------- | ------------------------- | ------------------------ |
-| `table_format`           | `--table-format`           | `parquet`                 | Dataset table format     |
-| `executor_instance_type` | `--executor-instance-type` | `unknown`                 | Executor hardware class  |
-| `scenario`               | `--scenario`               | `tpch`                    | Benchmark scenario       |
-| `system_under_test`      | `--system-adapter-name`    | —                         | Target system identifier |
-| `etl_bucket`             | `--etl-bucket`             | `spiceai-public-datasets` | Source data bucket       |
-| `etl_prefix`             | `--etl-prefix`             | `data-gen`                | Source data prefix       |
-| `etl_version`            | `--etl-version`            | `1`                       | Data generation version  |
+| Field                      | CLI Flag / Source             | Default / Behavior                  | Description                              |
+| -------------------------- | ----------------------------- | ----------------------------------- | ---------------------------------------- |
+| `table_format`             | `--table-format`              | `parquet`                           | Dataset table format                     |
+| `executor_instance_type`   | `--executor-instance-type`    | `unknown`                           | Executor hardware class                  |
+| `scenario`                 | `--scenario`                  | required                            | Benchmark scenario                       |
+| `system_adapter_name`      | `--system-adapter-name`       | `system_adapter`                    | Logical target-system identifier         |
+| `etl_bucket`               | `--etl-bucket`                | `spiceai-public-datasets`           | Source data bucket                       |
+| `etl_prefix`               | `--etl-prefix`                | `data-gen`                          | Source data prefix                       |
+| `etl_version`              | derived from `--scale-factor` | `format_scale_factor(scale_factor)` | Version path segment passed to adapters  |
+| `scale_factor`             | `--scale-factor`              | `1.0`                               | Benchmark dataset scale factor           |
+| `scheduler_state_location` | `--scheduler-state-location`  | omitted unless provided             | Optional shared scheduler-state location |
 
-All metadata is sent to the adapter in the `setup` request and attached as OTel resource attributes on exported metrics.
+SpiceBench sends this metadata to the adapter in the `setup` request. A subset is also attached to exported metrics as resource attributes or per-metric attributes, depending on the metric pipeline.
