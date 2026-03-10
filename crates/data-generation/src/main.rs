@@ -68,7 +68,7 @@ fn build(args: &CommonArgs, file_storage: Arc<FileStorage>) -> anyhow::Result<Da
         "Configuration"
     );
 
-    let mutations_config = MutationConfig::new(0.0, 0.0);
+    let mutations_config = MutationConfig::new(args.update_ratio, args.delete_ratio);
 
     let storage: Arc<dyn DataStorage> = file_storage.clone() as Arc<dyn DataStorage>;
 

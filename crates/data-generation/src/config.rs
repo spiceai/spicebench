@@ -68,6 +68,14 @@ pub struct CommonArgs {
     #[arg(long)]
     pub endpoint: Option<String>,
 
+    /// Ratio of update mutations per batch (0.0 to 1.0)
+    #[arg(long, default_value_t = 0.0)]
+    pub update_ratio: f64,
+
+    /// Ratio of delete mutations per batch (0.0 to 1.0)
+    #[arg(long, default_value_t = 0.0)]
+    pub delete_ratio: f64,
+
     /// Maximum number of concurrent S3 writes (legacy, unused with file storage)
     #[arg(long, default_value_t = 16)]
     pub max_concurrency: usize,
