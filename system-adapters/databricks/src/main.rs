@@ -25,7 +25,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::{collections::HashMap, time::Duration};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, EtlSinkType, Handler, Server, SetupResponse, TeardownResponse,
+    AdbcDriver, DatasetConfig, EtlSinkType, Handler, IngestionMetrics, MetricsResponse, Server,
+    SetupResponse, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -1657,6 +1658,32 @@ print("OK")
         ))
     }
 
+    /// Query the SQL Warehouse GET API to retrieve `num_active_sessions`.
+    async fn get_warehouse_num_active_sessions(&self) -> Result<Option<u64>> {
+        let url = format!(
+            "https://{}/api/2.0/sql/warehouses/{}",
+            self.config.endpoint, self.config.warehouse_id
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.config.token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Failed to get warehouse info ({status}): {body}"
+            ));
+        }
+
+        let info: WarehouseInfoResponse = response.json().await?;
+        Ok(info.num_active_sessions)
+    }
+
     async fn generate_lakebase_pg_token(&self) -> Result<String> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
@@ -1810,6 +1837,12 @@ struct UcTableCreateRequest {
     table_type: String,
     data_source_format: String,
     columns: Vec<UcTableColumnCreateRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WarehouseInfoResponse {
+    #[serde(default)]
+    num_active_sessions: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2187,6 +2220,28 @@ impl Handler for DatabricksAdapter {
         }
 
         Ok(TeardownResponse { ok: true })
+    }
+
+    async fn metrics(&mut self, run_id: Uuid) -> std::result::Result<MetricsResponse, String> {
+        let _ = run_id;
+
+        let active_connections = match &self.config.compute_target {
+            ComputeTarget::SqlWarehouse => self
+                .get_warehouse_num_active_sessions()
+                .await
+                .map_err(|e| format!("Failed to get warehouse active sessions: {e}"))?,
+            _ => None,
+        };
+
+        eprintln!("__DEBUG__[databricks-adapter] metrics: active_connections={active_connections:?}");
+
+        Ok(MetricsResponse {
+            ingestion: IngestionMetrics {
+                active_connections,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
     }
 }
 
