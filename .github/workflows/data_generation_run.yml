@@ -54,7 +54,7 @@ on:
       bucket:
         description: 'S3 bucket name'
         required: false
-        default: 'spiceai-public-datasets'
+        default: 'spicebench'
         type: string
       prefix:
         description: 'Base S3 key prefix for generated files (scenario is appended automatically)'

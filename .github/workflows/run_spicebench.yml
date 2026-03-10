@@ -21,7 +21,7 @@ on:
       etl_bucket:
         description: 'S3 bucket for ETL source and target data'
         required: true
-        default: 'spiceai-public-datasets'
+        default: 'spicebench'
         type: string
       etl_prefix:
         description: 'S3 key prefix (the {prefix} portion of {prefix}/{scenario}/{version}/)'
