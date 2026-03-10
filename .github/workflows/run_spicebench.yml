@@ -72,8 +72,8 @@ jobs:
       - uses: ./.github/actions/management-login
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
         with:
-          client-id: ${{ secrets.PEASEE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ secrets.PEASEE_MANAGEMENT_CLIENT_SECRET }}
+          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
@@ -252,6 +252,8 @@ jobs:
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
+          S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           LAKEBASE_PG_HOST: ${{ secrets.LAKEBASE_PG_HOST }}
           LAKEBASE_PG_USER: ${{ secrets.LAKEBASE_PG_USER }}
           LAKEBASE_PG_DB_NAME: ${{ secrets.LAKEBASE_PG_DB_NAME }}
@@ -316,7 +318,7 @@ jobs:
             fi
           else
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
+            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
           fi
 
