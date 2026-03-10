@@ -47,13 +47,13 @@ All per-query metrics are emitted with a `query_name` attribute identifying the 
 
 ### System Metrics
 
-| Metric         | OTel Instrument                         | Description                                                                    |
-| -------------- | --------------------------------------- | ------------------------------------------------------------------------------ |
-| E2E Duration   | `test_duration_ms` (Gauge\<u64\>)       | Total wall-clock time for the benchmark phase                                  |
-| Peak Memory    | `peak_memory_usage_mb` (Gauge\<f64\>)   | Peak memory usage of the SpiceBench process                                    |
-| Median Memory  | `median_memory_usage_mb` (Gauge\<f64\>) | Median memory usage of the SpiceBench process                                  |
-| Health Latency | `health_latency_ms` (Histogram\<f64\>)  | Latency of `/health` and `/v1/ready` endpoint probes                           |
-| E2E Latency    | `e2e_latency_ms` (Histogram\<f64\>)     | Event-to-queryable freshness (raw samples; percentiles computed in dashboards) |
+| Metric         | OTel Instrument                         | Description                                                                         |
+| -------------- | --------------------------------------- | ----------------------------------------------------------------------------------- |
+| E2E Duration   | `test_duration_ms` (Gauge\<u64\>)       | Timed benchmark wall-clock duration from test start until stop after ETL completion |
+| Peak Memory    | `peak_memory_usage_mb` (Gauge\<f64\>)   | Peak memory usage of the SpiceBench process                                         |
+| Median Memory  | `median_memory_usage_mb` (Gauge\<f64\>) | Median memory usage of the SpiceBench process                                       |
+| Health Latency | `health_latency_ms` (Histogram\<f64\>)  | Latency of `/health` and `/v1/ready` endpoint probes                                |
+| E2E Latency    | `e2e_latency_ms` (Histogram\<f64\>)     | Event-to-queryable freshness (raw samples; percentiles computed in dashboards)      |
 
 ### Queue Metrics
 
@@ -71,13 +71,13 @@ Metrics are collected from three sources:
 
 ### 1. Query Driver
 
-Per-query statistics are computed from the test-framework's query execution engine. After the load test completes, SpiceBench calculates median, min, max, p99 latency and iteration counts for each query.
+Per-query statistics are computed from the test-framework's query execution engine. After the benchmark run completes, SpiceBench calculates median, min, max, p99 latency and iteration counts for each query.
 
 ### 2. SUT Metrics Scraper
 
 When `--scrape-sut-metrics` is enabled, SpiceBench calls the adapter's `metrics()` JSON-RPC method every 5 seconds. The adapter returns resource usage (CPU, memory, disk) and ingestion progress (rows, bytes, throughput).
 
-The scraper tracks **cumulative deltas** — if the adapter reports cumulative counters for ingestion rows/bytes, SpiceBench computes the delta since the last scrape.
+The scraper tracks **cumulative deltas** - if the adapter reports cumulative counters for ingestion rows/bytes, SpiceBench computes the delta since the last scrape.
 
 ### 3. Health Monitor
 
@@ -89,7 +89,7 @@ Samples `/health` and `/v1/ready` endpoints every 100ms, recording latency in th
 
 All metrics are exported to `telemetry.spiceai.io` via Apache Arrow Flight after the benchmark completes. The `otel-arrow` crate converts OTel `ResourceMetrics` to a flattened Arrow `RecordBatch` schema and publishes it via the `telemetry` crate's Flight client.
 
-This is the primary export path — results are ingested by [SpiceBench.com](https://spicebench.com) for leaderboard ranking and run detail views.
+This is the primary export path - results are ingested by [SpiceBench.com](https://spicebench.com) for leaderboard ranking and run detail views.
 
 ### Streaming OTLP Export (optional)
 
@@ -111,18 +111,20 @@ spicebench \
     ...
 ```
 
-## OTel Resource Attributes
+## Metric Attributes
 
-Every metric export includes these OTel resource attributes:
+The current benchmark path attaches a mix of resource attributes and per-metric attributes. Not every metric carries every attribute.
 
-| Attribute                | Source                     | Description                            |
-| ------------------------ | -------------------------- | -------------------------------------- |
-| `run_id`                 | Auto-generated UUID        | Unique run identifier                  |
-| `scenario`               | `--scenario`               | Benchmark scenario name                |
-| `system_under_test`      | `--system-adapter-name`    | Target platform identifier             |
-| `executor_instance_type` | `--executor-instance-type` | Hardware class of the executor         |
-| `scale_factor`           | From version metadata      | TPC-H scale factor                     |
-| `table_format`           | `--table-format`           | Table format (parquet, iceberg, delta) |
+| Attribute                | Source                        | Notes                                                                      |
+| ------------------------ | ----------------------------- | -------------------------------------------------------------------------- |
+| `adapter_name`           | `--system-adapter-name`       | Resource attribute on benchmark metrics                                    |
+| `scenario`               | `--scenario`                  | Resource attribute on benchmark metrics                                    |
+| `data_gen_version`       | Derived from `--scale-factor` | Resource attribute using `format_scale_factor(scale_factor)`               |
+| `scale_factor`           | Version metadata              | Resource attribute on benchmark metrics                                    |
+| `executor_instance_type` | `--executor-instance-type`    | Metric attribute on benchmark metrics                                      |
+| `query_name`             | Scenario workload             | Metric attribute on per-query metrics                                      |
+| `run_id`                 | Auto-generated UUID           | Metric attribute on SUT-scrape metrics                                     |
+| `table_name`             | ETL table name                | Metric attribute on `e2e_latency_ms` samples outside checkpoint validation |
 
 ## Grafana Dashboard
 
@@ -146,19 +148,18 @@ A prebuilt Grafana dashboard is available at `dashboards/spicebench-benchmarks.g
 
 Results from every Run are published to [SpiceBench.com](https://spicebench.com), providing:
 
-- **Leaderboard** — Systems ranked by E2E benchmark duration (phase 2 wall-clock time). Secondary sort by query latency and ingestion throughput.
-- **Run details** — Per-query latency breakdown, ingestion rates over time, resource utilization charts, and E2E event latency distributions.
-- **Cross-system comparison** — Side-by-side views of any two Runs with relative performance ratios.
+- **Leaderboard** - Systems ranked by `test_duration_ms`, the timed benchmark wall-clock duration. Secondary sort by query latency and ingestion throughput.
+- **Run details** - Per-query latency breakdown, ingestion rates over time, resource utilization charts, and E2E event latency distributions.
+- **Cross-system comparison** - Side-by-side views of any two Runs with relative performance ratios.
 
-## Pass/Fail Criteria
+## Query Status
 
-After the load test, SpiceBench evaluates each query's performance:
+SpiceBench emits `query_status` for each query. In the current main benchmark path:
 
-| Condition                               | Result   |
-| --------------------------------------- | -------- |
-| p99 latency increase >20% vs baseline   | **FAIL** |
-| p99 latency increase 10–20% vs baseline | **WARN** |
-| ≥3 WARNs across all queries             | **FAIL** |
-| Otherwise                               | **PASS** |
+| Condition                                        | Result   |
+| ------------------------------------------------ | -------- |
+| Query execution completed successfully           | **PASS** |
+| Query execution failed                           | **FAIL** |
+| Checkpoint validation detected incorrect results | **FAIL** |
 
-The benchmark's overall status is determined by combining individual query results.
+The current main binary does not run a separate baseline stage or a baseline-regression WARN/FAIL gate. P99 latency is exported as telemetry for comparison across runs instead.

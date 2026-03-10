@@ -4,15 +4,15 @@ This guide covers installing, building, and running SpiceBench for the first tim
 
 ## Prerequisites
 
-- **Rust** — nightly toolchain (see `rust-toolchain.toml`; currently Rust 1.91.0+, edition 2024)
-- **S3 access** — read access to the source data bucket (default: `spiceai-public-datasets`)
-- **System adapter** — a running or launchable adapter for your target platform (see [System Adapters](system-adapters.md))
-- **ADBC driver** — the appropriate ADBC driver for your target system
+- **Rust** - nightly toolchain (see `rust-toolchain.toml`; currently Rust 1.91.0+, edition 2024)
+- **S3 access** - read access to the source data bucket (default: `spiceai-public-datasets`)
+- **System adapter** - a running or launchable adapter for your target platform (see [System Adapters](system-adapters.md))
+- **ADBC driver** - the appropriate ADBC driver for your target system
 
 ### Optional
 
-- **Docker** — for running adapters as containers
-- **Grafana** — for visualizing benchmark metrics with the included dashboard
+- **Docker** - for running adapters as containers
+- **Grafana** - for visualizing benchmark metrics with the included dashboard
 
 ## Building
 
@@ -55,8 +55,8 @@ make build-dev
 
 SpiceBench needs a system adapter to provision and communicate with the System Under Test. You can either:
 
-- **Start a stdio adapter** — SpiceBench spawns it as a child process
-- **Connect to an HTTP adapter** — SpiceBench connects to a running server
+- **Start a stdio adapter** - SpiceBench spawns it as a child process
+- **Connect to an HTTP adapter** - SpiceBench connects to a running server
 
 Example with the Databricks adapter (stdio):
 
@@ -73,9 +73,8 @@ dbc install databricks
 
 ```bash
 spicebench \
-    --query-set tpch \
+    --scenario tpch \
     --system-adapter-name databricks \
-    --system-adapter-execution-mode direct-query \
     --system-adapter-stdio-cmd system-adapters/databricks/target/debug/databricks-system-adapter \
     --system-adapter-stdio-args "stdio" \
     --system-adapter-env DATABRICKS_ENDPOINT=$DATABRICKS_ENDPOINT \
@@ -115,8 +114,7 @@ cargo run -p data-generation -- run \
     --bucket my-bucket \
     --region us-west-2 \
     --prefix raw \
-    --num-steps 10 \
-    --table-format parquet
+    --num-steps 10
 ```
 
 See [Data Generation & ETL](data-generation-and-etl.md) for full details.
@@ -128,7 +126,7 @@ To run the ETL pipeline independently:
 ```bash
 cargo run -p etl -- \
     --scenario tpch \
-    --version 1 \
+    --scale-factor 1 \
     --bucket spiceai-public-datasets \
     --prefix data-gen \
     --target-prefix rehydrated \
@@ -139,7 +137,7 @@ See [Data Generation & ETL](data-generation-and-etl.md) for all sink options.
 
 ## Next Steps
 
-- [CLI Reference](cli-reference.md) — all flags and options for `spicebench` and `data-generation`
-- [System Adapters](system-adapters.md) — how to build an adapter for your platform
-- [Configuration](configuration.md) — query sets, SQL overrides, and run metadata
-- [Metrics & Telemetry](metrics-and-telemetry.md) — all collected metrics and how to visualize them
+- [CLI Reference](cli-reference.md) - all flags and options for `spicebench`, `data-generation`, `etl`, and `checkpointer`
+- [System Adapters](system-adapters.md) - how to build an adapter for your platform
+- [Configuration](configuration.md) - scenario, table format, and run metadata
+- [Metrics & Telemetry](metrics-and-telemetry.md) - all collected metrics and how to visualize them

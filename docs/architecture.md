@@ -2,11 +2,11 @@
 
 ## Introduction
 
-SpiceBench is an open-source benchmark for data and AI platforms. It measures the full operational data lifecycle — ingestion, acceleration, and query serving — under the conditions AI applications and agents actually face. Unlike static benchmarks (ClickBench, TPC-H) that run queries on pre-created datasets, SpiceBench runs data generation, ingestion, acceleration/materialization, and query execution **concurrently**, capturing the real tension between ingestion throughput, materialization freshness, and query latency.
+SpiceBench is an open-source benchmark for data and AI platforms. It measures the full operational data lifecycle - ingestion, acceleration, and query serving - under the conditions AI applications and agents actually face. Unlike static benchmarks (ClickBench, TPC-H) that run queries on pre-created datasets, SpiceBench benchmarks concurrent ingestion, acceleration/materialization, and query execution against a pre-generated data archive, capturing the real tension between ingestion throughput, materialization freshness, and query latency.
 
 ## System Overview
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │                    GitHub Actions / CI                       │
 │  (schedule, manual dispatch, or PR trigger)                  │
@@ -20,8 +20,8 @@ SpiceBench is an open-source benchmark for data and AI platforms. It measures th
 │  │ 1. Setup │──▶│ 2. Benchmark   │──▶│  3. Teardown     │    │
 │  │ (JSON-RPC│   │    (timed)     │   │  (JSON-RPC)      │    │
 │  │  adapter)│   │                │   │                  │    │
-│  └──────────┘   │ baseline       │   └──────────────────┘    │
-│                 │ load test      │                           │
+│  └──────────┘   │ concurrent ETL │   └──────────────────┘    │
+│                 │ + query load   │                           │
 │                 └────────────────┘                           │
 └──────────────────────────────────────────────────────────────┘
         │                    │                    │
@@ -41,35 +41,37 @@ A **Run** is a single end-to-end execution of the benchmark targeting one system
 
 SpiceBench connects to a **system adapter** via JSON-RPC 2.0 (over stdio or HTTP) and calls:
 
-1. **`setup(run_id, metadata, datasets, etl_sink_type)`** — Provisions the System Under Test (SUT), creates/registers benchmark tables, and returns ADBC driver configuration (driver name + connection kwargs) for query execution.
+1. **`setup(run_id, metadata, datasets, etl_sink_type)`** - Returns ADBC driver configuration (driver name + connection kwargs) for query execution and can optionally provision the System Under Test (SUT) or create/register benchmark tables.
 
-The adapter response from `setup` tells SpiceBench which ADBC driver to use and how to connect.
+The adapter response from `setup` tells SpiceBench which ADBC driver to use and how to connect. For manually prepared systems, this phase can be limited to returning connection details.
 
 ### Phase 2: Benchmark (timed)
 
-The benchmark phase has two sequential stages:
+The current main benchmark path runs a single timed stage. SpiceBench starts the query workload, starts ETL, and keeps both running until the pipeline completes, fails, or is cancelled.
 
-| Stage         | Duration                                 | Purpose                                                                       |
-| ------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| **Baseline**  | 10% of total duration (clamped 60s–600s) | Establishes per-query p99 latency baselines without concurrent data ingestion |
-| **Load test** | Full configured duration                 | Runs concurrent query clients alongside active ETL data ingestion             |
+Included in the timer:
 
-During the load test, the ETL pipeline streams data from S3 into the SUT — simulating continuous data flowing from a data lake into the acceleration layer — while multiple query clients execute the configured query set concurrently, representing application and AI agent workloads.
+- concurrent query execution
+- ETL processing and sink writes
+- checkpoint pause and validation windows when `--validate-results` is enabled
+- final shutdown after ETL completion
 
-**Pass/Fail criteria**: After the load test, each query's p99 latency is compared against its baseline:
-- **>20% increase** → FAIL
-- **10–20% increase** → WARN
-- **≥3 WARNs** → FAIL
+Excluded from the timer:
+
+- archive download and extraction
+- adapter `setup` and `teardown`
+
+The current main binary exports p99 latency as telemetry for comparison across runs, but it does not run a separate baseline stage or a baseline-regression fail gate.
 
 ### Phase 3: Teardown (not timed)
 
-SpiceBench calls **`teardown(run_id)`** on the adapter to deprovision resources, drop tables, and clean up.
+SpiceBench calls **`teardown(run_id)`** on the adapter so it can optionally deprovision resources, drop tables, or perform any final cleanup.
 
-Teardown always runs, even if the benchmark phase encounters errors.
+Teardown always runs, even if the benchmark phase encounters errors, and adapters may implement it as a no-op when cleanup is handled externally or artifacts should be retained.
 
 ## Data Flow
 
-```
+```text
 ┌─────────────────┐     ┌────────────────┐     ┌──────────────────┐
 │ data-generation │────▶│  S3 (Parquet)  │────▶│  ETL Pipeline    │
 │   (TPC-H)       │     │  raw batches   │     │  rehydrate +     │
@@ -89,12 +91,13 @@ Teardown always runs, even if the benchmark phase encounters errors.
 
 ### Data Generation
 
-The `data-generation` binary produces TPC-H datasets as partitioned Parquet batches and writes them to S3. It supports:
+The `data-generation` binary produces versioned datasets and writes the resulting archive to S3 or a local file. It supports:
 
 - Configurable scale factors (SF1, SF10, SF100, etc.)
-- Mutation operations (INSERT, UPDATE, DELETE) with configurable ratios
 - Multi-step generation for simulating streaming data arrival
 - Version metadata (`version.json`) for downstream ETL
+
+The shipped `data-generation run` CLI currently emits create-only batches and records zero mutation ratios in `version.json`.
 
 ### ETL Pipeline
 
@@ -111,12 +114,7 @@ See [Data Generation & ETL](data-generation-and-etl.md) for details.
 
 ## Query Execution
 
-SpiceBench supports pluggable query executors:
-
-| Executor        | Transport                      | Use Case                                 |
-| --------------- | ------------------------------ | ---------------------------------------- |
-| **ADBC Direct** | ADBC driver (adapter-selected) | Primary executor for `direct-query` mode |
-| **HTTP**        | `POST /v1/sql`                 | HTTP-based query execution               |
+The current benchmark path uses the ADBC driver returned by the adapter's `setup()` response to execute queries directly against the SUT. Adapter transport is still JSON-RPC over stdio or HTTP, but the benchmark data plane is ADBC-based.
 
 ## Future AI-Native Extension
 
@@ -139,11 +137,9 @@ SpiceBench currently measures ingestion-to-query behavior. A planned extension i
 
 This extends SpiceBench from an operational SQL benchmark into an AI-native data benchmark for application and agent workloads.
 
-In `direct-query` mode (the most common), SpiceBench uses the ADBC driver returned by the adapter's `setup()` response to execute queries directly against the SUT.
-
 ## Metrics Pipeline
 
-```
+```text
 ┌────────────────────────────────────────────────────────────┐
 │                    SpiceBench Process                       │
 │                                                            │
@@ -177,36 +173,40 @@ In `direct-query` mode (the most common), SpiceBench uses the ADBC driver return
 
 Metrics are collected from three sources:
 
-1. **Query driver** — Per-query latency statistics (median, min, max, p99), iteration counts, pass/fail status
-2. **SUT metrics scraper** — Resource usage (CPU, memory, disk I/O, IOPS) and ingestion progress (rows, bytes, throughput) obtained by periodically calling the adapter's `metrics()` JSON-RPC method
-3. **Health monitor** — Endpoint latency for `/health` and `/v1/ready` probes
+1. **Query driver** - Per-query latency statistics (median, min, max, p99), iteration counts, pass/fail status
+2. **SUT metrics scraper** - Resource usage (CPU, memory, disk I/O, IOPS) and ingestion progress (rows, bytes, throughput) obtained by periodically calling the adapter's `metrics()` JSON-RPC method
+3. **Health monitor** - Endpoint latency for `/health` and `/v1/ready` probes
 
 See [Metrics & Telemetry](metrics-and-telemetry.md) for the full instrument list.
 
 ## System Adapter Protocol
 
-The system adapter protocol is a JSON-RPC 2.0 interface that decouples SpiceBench from any specific data platform. Each adapter implements three methods:
+The system adapter protocol is a JSON-RPC 2.0 interface that decouples SpiceBench from any specific data platform. The core runtime methods are:
 
-| Method                                             | Purpose                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------- |
-| `setup(run_id, metadata, datasets, etl_sink_type)` | Provision the SUT, create tables, return ADBC driver config            |
-| `teardown(run_id)`                                 | Deprovision resources                                                  |
-| `metrics(run_id)`                                  | Return resource usage and ingestion stats (optional)                   |
+| Method                                             | Purpose                                                     |
+| -------------------------------------------------- | ----------------------------------------------------------- |
+| `setup(run_id, metadata, datasets, etl_sink_type)` | Provision the SUT, create tables, return ADBC driver config |
+| `teardown(run_id)`                                 | Deprovision resources                                       |
+| `metrics(run_id)`                                  | Return resource usage and ingestion stats (optional)        |
+| `rpc.methods`                                      | Report supported JSON-RPC methods                           |
 
 Adapters communicate over **stdio** (SpiceBench spawns the adapter as a child process) or **HTTP** (SpiceBench connects to a running adapter server).
 
 See [System Adapters](system-adapters.md) for the full protocol specification.
 
-## Execution Modes
+## Execution Mode Flag
 
-SpiceBench supports two execution modes controlled by `--system-adapter-execution-mode`:
+The CLI still accepts `--system-adapter-execution-mode`, but the current main `spicebench` binary does not branch on it yet.
 
-| Mode                | Flag                        | Behavior                                                                                        |
-| ------------------- | --------------------------- | ----------------------------------------------------------------------------------------------- |
-| **adapter-command** | `adapter-command` (default) | Delegates the entire benchmark run to the adapter via `run.load` JSON-RPC                       |
-| **direct-query**    | `direct-query`              | SpiceBench drives queries directly via ADBC; adapter handles setup/teardown/metrics only |
+In the shipped benchmark path, SpiceBench:
 
-`direct-query` is the standard mode for benchmarking external systems where SpiceBench controls the query workload.
+1. calls adapter `setup`
+2. builds the ADBC query path from the returned driver configuration
+3. runs ETL and query execution itself
+4. optionally scrapes adapter `metrics`
+5. calls adapter `teardown`
+
+Custom adapters can still expose additional RPC methods for their own workflows, but those are outside the core benchmark path currently driven by `spicebench`.
 
 ## Checkpoint Validation
 
@@ -214,14 +214,14 @@ SpiceBench supports **checkpoint-based result validation** to verify query corre
 
 1. The `checkpointer` binary pre-computes expected query results at specific ETL steps and stores them as Parquet files in S3
 2. During a benchmark run, when the ETL pipeline reaches a checkpoint step, it pauses ingestion
-3. SpiceBench runs the query set and compares results against the stored expected results
+3. SpiceBench runs the scenario workload and compares results against the stored expected results
 4. After validation, ETL resumes
 
 This ensures the SUT returns correct results under concurrent read/write load.
 
 ## Crate Architecture
 
-```
+```text
 spicebench (binary)
 ├── test-framework          Core benchmark engine
 ├── system-adapter-protocol JSON-RPC client/server
