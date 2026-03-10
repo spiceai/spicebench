@@ -60,6 +60,14 @@ fn run_metric_attributes(common_args: &CommonArgs) -> Vec<KeyValue> {
     )]
 }
 
+fn log_sut_metrics_snapshot(response: &MetricsResponse) {
+    tracing::debug!(
+        resource = ?response.resource,
+        ingestion = ?response.ingestion,
+        "SUT metrics snapshot retrieved before export"
+    );
+}
+
 /// Record the latest SUT metrics snapshot on the given streaming instruments.
 #[expect(clippy::too_many_arguments)]
 fn record_sut_metrics(
@@ -71,6 +79,8 @@ fn record_sut_metrics(
     prev_disk_write_bytes: &mut Option<u64>,
     prev_disk_read_iops: &mut Option<u64>,
     prev_disk_write_iops: &mut Option<u64>,
+    prev_rows_ingested: &mut Option<u64>,
+    last_scrape_time: &mut Option<std::time::Instant>,
 ) {
     // Resource metrics are cumulative counters; record the delta since last scrape
     if let Some(cpu) = response.resource.cpu_usage_percent {
@@ -121,9 +131,25 @@ fn record_sut_metrics(
     if let Some(v) = response.ingestion.bytes_ingested {
         instruments.ingestion_bytes_total.record(v, attributes);
     }
+    // Use adapter-provided rows_per_sec if available; otherwise derive it
+    // from the delta in rows_ingested since the last scrape.
     if let Some(v) = response.ingestion.rows_per_sec {
         crate::metrics::INGESTION_ROWS_PER_SEC.record(v, attributes);
+    } else if let Some(current_rows) = response.ingestion.rows_ingested
+        && let Some(prev_rows) = *prev_rows_ingested
+        && let Some(prev_time) = *last_scrape_time
+    {
+        let elapsed_secs = prev_time.elapsed().as_secs_f64();
+        if elapsed_secs > 0.0 {
+            let rows_per_sec = current_rows.saturating_sub(prev_rows) as f64 / elapsed_secs;
+            crate::metrics::INGESTION_ROWS_PER_SEC.record(rows_per_sec, attributes);
+        }
     }
+    // Update tracking state for the next scrape
+    if let Some(v) = response.ingestion.rows_ingested {
+        *prev_rows_ingested = Some(v);
+    }
+    *last_scrape_time = Some(std::time::Instant::now());
     if let Some(v) = response.ingestion.active_connections {
         crate::metrics::ACTIVE_CONNECTIONS.record(v, attributes);
     }
@@ -151,6 +177,8 @@ fn spawn_sut_metrics_scraper(
         let mut prev_cpu_usage_seconds: Option<f64> = None;
         let mut prev_disk_read_iops: Option<u64> = None;
         let mut prev_disk_write_iops: Option<u64> = None;
+        let mut prev_rows_ingested: Option<u64> = None;
+        let mut last_scrape_time: Option<std::time::Instant> = None;
         let mut ticker = tokio::time::interval(interval);
         loop {
             tokio::select! {
@@ -158,6 +186,7 @@ fn spawn_sut_metrics_scraper(
                     let metrics_result = adapter.lock().await.metrics(run_id, false).await;
                     match metrics_result {
                         Ok(resp) => {
+                            log_sut_metrics_snapshot(&resp);
                             record_sut_metrics(
                                 &resp,
                                 &instruments,
@@ -167,6 +196,8 @@ fn spawn_sut_metrics_scraper(
                                 &mut prev_disk_write_bytes,
                                 &mut prev_disk_read_iops,
                                 &mut prev_disk_write_iops,
+                                &mut prev_rows_ingested,
+                                &mut last_scrape_time,
                             );
                             last_response = Some(resp);
                         }
@@ -178,6 +209,7 @@ fn spawn_sut_metrics_scraper(
                 () = token.cancelled() => {
                     // Final scrape before exiting
                     if let Ok(resp) = adapter.lock().await.metrics(run_id, true).await {
+                        log_sut_metrics_snapshot(&resp);
                         record_sut_metrics(
                             &resp,
                             &instruments,
@@ -187,6 +219,8 @@ fn spawn_sut_metrics_scraper(
                             &mut prev_disk_write_bytes,
                             &mut prev_disk_read_iops,
                             &mut prev_disk_write_iops,
+                            &mut prev_rows_ingested,
+                            &mut last_scrape_time,
                         );
                         last_response = Some(resp);
                     }
