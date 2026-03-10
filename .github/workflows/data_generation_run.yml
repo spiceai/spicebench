@@ -101,6 +101,10 @@ jobs:
           toolchain: 1.91
           cache: false
 
+      - name: Setup CC
+        if: steps.cache-data-generation.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-cc
+
       - name: Build data-generation
         if: steps.cache-data-generation.outputs.cache-hit != 'true'
         run: |
