@@ -1678,8 +1678,8 @@ print("OK")
                 payload["database_instance_name"] = json!(name);
             }
             LakebaseSyncTarget::Project { name, branch } => {
-                payload["project_name"] = json!(name);
-                payload["branch_name"] = json!(branch);
+                payload["database_project_id"] = json!(name);
+                payload["database_branch_id"] = json!(branch);
             }
         }
         eprintln!(
@@ -1839,6 +1839,50 @@ print("OK")
         Ok(())
     }
 
+    async fn create_lakebase_pg_indexes(&self, lakebase_config: &LakebaseConfig) -> Result<()> {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| anyhow!("Failed to configure TLS: {e}"))?
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+
+        let pg_uri = self.lakebase_pg_uri().await?;
+        let (client, connection) = tokio_postgres::connect(&pg_uri, tls)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to Lakebase PG: {e}"))?;
+        tokio::spawn(connection);
+
+        let index_stmts = [
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_quantity ON \"{}\".lineitem (l_partkey, l_quantity)",
+                lakebase_config.schema
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_suppkey_shipdate ON \"{}\".lineitem (l_partkey, l_suppkey, l_shipdate, l_quantity)",
+                lakebase_config.schema
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_part_name_prefix ON \"{}\".part USING btree (p_name text_pattern_ops)",
+                lakebase_config.schema
+            ),
+        ];
+
+        for stmt in &index_stmts {
+            eprintln!("[databricks-adapter] creating index: {stmt}");
+            if let Err(e) = client.execute(stmt.as_str(), &[]).await {
+                eprintln!("[databricks-adapter] index creation failed (non-fatal): {e}");
+            }
+        }
+
+        Ok(())
+    }
+
     async fn delete_synced_table(&self, table_name: &str) -> Result<()> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
@@ -1939,6 +1983,8 @@ print("OK")
         };
 
         eprintln!("[databricks-adapter] generating fresh Lakebase PG OAuth token");
+
+        eprintln!("[databricks-adapter] generate_lakebase_pg_token: url={}, \ntoken={}, \npayload={:#?}", url, self.config.token, payload);
 
         let response = self
             .client
@@ -2340,6 +2386,11 @@ impl Handler for DatabricksAdapter {
                     .collect();
 
                 created_tables = futures::future::try_join_all(sync_futs).await?;
+
+                eprintln!("[databricks-adapter] creating performance indexes on Lakebase...");
+                if let Err(e) = self.create_lakebase_pg_indexes(lakebase_config).await {
+                    eprintln!("[databricks-adapter] index creation failed (non-fatal): {e}");
+                }
             }
         }
 
@@ -2439,6 +2490,7 @@ impl Handler for DatabricksAdapter {
                     }
                 };
                 for table_name in &state.created_tables {
+                    eprintln!("[databricks-adapter] teardown: deleting synced table '{table_name}'");
                     // a) Delete synced table from Lakebase (via synced tables API).
                     self.delete_synced_table(table_name).await.map_err(|e| {
                         format!("Failed to delete synced table '{table_name}': {e}")
@@ -2461,12 +2513,14 @@ impl Handler for DatabricksAdapter {
                     }
 
                     // c) Drop the managed source table (adapter schema).
+                    eprintln!("[databricks-adapter] teardown: deleting managed table '{table_name}'");
                     let sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
                     self.execute_sql_statement(&sql)
                         .await
                         .map_err(|e| format!("Failed to drop managed table '{table_name}': {e}"))?;
                 }
 
+                eprintln!("[databricks-adapter] teardown: dropping lakebase tables");
                 // Drop tables directly from Lakebase PG.
                 self.delete_lakebase_pg_tables(&state.created_tables, lakebase_config)
                     .await
@@ -2494,13 +2548,18 @@ impl Handler for DatabricksAdapter {
             }
         }
 
+        eprintln!("[databricks-adapter] teardown: done");
+
         if state.cluster_created_by_adapter
             && let Some(cluster_id) = state.cluster_id.as_deref()
         {
+            eprintln!("[databricks-adapter] teardown: terminating cluster");
             self.terminate_cluster(cluster_id).await.map_err(|e| {
                 format!("Failed to terminate Databricks cluster '{cluster_id}': {e}")
             })?;
         }
+
+        eprintln!("[databricks-adapter] teardown: done-done");
 
         Ok(TeardownResponse { ok: true })
     }
