@@ -67,10 +67,6 @@ pub struct CommonArgs {
     /// S3 endpoint URL (for MinIO/LocalStack)
     #[arg(long)]
     pub endpoint: Option<String>,
-
-    /// Maximum number of concurrent S3 writes (legacy, unused with file storage)
-    #[arg(long, default_value_t = 16)]
-    pub max_concurrency: usize,
 }
 
 pub struct DatasetConfig {
@@ -90,10 +86,6 @@ pub struct TargetConfig {
     ///
     /// Path segments are created in this same order, e.g. `a=.../b=...`.
     pub partition_columns: Vec<String>,
-}
-
-pub struct IngestorConfig {
-    pub max_concurrency: usize,
 }
 
 impl CommonArgs {
@@ -132,12 +124,6 @@ impl CommonArgs {
             endpoint: self.endpoint.clone(),
             partition_columns: vec![],
         })
-    }
-
-    pub fn ingestor_config(&self) -> IngestorConfig {
-        IngestorConfig {
-            max_concurrency: self.max_concurrency,
-        }
     }
 }
 

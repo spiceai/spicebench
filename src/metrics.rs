@@ -36,7 +36,6 @@ pub static QUERY_STATUS: LazyLock<Gauge<u64>> = LazyLock::new(|| {
         .build()
 });
 
-#[allow(dead_code)]
 pub static HEALTH_LATENCY: LazyLock<Histogram<f64>> = LazyLock::new(|| {
     meter()
         .f64_histogram("health_latency_ms")
@@ -85,7 +84,6 @@ pub static TEST_DURATION: LazyLock<Gauge<u64>> = LazyLock::new(|| {
         .build()
 });
 
-#[allow(dead_code)]
 pub static PEAK_MEMORY_USAGE: LazyLock<Gauge<f64>> = LazyLock::new(|| {
     meter()
         .f64_gauge("peak_memory_usage_mb")
@@ -94,7 +92,6 @@ pub static PEAK_MEMORY_USAGE: LazyLock<Gauge<f64>> = LazyLock::new(|| {
         .build()
 });
 
-#[allow(dead_code)]
 pub static MEDIAN_MEMORY_USAGE: LazyLock<Gauge<f64>> = LazyLock::new(|| {
     meter()
         .f64_gauge("median_memory_usage_mb")

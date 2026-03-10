@@ -139,7 +139,6 @@ jobs:
             --scale-factor 0.001 \
             --bucket spiceai-public-datasets \
             --prefix pr-validation \
-            --max-concurrency 4 \
             --region us-east-1
 
       - name: Install ADBC driver

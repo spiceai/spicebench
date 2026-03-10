@@ -20,7 +20,6 @@ use std::time::Instant;
 
 use tokio::task::JoinSet;
 
-use super::config::IngestorConfig;
 use super::dataset::Dataset;
 use super::metrics::{IngestResult, Metrics};
 use super::storage::DataStorage;
@@ -51,7 +50,6 @@ impl DataGenerator {
     pub fn new(
         dataset: Arc<dyn Dataset>,
         target: Arc<dyn DataStorage>,
-        _config: &IngestorConfig,
         metrics: Metrics,
         version_config: VersionConfig,
     ) -> Self {
@@ -88,12 +86,13 @@ impl DataGenerator {
 
         // For each table, spawn a single task that generates and writes inline.
         let mut join_set = JoinSet::new();
-        for table_name in self.dataset.tables().keys().cloned() {
+        for table_name in self.dataset.tables().keys() {
             let dataset = Arc::clone(&self.dataset);
             let target = self.target.clone();
             let metrics = self.metrics.clone();
             let written_ids = Arc::clone(&written_batches);
 
+            let table_name = table_name.clone();
             join_set.spawn(async move {
                 let mut batch_id: u64 = 0;
                 loop {
@@ -453,7 +452,6 @@ mod tests {
         let generator = DataGenerator::new(
             dataset,
             target,
-            &IngestorConfig { max_concurrency: 4 },
             Metrics::new(),
             VersionConfig {
                 scenario: "test".to_string(),

@@ -19,7 +19,6 @@ use async_trait::async_trait;
 
 pub mod adbc;
 pub mod null;
-pub mod s3_hive;
 
 #[cfg(feature = "duckdb")]
 pub mod duckdb;

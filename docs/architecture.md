@@ -73,20 +73,20 @@ Teardown always runs, even if the benchmark phase encounters errors, and adapter
 
 ```text
 ┌─────────────────┐     ┌────────────────┐     ┌──────────────────┐
-│ data-generation │────▶│  S3 (Parquet)  │────▶│  ETL Pipeline    │
-│   (TPC-H)       │     │  raw batches   │     │  rehydrate +     │
-│                 │     │                │     │  timestamp +     │
-└─────────────────┘     └────────────────┘     │  partition       │
+│ data-generation │────▶│  S3 (archive)  │────▶│  ETL Pipeline    │
+│   (TPC-H)       │     │  .tar.zst      │     │  download +      │
+│                 │     │                │     │  extract +       │
+└─────────────────┘     └────────────────┘     │  rehydrate       │
                                                └────────┬─────────┘
                                                         │
-                                          ┌─────────────┼─────────────┐
-                                          ▼             ▼             ▼
-                                    ┌──────────┐  ┌──────────┐  ┌──────────┐
-                                    │ S3 Hive  │  │ ADBC     │  │ Null     │
-                                    │ Parquet  │  │ Bulk     │  │ Sink     │
-                                    │          │  │ Ingest   │  │ (/dev/   │
-                                    │          │  │          │  │  null)   │
-                                    └──────────┘  └──────────┘  └──────────┘
+                                          ┌──────────┬──────────┐
+                                          ▼          ▼          
+                                    ┌──────────┐ ┌──────────┐
+                                    │ ADBC     │ │ Null     │
+                                    │ Bulk     │ │ Sink     │
+                                    │ Ingest   │ │ (/dev/   │
+                                    │          │ │  null)   │
+                                    └──────────┘ └──────────┘
 ```
 
 ### Data Generation
@@ -101,14 +101,15 @@ The shipped `data-generation run` CLI currently emits create-only batches and re
 
 ### ETL Pipeline
 
-The ETL pipeline reads raw batches from S3, processes them, and writes to a configurable sink:
+The ETL pipeline downloads the archive from S3, extracts it locally, and processes the raw batches:
 
-1. **Read** raw Parquet batches from S3
-2. **Rehydrate** records (restore from columnar + apply mutations)
-3. **Split** by operation type (create/update/delete)
-4. **Append** `__created_at` timestamps for freshness tracking
-5. **Strip** internal columns (`__op`, `__key_*`)
-6. **Write** to the configured sink
+1. **Download** the `.tar.zst` archive from S3 and extract it locally
+2. **Read** raw Parquet batches from the extracted archive
+3. **Rehydrate** records (restore from columnar + apply mutations)
+4. **Split** by operation type (create/update/delete)
+5. **Append** `__created_at` timestamps for freshness tracking
+6. **Strip** internal columns (`__op`, `__key_*`)
+7. **Write** to the configured sink
 
 See [Data Generation & ETL](data-generation-and-etl.md) for details.
 

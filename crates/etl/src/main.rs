@@ -25,7 +25,6 @@ use data_generation::storage::s3::S3Storage;
 use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
 use etl::sink::null::NullSink;
-use etl::sink::s3_hive::S3HiveSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use tracing_subscriber::EnvFilter;
 
@@ -35,8 +34,6 @@ const DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES: &str = "78643200";
 #[derive(Clone, Debug, Default, ValueEnum)]
 enum SinkType {
     #[default]
-    #[value(name = "s3-hive")]
-    S3Hive,
     #[value(name = "adbc")]
     Adbc,
     #[value(name = "null")]
@@ -45,7 +42,7 @@ enum SinkType {
 
 #[derive(Parser)]
 #[command(
-    about = "Run an ETL pipeline that reads from a data archive, rehydrates data, and writes to S3 Hive, ADBC, or a null sink"
+    about = "Run an ETL pipeline that reads from a data archive, rehydrates data, and writes to ADBC or a null sink"
 )]
 struct Cli {
     /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
@@ -82,23 +79,11 @@ struct Cli {
     #[arg(long)]
     endpoint: Option<String>,
 
-    /// Base S3 key prefix for the ETL target (hive-partitioned output).
-    /// Defaults to the source prefix if not specified.
-    #[arg(long, default_value = "")]
-    target_prefix: String,
-
-    /// Ordered list of columns used for hive-style partitioning.
-    ///
-    /// Example: `--partition-by __created_at,product_type`
-    #[arg(long, value_delimiter = ',', default_value = "__created_at")]
-    partition_by: Vec<String>,
-
     /// ETL sink target.
     ///
-    /// - s3-hive: write hive-partitioned parquet to S3
     /// - adbc: write via ADBC bulk ingest
     /// - null: discard all writes (throughput benchmark mode)
-    #[arg(long, value_enum, default_value_t = SinkType::S3Hive)]
+    #[arg(long, value_enum, default_value_t = SinkType::Adbc)]
     sink: SinkType,
 
     /// ADBC driver name (for example: "databricks" or "flightsql").
@@ -271,55 +256,6 @@ async fn main() -> anyhow::Result<()> {
                 Some(adbc_sink),
             )
         }
-        SinkType::S3Hive => {
-            if cli.adbc_driver.is_some()
-                || cli.adbc_uri.is_some()
-                || !cli.adbc_options.is_empty()
-                || cli.adbc_catalog.is_some()
-                || cli.adbc_schema.is_some()
-                || cli.adbc_create_tables
-            {
-                anyhow::bail!(
-                    "ADBC options are only valid with --sink adbc. Remove ADBC flags or set --sink adbc."
-                );
-            }
-
-            let hive_prefix = if cli.target_prefix.is_empty() {
-                format!(
-                    "{}/{}/{}",
-                    cli.prefix.trim_matches('/'),
-                    cli.scenario,
-                    version
-                )
-            } else {
-                format!(
-                    "{}/{}/{}",
-                    cli.target_prefix.trim_matches('/'),
-                    cli.scenario,
-                    version
-                )
-            };
-
-            let bucket = cli
-                .bucket
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("--bucket is required for --sink s3-hive"))?;
-
-            let hive_config = TargetConfig {
-                bucket: bucket.clone(),
-                prefix: hive_prefix,
-                region: cli.region.clone(),
-                endpoint: cli.endpoint.clone(),
-                partition_columns: cli.partition_by.clone(),
-            };
-
-            (
-                Arc::new(S3HiveSink::new(&hive_config)?),
-                Some(hive_config),
-                "s3-hive".to_string(),
-                None,
-            )
-        }
         SinkType::Null => {
             if cli.adbc_driver.is_some()
                 || cli.adbc_uri.is_some()
@@ -373,8 +309,6 @@ async fn main() -> anyhow::Result<()> {
         adbc_catalog = ?cli.adbc_catalog,
         adbc_schema = ?cli.adbc_schema,
         adbc_create_tables = cli.adbc_create_tables,
-        target_prefix = %cli.target_prefix,
-        partition_by = ?cli.partition_by,
         scale_factor = version_metadata.scale_factor,
         num_steps = version_metadata.num_steps,
         "Starting ETL pipeline"
