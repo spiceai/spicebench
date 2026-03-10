@@ -217,6 +217,11 @@ pub struct TeardownResponse {
 pub struct MetricsRequest {
     /// Unique identifier for the benchmark run
     pub run_id: Uuid,
+    /// When true, this is the final metrics collection after the benchmark run
+    /// has finished. Adapters may perform heavier queries (e.g. Query History)
+    /// that would be too slow for periodic scraping.
+    #[serde(default)]
+    pub final_scrape: bool,
 }
 
 /// Resource utilization snapshot from the system under test

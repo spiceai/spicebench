@@ -237,6 +237,8 @@ struct RunState {
     created_tables: Vec<String>,
     cluster_id: Option<String>,
     cluster_created_by_adapter: bool,
+    /// Epoch millis when the run was set up (for Query History time-range filtering).
+    started_at_ms: u64,
 }
 
 struct DatabricksAdapter {
@@ -891,6 +893,147 @@ impl DatabricksAdapter {
                 }
             }
         }
+    }
+
+    /// Fire a tagged marker query and wait for it to appear in the Query History
+    /// API.  Once the marker is visible, all earlier queries from this warehouse
+    /// are also guaranteed to be visible.
+    ///
+    /// Returns the `query_start_time_ms` of the marker query so the caller can
+    /// use it as the upper bound for the time window.
+    async fn fire_marker_and_wait(&self, marker_tag: &str) -> Result<()> {
+        // Fire a lightweight SELECT that embeds the marker tag in a comment.
+        let marker_sql = format!("SELECT 1 /* spicebench_marker:{marker_tag} */");
+        self.execute_sql_statement(&marker_sql).await?;
+
+        // Now poll the Query History API until we see a FINISHED query whose
+        // query_text contains the marker tag.
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        let history_url = format!(
+            "https://{}/api/2.0/sql/history/queries",
+            self.config.endpoint
+        );
+
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(anyhow!(
+                    "Timed out (10 min) waiting for marker query to appear in Query History"
+                ));
+            }
+
+            let filter = json!({
+                "filter_by": {
+                    "warehouse_ids": [self.config.warehouse_id],
+                    "query_text": {
+                        "pattern": format!("spicebench_marker:{marker_tag}")
+                    },
+                    "statuses": ["FINISHED"]
+                },
+                "max_results": 1
+            });
+
+            let response = self
+                .client
+                .get(&history_url)
+                .bearer_auth(&self.config.token)
+                .query(&[("include_metrics", "true")])
+                .json(&filter)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!("Query History API failed ({status}): {body}"));
+            }
+
+            let body: QueryHistoryResponse = response.json().await?;
+            if !body.res.is_empty() {
+                eprintln!(
+                    "[databricks-adapter] marker query appeared in Query History: tag={marker_tag}"
+                );
+                return Ok(());
+            }
+
+            eprintln!(
+                "[databricks-adapter] waiting for marker query in Query History: tag={marker_tag}"
+            );
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    /// Query the Query History API and sum `read_bytes` + `write_bytes` across
+    /// all FINISHED queries on this warehouse since `start_time_ms`.
+    async fn sum_query_history_io(
+        &self,
+        start_time_ms: u64,
+        end_time_ms: u64,
+    ) -> Result<(u64, u64)> {
+        let history_url = format!(
+            "https://{}/api/2.0/sql/history/queries",
+            self.config.endpoint
+        );
+
+        let mut total_read: u64 = 0;
+        let mut total_write: u64 = 0;
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut filter = json!({
+                "filter_by": {
+                    "warehouse_ids": [self.config.warehouse_id],
+                    "query_start_time_range": {
+                        "start_time_ms": start_time_ms,
+                        "end_time_ms": end_time_ms,
+                    },
+                    "statuses": ["FINISHED"]
+                },
+                "include_metrics": true,
+                "max_results": 100
+            });
+
+            if let Some(token) = &page_token {
+                filter["page_token"] = json!(token);
+            }
+
+            let response = self
+                .client
+                .get(&history_url)
+                .bearer_auth(&self.config.token)
+                .json(&filter)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!("Query History API failed ({status}): {body}"));
+            }
+
+            let body: QueryHistoryResponse = response.json().await?;
+
+            for entry in &body.res {
+                if let Some(metrics) = &entry.metrics {
+                    total_read += metrics.read_bytes.unwrap_or(0);
+                    total_write += metrics.write_bytes.unwrap_or(0);
+                }
+            }
+
+            eprintln!(
+                "[databricks-adapter] query history page: queries={} running_total_read={} running_total_write={}",
+                body.res.len(),
+                total_read,
+                total_write
+            );
+
+            if body.has_next_page {
+                page_token = body.next_page_token;
+            } else {
+                break;
+            }
+        }
+
+        Ok((total_read, total_write))
     }
 
     async fn ensure_cluster_ready(&self) -> Result<(String, bool)> {
@@ -1844,9 +1987,43 @@ struct WarehouseInfoResponse {
     #[serde(default)]
     num_clusters: Option<u64>,
     #[serde(default)]
+    #[allow(dead_code)]
     warehouse_type: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     cluster_size: Option<String>,
+}
+
+/// A single query entry from the Query History API.
+#[derive(Debug, Deserialize)]
+struct QueryHistoryEntry {
+    #[serde(default)]
+    #[allow(dead_code)]
+    query_id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    status: Option<String>,
+    #[serde(default)]
+    metrics: Option<QueryHistoryMetrics>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryHistoryMetrics {
+    #[serde(default)]
+    read_bytes: Option<u64>,
+    #[serde(default)]
+    write_bytes: Option<u64>,
+}
+
+/// Response from GET /api/2.0/sql/history/queries
+#[derive(Debug, Deserialize)]
+struct QueryHistoryResponse {
+    #[serde(default)]
+    res: Vec<QueryHistoryEntry>,
+    #[serde(default)]
+    has_next_page: bool,
+    #[serde(default)]
+    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1916,6 +2093,12 @@ impl Handler for DatabricksAdapter {
         let table_format = self
             .table_format_from_setup_metadata(variant, &metadata)
             .map_err(|e| format!("Invalid setup metadata: {e}"))?;
+
+        let started_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         self.runs.insert(
             run_id,
             RunState {
@@ -1925,6 +2108,7 @@ impl Handler for DatabricksAdapter {
                 created_tables: Vec::new(),
                 cluster_id: cluster_id.clone(),
                 cluster_created_by_adapter,
+                started_at_ms,
             },
         );
 
@@ -2226,9 +2410,11 @@ impl Handler for DatabricksAdapter {
         Ok(TeardownResponse { ok: true })
     }
 
-    async fn metrics(&mut self, run_id: Uuid) -> std::result::Result<MetricsResponse, String> {
-        let _ = run_id;
-
+    async fn metrics(
+        &mut self,
+        run_id: Uuid,
+        final_scrape: bool,
+    ) -> std::result::Result<MetricsResponse, String> {
         match &self.config.compute_target {
             ComputeTarget::SqlWarehouse => {
                 let info = self
@@ -2238,15 +2424,62 @@ impl Handler for DatabricksAdapter {
 
                 eprintln!("[databricks-adapter] SUT metrics: warehouse_info={info:?}");
 
+                let mut resource = ResourceMetrics {
+                    num_compute_nodes: info.num_clusters,
+                    ..Default::default()
+                };
+
+                let ingestion = IngestionMetrics {
+                    active_connections: info.num_active_sessions,
+                    ..Default::default()
+                };
+
+                if final_scrape {
+                    eprintln!(
+                        "[databricks-adapter] final scrape: collecting query history I/O and ingestion bytes"
+                    );
+
+                    // Get run start time
+                    let started_at_ms =
+                        self.runs.get(&run_id).map(|s| s.started_at_ms).unwrap_or(0);
+
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+
+                    // Fire marker query and wait for it to appear in Query History.
+                    // Once visible, all earlier queries from this warehouse are also available.
+                    let marker_tag = format!("{run_id}_{now_ms}");
+                    if let Err(e) = self.fire_marker_and_wait(&marker_tag).await {
+                        eprintln!("[databricks-adapter] warning: marker wait failed: {e}");
+                    } else {
+                        // Sum read_bytes and write_bytes from all queries in the time window
+                        let end_time_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+
+                        match self.sum_query_history_io(started_at_ms, end_time_ms).await {
+                            Ok((total_read, total_write)) => {
+                                eprintln!(
+                                    "[databricks-adapter] query history totals: read_bytes={total_read} write_bytes={total_write}"
+                                );
+                                resource.disk_read_bytes = Some(total_read);
+                                resource.disk_write_bytes = Some(total_write);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[databricks-adapter] warning: query history I/O sum failed: {e}"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 Ok(MetricsResponse {
-                    resource: ResourceMetrics {
-                        num_compute_nodes: info.num_clusters,
-                        ..Default::default()
-                    },
-                    ingestion: IngestionMetrics {
-                        active_connections: info.num_active_sessions,
-                        ..Default::default()
-                    },
+                    resource,
+                    ingestion,
                 })
             }
             _ => Ok(MetricsResponse::default()),
