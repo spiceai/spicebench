@@ -52,7 +52,19 @@ const INTERNAL_COLUMNS: &[&str] = &["_op", "_op_index"];
 /// Smaller input batches from a [`ReadResult`] are concatenated together until
 /// this threshold is reached, and larger input batches are split so no output
 /// batch exceeds this size.
-const TARGET_BATCH_ROWS: usize = 8_192 * 4;
+const TARGET_BATCH_ROWS_ENV: &str = "SPICEBENCH_TARGET_BATCH_ROWS";
+const DEFAULT_TARGET_BATCH_ROWS: usize = 8_192 * 4;
+
+fn target_batch_rows() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var(TARGET_BATCH_ROWS_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(DEFAULT_TARGET_BATCH_ROWS)
+    })
+}
 
 /// Maximum number of in-flight sink writes allowed per table task when the
 /// current segment set is insert-only.
@@ -154,7 +166,7 @@ fn take_median_sample_ms(samples: &StdArc<StdMutex<Vec<u64>>>) -> Option<(f64, u
 }
 
 /// Concatenates small input batches and splits large input batches so each
-/// resulting batch has at most [`TARGET_BATCH_ROWS`] rows.
+/// resulting batch has at most [`target_batch_rows()`] rows.
 ///
 /// This reduces per-batch overhead in downstream partitioning and S3 writes.
 fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>> {
@@ -172,7 +184,7 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
         let total_rows = batch.num_rows();
 
         while offset < total_rows {
-            let chunk_rows = std::cmp::min(TARGET_BATCH_ROWS, total_rows - offset);
+            let chunk_rows = std::cmp::min(target_batch_rows(), total_rows - offset);
             let chunk = if offset == 0 && chunk_rows == total_rows {
                 batch.clone()
             } else {
@@ -180,7 +192,7 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
             };
             offset += chunk_rows;
 
-            if pending_rows > 0 && pending_rows + chunk_rows > TARGET_BATCH_ROWS {
+            if pending_rows > 0 && pending_rows + chunk_rows > target_batch_rows() {
                 let merged = if pending.len() == 1 {
                     pending.remove(0)
                 } else {
@@ -192,7 +204,7 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
                 pending_rows = 0;
             }
 
-            if chunk_rows == TARGET_BATCH_ROWS && pending_rows == 0 {
+            if chunk_rows == target_batch_rows() && pending_rows == 0 {
                 result.push(chunk);
                 continue;
             }
@@ -200,7 +212,7 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
             pending_rows += chunk_rows;
             pending.push(chunk);
 
-            if pending_rows == TARGET_BATCH_ROWS {
+            if pending_rows == target_batch_rows() {
                 let merged = if pending.len() == 1 {
                     pending.remove(0)
                 } else {
@@ -357,7 +369,7 @@ async fn read_logical_batch(
 
 /// Reads source data for `table_name` starting at `start_batch_id`, then keeps
 /// reserving and reading subsequent batch IDs for that table until at least
-/// [`TARGET_BATCH_ROWS`] rows have been accumulated (or no further work exists).
+/// [`target_batch_rows()`] rows have been accumulated (or no further work exists).
 ///
 /// Returns `(raw_batches, key_columns, table_finished, consumed_work_units, rows_read)` where
 /// `table_finished=true` means a read returned `None` and the table should be
@@ -433,7 +445,7 @@ async fn read_batches_until_min_rows(
     'read_loop: while !join_set.is_empty() || !completed_batches.is_empty() {
         while can_reserve_more
             && join_set.len() < MAX_IN_FLIGHT_SOURCE_BATCH_READS.max(1)
-            && total_rows < TARGET_BATCH_ROWS
+            && total_rows < target_batch_rows()
             && !table_finished
         {
             let reservation = {
@@ -498,7 +510,7 @@ async fn read_batches_until_min_rows(
                     all_batches.extend(result.batches);
                     read_any = true;
 
-                    if total_rows >= TARGET_BATCH_ROWS {
+                    if total_rows >= target_batch_rows() {
                         join_set.abort_all();
                         restore_unconsumed_reservations(
                             &scheduled_batch_ids,
