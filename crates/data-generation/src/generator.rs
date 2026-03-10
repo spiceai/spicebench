@@ -86,12 +86,13 @@ impl DataGenerator {
 
         // For each table, spawn a single task that generates and writes inline.
         let mut join_set = JoinSet::new();
-        for table_name in self.dataset.tables().keys().cloned() {
+        for table_name in self.dataset.tables().keys() {
             let dataset = Arc::clone(&self.dataset);
             let target = self.target.clone();
             let metrics = self.metrics.clone();
             let written_ids = Arc::clone(&written_batches);
 
+            let table_name = table_name.clone();
             join_set.spawn(async move {
                 let mut batch_id: u64 = 0;
                 loop {
