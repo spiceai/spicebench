@@ -53,14 +53,6 @@ on:
         required: false
         default: false
         type: boolean
-      runner:
-        description: 'GitHub runner label to use for this workflow run'
-        required: true
-        default: ubuntu-latest
-        type: choice
-        options:
-          - ubuntu-latest
-          - spiceai-dev-runners
       scheduler_state_location:
         description: 'S3 URI for shared scheduler state (e.g. s3://bucket/scheduler-state/). If empty, scheduler state is not configured.'
         required: false
@@ -70,7 +62,7 @@ on:
 jobs:
   run-spicebench:
     name: Run spicebench
-    runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
+    runs-on: spiceai-dev-runners
     timeout-minutes: 600
     steps:
       - uses: actions/checkout@v6
@@ -222,9 +214,7 @@ jobs:
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          if [ "${{ github.event.inputs.runner || 'ubuntu-latest' }}" = "spiceai-dev-runners" ]; then
-            source "$HOME/.local/bin/env"
-          fi
+          source "$HOME/.local/bin/env"
           dbc install postgresql
 
       - name: Install ADBC FlightSQL driver
@@ -232,9 +222,7 @@ jobs:
         run: |
           set -euo pipefail
           curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          if [ "${{ github.event.inputs.runner || 'ubuntu-latest' }}" = "spiceai-dev-runners" ]; then
-            source "$HOME/.local/bin/env"
-          fi
+          source "$HOME/.local/bin/env"
           dbc install flightsql
 
       - name: Run spicebench
@@ -261,8 +249,9 @@ jobs:
           VALIDATE_CHECKPOINT_RESULTS: ${{ github.event.inputs.validate_checkpoint_results || 'false' }}
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           LAKEBASE_PG_HOST: ${{ secrets.LAKEBASE_PG_HOST }}
           LAKEBASE_PG_USER: ${{ secrets.LAKEBASE_PG_USER }}
           LAKEBASE_PG_DB_NAME: ${{ secrets.LAKEBASE_PG_DB_NAME }}
@@ -280,7 +269,7 @@ jobs:
 
           TABLE_FORMAT="parquet"
           EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
-          ETL_ENDPOINT=""
+          ETL_ENDPOINT="${MINIO_ENDPOINT}"
           DATABRICKS_TABLE_FORMAT="${TABLE_FORMAT}"
           SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"

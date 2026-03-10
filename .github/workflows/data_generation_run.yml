@@ -32,14 +32,12 @@ on:
         required: false
         default: '100'
         type: string
-      runner_type:
-        required: false
-        default: 'ubuntu-latest'
-        type: string
     secrets:
-      AWS_ACCESS_KEY_ID:
+      MINIO_ENDPOINT:
         required: true
-      AWS_SECRET_ACCESS_KEY:
+      MINIO_ACCESS_KEY_ID:
+        required: true
+      MINIO_SECRET_ACCESS_KEY:
         required: true
   workflow_dispatch:
     inputs:
@@ -47,11 +45,6 @@ on:
         description: 'Dataset/scenario to generate (e.g. tpch)'
         required: true
         default: 'tpch'
-        type: string
-      runner_type:
-        description: 'GitHub runner label to execute on'
-        required: false
-        default: 'spiceai-macos'
         type: string
       scale_factor:
         description: 'TPC-H scale factor'
@@ -87,7 +80,7 @@ on:
 jobs:
   run-data-generation:
     name: Run data generation
-    runs-on: ${{ inputs.runner_type || github.event.inputs.runner_type || 'ubuntu-latest' }}
+    runs-on: spiceai-dev-runners
     timeout-minutes: 600
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
@@ -123,8 +116,9 @@ jobs:
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           NUM_STEPS: ${{ inputs.num_steps || github.event.inputs.num_steps || '25' }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
           ARGS="--dataset ${SCENARIO}"
@@ -134,6 +128,7 @@ jobs:
           ARGS="${ARGS} --prefix ${PREFIX}"
           ARGS="${ARGS} --region ${REGION}"
           ARGS="${ARGS} --num-steps ${NUM_STEPS}"
+          ARGS="${ARGS} --endpoint ${MINIO_ENDPOINT}"
 
           echo "Running: data-generation run ${ARGS}"
           ~/.spice/bin/data-generation run ${ARGS}
@@ -162,8 +157,9 @@ jobs:
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           CHECKPOINT_INTERVAL_STEPS: ${{ inputs.checkpoint_interval_steps || github.event.inputs.checkpoint_interval_steps || '100' }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
           VERSION=$(python3 - <<'PY'
@@ -191,6 +187,7 @@ jobs:
           fi
 
           ARGS="${ARGS} --checkpoint-interval-steps ${CHECKPOINT_INTERVAL_STEPS}"
+          ARGS="${ARGS} --endpoint ${MINIO_ENDPOINT}"
 
           echo "Running: checkpointer ${ARGS}"
           ~/.spice/bin/checkpointer ${ARGS}
