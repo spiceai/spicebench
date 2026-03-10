@@ -141,6 +141,14 @@ pub static ACTIVE_CONNECTIONS: LazyLock<Gauge<u64>> = LazyLock::new(|| {
         .build()
 });
 
+pub static NUM_COMPUTE_NODES: LazyLock<Gauge<u64>> = LazyLock::new(|| {
+    meter()
+        .u64_gauge("num_compute_nodes")
+        .with_description("Number of active compute nodes / clusters backing the SUT.")
+        .with_unit("nodes")
+        .build()
+});
+
 // --- Efficiency ---
 
 pub static EFFICIENCY_QUERIES_PER_CORE: LazyLock<Gauge<f64>> = LazyLock::new(|| {

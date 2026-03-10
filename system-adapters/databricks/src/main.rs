@@ -25,7 +25,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::{collections::HashMap, time::Duration};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, EtlSinkType, Handler, Server, SetupResponse, TeardownResponse,
+    AdbcDriver, DatasetConfig, EtlSinkType, Handler, IngestionMetrics, MetricsResponse,
+    ResourceMetrics, Server, SetupResponse, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -236,6 +237,8 @@ struct RunState {
     created_tables: Vec<String>,
     cluster_id: Option<String>,
     cluster_created_by_adapter: bool,
+    /// Epoch millis when the run was set up (for Query History time-range filtering).
+    started_at_ms: u64,
 }
 
 struct DatabricksAdapter {
@@ -890,6 +893,222 @@ impl DatabricksAdapter {
                 }
             }
         }
+    }
+
+    /// Execute a SQL query via the Statements API and return inline result rows.
+    async fn execute_sql_query(&self, statement: &str) -> Result<Vec<Vec<Option<String>>>> {
+        let execute_url = format!("https://{}/api/2.0/sql/statements/", self.config.endpoint);
+        let payload = json!({
+            "warehouse_id": self.config.warehouse_id,
+            "catalog": self.config.catalog,
+            "schema": self.config.schema,
+            "statement": statement,
+            "wait_timeout": "30s",
+        });
+
+        let response = self
+            .client
+            .post(execute_url)
+            .bearer_auth(&self.config.token)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("SQL query failed ({status}): {body}"));
+        }
+
+        let body: StatementWithResultResponse = response.json().await?;
+        match body.status.state {
+            StatementState::Succeeded => Ok(body.result.map(|r| r.data_array).unwrap_or_default()),
+            StatementState::Failed => {
+                Err(anyhow!("SQL query failed: {}", body.status.error_message()))
+            }
+            StatementState::Canceled => Err(anyhow!("SQL query canceled")),
+            StatementState::Pending | StatementState::Running => Err(anyhow!(
+                "SQL query timed out (statement_id={})",
+                body.statement_id
+            )),
+        }
+    }
+
+    /// Fire a tagged marker query and wait for it to appear in the Query History
+    /// API.  Once the marker is visible, all earlier queries from this warehouse
+    /// are also guaranteed to be visible.
+    ///
+    /// Returns the `query_start_time_ms` of the marker query so the caller can
+    /// use it as the upper bound for the time window.
+    async fn fire_marker_and_wait(&self, marker_tag: &str) -> Result<()> {
+        // Fire a lightweight SELECT that embeds the marker tag in a comment.
+        let marker_sql = format!("SELECT 1 /* spicebench_marker:{marker_tag} */");
+        self.execute_sql_statement(&marker_sql).await?;
+
+        // Now poll the Query History API until we see a FINISHED query whose
+        // query_text contains the marker tag.
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        let history_url = format!(
+            "https://{}/api/2.0/sql/history/queries",
+            self.config.endpoint
+        );
+
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(anyhow!(
+                    "Timed out (10 min) waiting for marker query to appear in Query History"
+                ));
+            }
+
+            let filter = json!({
+                "filter_by": {
+                    "warehouse_ids": [self.config.warehouse_id],
+                    "query_text": {
+                        "pattern": format!("spicebench_marker:{marker_tag}")
+                    },
+                    "statuses": ["FINISHED"]
+                },
+                "max_results": 1
+            });
+
+            let response = self
+                .client
+                .get(&history_url)
+                .bearer_auth(&self.config.token)
+                .query(&[("include_metrics", "true")])
+                .json(&filter)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!("Query History API failed ({status}): {body}"));
+            }
+
+            let body: QueryHistoryResponse = response.json().await?;
+            if !body.res.is_empty() {
+                eprintln!(
+                    "[databricks-adapter] marker query appeared in Query History: tag={marker_tag}"
+                );
+                return Ok(());
+            }
+
+            eprintln!(
+                "[databricks-adapter] waiting for marker query in Query History: tag={marker_tag}"
+            );
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    /// Sum `read_bytes` + `write_remote_bytes` from query history for all
+    /// FINISHED queries on this warehouse since `start_time_ms`.
+    ///
+    /// Uses the REST Query History API (`/api/2.0/sql/history/queries`).
+    ///
+    /// An alternative is querying `system.query.history` via SQL (see
+    /// `sum_query_history_io_sql`) which avoids pagination, but requires the
+    /// service principal to have `USE SCHEMA` on `system.query` — a privilege
+    /// most workspace-scoped tokens lack.
+    async fn sum_query_history_io(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        self.sum_query_history_io_rest(start_time_ms).await
+    }
+
+    /// SQL path: query `system.query.history` for aggregated I/O bytes.
+    /// Currently unused — requires elevated permission `USE SCHEMA` on `system.query`.
+    #[allow(dead_code)]
+    async fn sum_query_history_io_sql(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        let query = format!(
+            "SELECT COALESCE(SUM(read_bytes), 0), COALESCE(SUM(write_remote_bytes), 0) \
+             FROM system.query.history \
+             WHERE warehouse_id = '{}' \
+               AND start_time >= TIMESTAMP_MILLIS({}) \
+               AND status = 'FINISHED'",
+            self.config.warehouse_id, start_time_ms
+        );
+
+        let rows = self.execute_sql_query(&query).await?;
+        let row = rows
+            .first()
+            .ok_or_else(|| anyhow!("No rows returned from system.query.history sum"))?;
+
+        let total_read = row
+            .first()
+            .and_then(|v| v.as_deref())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let total_write = row
+            .get(1)
+            .and_then(|v| v.as_deref())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        eprintln!(
+            "[databricks-adapter] query history totals (SQL): read_bytes={total_read} write_bytes={total_write}"
+        );
+        Ok((total_read, total_write))
+    }
+
+    /// REST path: paginate through `/api/2.0/sql/history/queries` and sum
+    /// per-query `metrics.read_bytes` and `metrics.write_remote_bytes`.
+    async fn sum_query_history_io_rest(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        let history_url = format!(
+            "https://{}/api/2.0/sql/history/queries",
+            self.config.endpoint
+        );
+
+        let mut total_read: u64 = 0;
+        let mut total_write: u64 = 0;
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut filter = json!({
+                "filter_by": {
+                    "warehouse_ids": [self.config.warehouse_id],
+                    "query_start_time_range": {
+                        "start_time_ms": start_time_ms
+                    },
+                    "statuses": ["FINISHED"]
+                },
+                "include_metrics": true,
+                "max_results": 100
+            });
+
+            if let Some(ref token) = page_token {
+                filter["page_token"] = json!(token);
+            }
+
+            let response = self
+                .client
+                .get(&history_url)
+                .bearer_auth(&self.config.token)
+                .json(&filter)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!("Query History REST API failed ({status}): {body}"));
+            }
+
+            let body: QueryHistoryResponse = response.json().await?;
+
+            for entry in &body.res {
+                if let Some(ref m) = entry.metrics {
+                    total_read += m.read_bytes.unwrap_or(0);
+                    total_write += m.write_remote_bytes.unwrap_or(0);
+                }
+            }
+
+            if body.has_next_page {
+                page_token = body.next_page_token;
+            } else {
+                break;
+            }
+        }
+
+        Ok((total_read, total_write))
     }
 
     async fn ensure_cluster_ready(&self) -> Result<(String, bool)> {
@@ -1701,6 +1920,30 @@ print("OK")
         ))
     }
 
+    /// Query the SQL Warehouse GET API to retrieve warehouse info (num_active_sessions, num_clusters).
+    async fn get_warehouse_info(&self) -> Result<WarehouseInfoResponse> {
+        let url = format!(
+            "https://{}/api/2.0/sql/warehouses/{}",
+            self.config.endpoint, self.config.warehouse_id
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.config.token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Failed to get warehouse info ({status}): {body}"));
+        }
+
+        let info: WarehouseInfoResponse = response.json().await?;
+        Ok(info)
+    }
+
     async fn generate_lakebase_pg_token(&self) -> Result<String> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
@@ -1807,6 +2050,21 @@ enum StatementState {
     Canceled,
 }
 
+/// Statement response that includes inline result data.
+#[derive(Debug, Deserialize)]
+struct StatementWithResultResponse {
+    statement_id: String,
+    status: StatementStatus,
+    #[serde(default)]
+    result: Option<StatementResultData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatementResultData {
+    #[serde(default)]
+    data_array: Vec<Vec<Option<String>>>,
+}
+
 #[derive(Debug, Serialize)]
 struct UcSchemaCreateRequest {
     catalog_name: String,
@@ -1856,6 +2114,57 @@ struct UcTableCreateRequest {
     table_type: String,
     data_source_format: String,
     columns: Vec<UcTableColumnCreateRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WarehouseInfoResponse {
+    #[serde(default)]
+    num_active_sessions: Option<u64>,
+    #[serde(default)]
+    num_clusters: Option<u64>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    warehouse_type: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    cluster_size: Option<String>,
+}
+
+/// A single query entry from the Query History API.
+#[derive(Debug, Deserialize)]
+struct QueryHistoryEntry {
+    #[serde(default)]
+    #[allow(dead_code)]
+    query_id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    status: Option<String>,
+    #[serde(default)]
+    metrics: Option<QueryHistoryMetrics>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryHistoryMetrics {
+    /// Total bytes read by the query, including both remote cloud storage (`read_remote_bytes`)
+    /// and local SSD/disk cache (`read_cache_bytes`). Maps to `disk_read_bytes`.
+    #[serde(default)]
+    read_bytes: Option<u64>,
+    /// Bytes written to remote cloud storage (S3/ADLS/GCS). This is the only write metric
+    /// available in the REST API — non-zero for DDL/DML that materializes data (e.g. CTAS).
+    /// Maps to `disk_write_bytes`.
+    #[serde(default)]
+    write_remote_bytes: Option<u64>,
+}
+
+/// Response from GET /api/2.0/sql/history/queries
+#[derive(Debug, Deserialize)]
+struct QueryHistoryResponse {
+    #[serde(default)]
+    res: Vec<QueryHistoryEntry>,
+    #[serde(default)]
+    has_next_page: bool,
+    #[serde(default)]
+    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1925,6 +2234,12 @@ impl Handler for DatabricksAdapter {
         let table_format = self
             .table_format_from_setup_metadata(variant, &metadata)
             .map_err(|e| format!("Invalid setup metadata: {e}"))?;
+
+        let started_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         self.runs.insert(
             run_id,
             RunState {
@@ -1934,6 +2249,7 @@ impl Handler for DatabricksAdapter {
                 created_tables: Vec::new(),
                 cluster_id: cluster_id.clone(),
                 cluster_created_by_adapter,
+                started_at_ms,
             },
         );
 
@@ -2246,6 +2562,74 @@ impl Handler for DatabricksAdapter {
         eprintln!("[databricks-adapter] teardown: done-done");
 
         Ok(TeardownResponse { ok: true })
+    }
+
+    async fn metrics(
+        &mut self,
+        run_id: Uuid,
+        final_scrape: bool,
+    ) -> std::result::Result<MetricsResponse, String> {
+        match &self.config.compute_target {
+            ComputeTarget::SqlWarehouse => {
+                let info = self
+                    .get_warehouse_info()
+                    .await
+                    .map_err(|e| format!("Failed to get warehouse info: {e}"))?;
+
+                eprintln!("[databricks-adapter] SUT metrics: warehouse_info={info:?}");
+
+                let mut resource = ResourceMetrics {
+                    num_compute_nodes: info.num_clusters,
+                    ..Default::default()
+                };
+
+                let ingestion = IngestionMetrics {
+                    active_connections: info.num_active_sessions,
+                    ..Default::default()
+                };
+
+                // Get run start time
+                let started_at_ms = self.runs.get(&run_id).map(|s| s.started_at_ms).unwrap_or(0);
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                if final_scrape {
+                    // Fire marker query and wait for it to appear in Query History.
+                    // Once visible, all earlier queries from this warehouse are also available.
+                    let marker_tag = format!("{run_id}_{now_ms}");
+                    if let Err(e) = self.fire_marker_and_wait(&marker_tag).await {
+                        eprintln!("[databricks-adapter] warning: marker wait failed: {e}");
+                    }
+                }
+
+                // Sum read_bytes and write_bytes from all queries since the run started.
+                // On periodic scrapes this is best-effort (Query History has ~5 min lag).
+                // On final scrape the marker wait above ensures completeness.
+                match self.sum_query_history_io(started_at_ms).await {
+                    Ok((total_read, total_write)) => {
+                        eprintln!(
+                            "[databricks-adapter] query history totals: read_bytes={total_read} write_remote_bytes={total_write}"
+                        );
+                        resource.disk_read_bytes = Some(total_read);
+                        resource.disk_write_bytes = Some(total_write);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[databricks-adapter] warning: query history I/O sum failed: {e}"
+                        );
+                    }
+                }
+
+                Ok(MetricsResponse {
+                    resource,
+                    ingestion,
+                })
+            }
+            _ => Ok(MetricsResponse::default()),
+        }
     }
 }
 

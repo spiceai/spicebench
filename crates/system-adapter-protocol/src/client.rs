@@ -212,8 +212,15 @@ impl Client {
     }
 
     /// Collect current metrics from the system under test
-    pub async fn metrics(&mut self, run_id: uuid::Uuid) -> Result<crate::MetricsResponse> {
-        let request = crate::MetricsRequest { run_id };
+    pub async fn metrics(
+        &mut self,
+        run_id: uuid::Uuid,
+        final_scrape: bool,
+    ) -> Result<crate::MetricsResponse> {
+        let request = crate::MetricsRequest {
+            run_id,
+            final_scrape,
+        };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::METRICS, request);
         let response = self.call_typed(rpc_request).await?;
         response

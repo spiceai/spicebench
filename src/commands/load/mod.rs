@@ -153,6 +153,9 @@ fn record_sut_metrics(
     if let Some(v) = response.ingestion.active_connections {
         crate::metrics::ACTIVE_CONNECTIONS.record(v, attributes);
     }
+    if let Some(v) = response.resource.num_compute_nodes {
+        crate::metrics::NUM_COMPUTE_NODES.record(v, attributes);
+    }
 }
 
 /// Spawn a task that periodically scrapes SUT metrics from the system adapter.
@@ -180,7 +183,7 @@ fn spawn_sut_metrics_scraper(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let metrics_result = adapter.lock().await.metrics(run_id).await;
+                    let metrics_result = adapter.lock().await.metrics(run_id, false).await;
                     match metrics_result {
                         Ok(resp) => {
                             log_sut_metrics_snapshot(&resp);
@@ -205,7 +208,7 @@ fn spawn_sut_metrics_scraper(
                 }
                 () = token.cancelled() => {
                     // Final scrape before exiting
-                    if let Ok(resp) = adapter.lock().await.metrics(run_id).await {
+                    if let Ok(resp) = adapter.lock().await.metrics(run_id, true).await {
                         log_sut_metrics_snapshot(&resp);
                         record_sut_metrics(
                             &resp,
