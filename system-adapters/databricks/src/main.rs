@@ -1673,11 +1673,10 @@ impl DatabricksAdapter {
     /// Collect Lakebase PG metrics using delta approach for I/O.
     async fn collect_lakebase_metrics(
         &self,
-        lakebase_config: &LakebaseConfig,
+        _lakebase_config: &LakebaseConfig,
         baseline: Option<&PgIoBaseline>,
     ) -> Result<MetricsResponse> {
         let client = self.connect_lakebase_pg().await?;
-        let schema = &lakebase_config.schema;
 
         // active_connections
         let active_connections: Option<u64> = client
@@ -1689,25 +1688,29 @@ impl DatabricksAdapter {
             .ok()
             .map(|row| row.get::<_, i64>(0) as u64);
 
-        // rows_ingested (per-schema, counters start at 0 since tables are recreated)
-        let rows_ingested: Option<u64> = client
-            .query_one(
-                "SELECT COALESCE(SUM(n_tup_ins), 0)::bigint FROM pg_stat_user_tables WHERE schemaname = $1",
-                &[&schema],
-            )
-            .await
-            .ok()
-            .map(|row| row.get::<_, i64>(0) as u64);
-
-        // bytes_ingested (per-schema)
-        let bytes_ingested: Option<u64> = client
-            .query_one(
-                "SELECT COALESCE(SUM(pg_total_relation_size(schemaname || '.' || tablename)), 0)::bigint FROM pg_tables WHERE schemaname = $1",
-                &[&schema],
-            )
-            .await
-            .ok()
-            .map(|row| row.get::<_, i64>(0) as u64);
+        // rows_ingested / bytes_ingested: not available on Lakebase.
+        // The synced table pipeline writes at the storage layer, bypassing PG's
+        // tuple tracking (n_tup_ins) and relation size accounting
+        // (pg_total_relation_size), so both are always zero.
+        //
+        // let _schema = &lakebase_config.schema;
+        // let rows_ingested: Option<u64> = client
+        //     .query_one(
+        //         "SELECT COALESCE(SUM(n_tup_ins), 0)::bigint FROM pg_stat_user_tables WHERE schemaname = $1",
+        //         &[&schema],
+        //     )
+        //     .await
+        //     .ok()
+        //     .map(|row| row.get::<_, i64>(0) as u64);
+        //
+        // let bytes_ingested: Option<u64> = client
+        //     .query_one(
+        //         "SELECT COALESCE(SUM(pg_total_relation_size(schemaname || '.' || tablename)), 0)::bigint FROM pg_tables WHERE schemaname = $1",
+        //         &[&schema],
+        //     )
+        //     .await
+        //     .ok()
+        //     .map(|row| row.get::<_, i64>(0) as u64);
 
         let mut resource = ResourceMetrics::default();
 
@@ -1732,8 +1735,8 @@ impl DatabricksAdapter {
             resource,
             ingestion: IngestionMetrics {
                 active_connections,
-                rows_ingested,
-                bytes_ingested,
+                rows_ingested: None,
+                bytes_ingested: None,
                 ..Default::default()
             },
         })
@@ -1889,11 +1892,6 @@ impl DatabricksAdapter {
         };
 
         eprintln!("[databricks-adapter] generating fresh Lakebase PG OAuth token");
-
-        eprintln!(
-            "[databricks-adapter] generate_lakebase_pg_token: url={}, \ntoken={}, \npayload={:#?}",
-            url, self.config.token, payload
-        );
 
         let response = self
             .client
