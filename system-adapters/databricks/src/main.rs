@@ -1864,16 +1864,34 @@ print("OK")
                 .unwrap_or_default();
 
             match state {
-                "RUNNING" => {
-                    eprintln!("[databricks-adapter] Lakebase instance '{instance_name}' is RUNNING");
+                "RUNNING" | "AVAILABLE" => {
+                    eprintln!("[databricks-adapter] Lakebase instance '{instance_name}' is {state}");
                     return Ok(());
                 }
                 "STOPPED" => {
-                    return Err(anyhow!(
-                        "Lakebase instance '{instance_name}' is STOPPED. \
-                         Please start the instance manually via the Databricks UI or CLI \
-                         before running the benchmark."
-                    ));
+                    eprintln!(
+                        "[databricks-adapter] Lakebase instance '{instance_name}' is STOPPED — resuming it"
+                    );
+                    let resume_resp = self
+                        .client
+                        .patch(&url)
+                        .bearer_auth(&self.config.token)
+                        .json(&serde_json::json!({"stopped": false}))
+                        .send()
+                        .await?;
+
+                    if resume_resp.status().is_success() {
+                        eprintln!(
+                            "[databricks-adapter] Resume request accepted, waiting for instance to become available..."
+                        );
+                    } else {
+                        let status = resume_resp.status();
+                        let body = resume_resp.text().await.unwrap_or_default();
+                        return Err(anyhow!(
+                            "Failed to resume Lakebase instance '{instance_name}' ({status}): {body}"
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_secs(15)).await;
                 }
                 "FAILED" | "DELETING" | "DELETED" => {
                     return Err(anyhow!(
@@ -1881,6 +1899,7 @@ print("OK")
                     ));
                 }
                 _ => {
+                    // UPDATING, STARTING, PROVISIONING, etc. — just wait
                     eprintln!(
                         "[databricks-adapter] Lakebase instance '{instance_name}' state: {state}, waiting..."
                     );
