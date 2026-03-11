@@ -17,7 +17,6 @@ limitations under the License.
 use clap::{ArgAction, Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use test_framework::anyhow;
 use test_framework::queries::{QueryOverrides, QuerySet};
 
 use super::CommonArgs;
@@ -191,60 +190,6 @@ impl PartialEq<QuerySet> for QuerySetArg {
                 | (QuerySetArg::ParameterizedTpch, QuerySet::ParameterizedTpch)
                 | (QuerySetArg::Scenario, QuerySet::Scenario { .. })
         )
-    }
-}
-
-#[allow(dead_code)]
-pub trait QuerySetLoader {
-    fn query_set(&self) -> &QuerySetArg;
-    fn scenario_query_file(&self) -> Option<&PathBuf>;
-
-    fn load_query_set(&self) -> anyhow::Result<QuerySet> {
-        match self.query_set() {
-            QuerySetArg::Scenario => {
-                let Some(file_path) = self.scenario_query_file() else {
-                    anyhow::bail!("scenario_query_file is required when query_set is Scenario");
-                };
-
-                let scenario_set =
-                    test_framework::queries::scenario::ScenarioQuerySet::from_file(file_path)?;
-                let queries = scenario_set.clone().into_queries();
-
-                Ok(QuerySet::Scenario {
-                    queries,
-                    scenario_set,
-                })
-            }
-            query_set => Ok(QuerySet::from(query_set.clone())),
-        }
-    }
-}
-
-impl DatasetTestArgs {
-    /// Load the query set, handling scenario query sets from files
-    #[allow(dead_code)]
-    pub fn load_query_set(&self) -> anyhow::Result<QuerySet> {
-        QuerySetLoader::load_query_set(self)
-    }
-}
-
-impl QuerySetLoader for DatasetTestArgs {
-    fn query_set(&self) -> &QuerySetArg {
-        &self.query_set
-    }
-
-    fn scenario_query_file(&self) -> Option<&PathBuf> {
-        self.scenario_query_file.as_ref()
-    }
-}
-
-impl QuerySetLoader for QueryArgs {
-    fn query_set(&self) -> &QuerySetArg {
-        &self.query_set
-    }
-
-    fn scenario_query_file(&self) -> Option<&PathBuf> {
-        self.scenario_query_file.as_ref()
     }
 }
 

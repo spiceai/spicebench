@@ -1518,6 +1518,7 @@ impl ETLPipeline {
 /// it is consumed. If `step_limit` is `Some(n)`, at most `n` logical steps are
 /// consumed before the function returns [`PipelineState::Paused`]. Unconsumed
 /// steps remain in the shared work state for a subsequent call.
+#[allow(clippy::too_many_arguments)]
 async fn run_pipeline(
     data_storage: Arc<dyn DataStorage>,
     data_sink: Arc<dyn Sink>,

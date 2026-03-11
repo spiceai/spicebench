@@ -26,7 +26,6 @@ use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
 use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
-use etl::sink::s3_hive::S3HiveSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
 use test_framework::{anyhow, rustls};
 use tokio::sync::Mutex;
@@ -37,7 +36,7 @@ mod commands;
 mod metrics;
 mod scenario;
 
-use crate::args::{CommonArgs, EtlSink};
+use crate::args::CommonArgs;
 use crate::commands::connect_system_adapter;
 
 const FLIGHTSQL_MAX_MSG_SIZE_OPTION: &str = "adbc.flight.sql.client_option.with_max_msg_size";
@@ -54,14 +53,6 @@ struct Cli {
 pub enum SystemAdapterExecutionMode {
     AdapterCommand,
     DirectQuery,
-}
-
-fn s3_hive_target_prefix(common: &CommonArgs, scenario_name: &str, run_id: uuid::Uuid) -> String {
-    let mut target_prefix = common.etl_target_base_prefix.trim_matches('/').to_string();
-    if target_prefix.is_empty() {
-        target_prefix = "etl-hive-output".to_string();
-    }
-    format!("{target_prefix}/{scenario_name}/{run_id}")
 }
 
 fn infer_adbc_target_namespace(
@@ -140,24 +131,8 @@ async fn run_benchmark(
     let mutations = version_metadata.mutation_config();
     let data_source: Arc<dyn DataStorage> = file_storage.clone();
 
-    let etl_sink_type = match common.etl_sink {
-        EtlSink::Hive => system_adapter_protocol::EtlSinkType::Hive,
-        EtlSink::Adbc => system_adapter_protocol::EtlSinkType::Adbc,
-    };
-
-    let target_config = match common.etl_sink {
-        EtlSink::Hive => {
-            let hive_prefix = s3_hive_target_prefix(common, &scenario_name, run_id);
-            Some(TargetConfig {
-                bucket: common.etl_bucket.clone(),
-                prefix: hive_prefix,
-                region: common.etl_region.clone(),
-                endpoint: common.etl_endpoint.clone(),
-                partition_columns: common.etl_partition_by.clone(),
-            })
-        }
-        EtlSink::Adbc => None,
-    };
+    let etl_sink_type = system_adapter_protocol::EtlSinkType::Adbc;
+    let target_config = None;
 
     let datasets = ETLPipeline::create_tables_request_datasets(
         dataset_source.clone(),
@@ -167,83 +142,50 @@ async fn run_benchmark(
         target_config.clone(),
     )?;
 
-    let (setup_response, mut pipeline) = match common.etl_sink {
-        EtlSink::Hive => {
-            let target_config = target_config
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("Target config is missing for Hive sink"))?;
+    let (setup_response, mut pipeline) = {
+        let setup_response = system_adapter_client
+            .lock()
+            .await
+            .setup(
+                run_id,
+                setup_metadata.clone(),
+                datasets.clone(),
+                Some(etl_sink_type),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
 
-            let target_sink: Arc<dyn Sink> = Arc::new(S3HiveSink::new(&target_config)?);
-            let mut pipeline = ETLPipeline::new(
-                dataset_source,
-                &generation_config,
-                Arc::clone(&data_source),
-                target_sink,
-                &mutations,
-            )?
-            .with_target_config(target_config);
-
-            pipeline.initialize().await?;
-
-            let setup_response = system_adapter_client
-                .lock()
-                .await
-                .setup(
-                    run_id,
-                    setup_metadata.clone(),
-                    datasets.clone(),
-                    Some(etl_sink_type),
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
-
-            (setup_response, pipeline)
+        let driver_name = setup_response.driver.to_string();
+        let mut db_kwargs = setup_response.db_kwargs.clone();
+        if driver_name.eq_ignore_ascii_case("flightsql") {
+            db_kwargs
+                .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
+                .or_insert_with(|| {
+                    serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
+                });
         }
-        EtlSink::Adbc => {
-            let setup_response = system_adapter_client
-                .lock()
-                .await
-                .setup(
-                    run_id,
-                    setup_metadata.clone(),
-                    datasets.clone(),
-                    Some(etl_sink_type),
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
 
-            let driver_name = setup_response.driver.to_string();
-            let mut db_kwargs = setup_response.db_kwargs.clone();
-            if driver_name.eq_ignore_ascii_case("flightsql") {
-                db_kwargs
-                    .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
-                    .or_insert_with(|| {
-                        serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
-                    });
-            }
+        let (target_db_catalog, target_db_schema) =
+            infer_adbc_target_namespace(setup_response.catalog_namespace.as_deref());
 
-            let (target_db_catalog, target_db_schema) =
-                infer_adbc_target_namespace(setup_response.catalog_namespace.as_deref());
+        let target_sink: Arc<dyn Sink> = Arc::new(AdbcSink::new(
+            &driver_name,
+            db_kwargs,
+            target_db_catalog,
+            target_db_schema,
+        )?);
 
-            let target_sink: Arc<dyn Sink> = Arc::new(AdbcSink::new(
-                &driver_name,
-                db_kwargs,
-                target_db_catalog,
-                target_db_schema,
-            )?);
+        let mut pipeline = ETLPipeline::new(
+            dataset_source,
+            &generation_config,
+            Arc::clone(&data_source),
+            target_sink,
+            &mutations,
+        )?;
 
-            let mut pipeline = ETLPipeline::new(
-                dataset_source,
-                &generation_config,
-                Arc::clone(&data_source),
-                target_sink,
-                &mutations,
-            )?;
+        pipeline.initialize().await?;
 
-            pipeline.initialize().await?;
-
-            (setup_response, pipeline)
-        }
+        (setup_response, pipeline)
     };
 
     let driver_name = setup_response.driver.to_string();
@@ -251,7 +193,7 @@ async fn run_benchmark(
     let query_catalog_namespace = setup_response.catalog_namespace.clone();
     let read_driver = setup_response.read_driver.clone();
 
-    if matches!(common.etl_sink, EtlSink::Adbc) && driver_name.eq_ignore_ascii_case("flightsql") {
+    if driver_name.eq_ignore_ascii_case("flightsql") {
         db_kwargs
             .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
             .or_insert_with(|| {
@@ -433,29 +375,9 @@ async fn main() -> anyhow::Result<()> {
         ),
         (
             "etl_sink".to_string(),
-            serde_json::Value::String(match cli.common.etl_sink {
-                EtlSink::Hive => "hive".to_string(),
-                EtlSink::Adbc => "adbc".to_string(),
-            }),
+            serde_json::Value::String("adbc".to_string()),
         ),
     ]);
-
-    {
-        if matches!(cli.common.etl_sink, EtlSink::Hive) {
-            let hive_prefix = s3_hive_target_prefix(&cli.common, &scenario_name, run_id);
-            setup_metadata.insert(
-                "etl_s3_hive_target_prefix".to_string(),
-                serde_json::Value::String(hive_prefix.clone()),
-            );
-            setup_metadata.insert(
-                "etl_s3_hive_uri".to_string(),
-                serde_json::Value::String(format!(
-                    "s3://{}/{}",
-                    cli.common.etl_bucket, hive_prefix
-                )),
-            );
-        }
-    }
 
     if let Some(ref state_loc) = cli.common.scheduler_state_location {
         setup_metadata.insert(

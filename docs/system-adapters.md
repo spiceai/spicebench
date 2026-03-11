@@ -83,7 +83,7 @@ Returns ADBC connection details for the benchmark run and can optionally provisi
                 "partition_columns": ["__created_at"]
             }
         },
-        "etl_sink_type": "hive"
+        "etl_sink_type": "adbc"
     }
 }
 ```
@@ -257,7 +257,7 @@ All templates:
 
 ### Implementation Checklist
 
-1. **`setup`** - Parse `metadata`, `datasets`, and `etl_sink_type` from the request. Return an ADBC `driver` name and `db_kwargs` connection map. If your adapter manages lifecycle, this is the place to start services, create schemas, or register benchmark destination tables from `datasets` (using Arrow schema, `primary_key_columns`, `time_column`, `partition_columns`, and `location` for Hive sources).
+1. **`setup`** - Parse `metadata`, `datasets`, and `etl_sink_type` from the request. Return an ADBC `driver` name and `db_kwargs` connection map. If your adapter manages lifecycle, this is the place to start services, create schemas, or register benchmark destination tables from `datasets` (using Arrow schema, `primary_key_columns`, and `time_column`).
 
 2. **`teardown`** - If your adapter created temporary resources, drop tables, stop services, and release them here. If the SUT is pre-provisioned, a successful no-op teardown is fine. Track any state from `setup` using `run_id`.
 

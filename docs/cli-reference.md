@@ -44,11 +44,9 @@ Set exactly one of `--system-adapter-stdio-cmd` or `--system-adapter-http-url`.
 | `--etl-bucket`               | `String` | `spiceai-public-datasets` | S3 bucket containing source data batches                                                               |
 | `--etl-prefix`               | `String` | `data-gen`                | S3 key prefix for source data                                                                          |
 | `--scale-factor`             | `f64`    | `1.0`                     | Dataset scale factor. The ETL version path is derived automatically                                    |
-| `--etl-target-base-prefix`   | `String` | `""`                      | Base S3 prefix for Hive sink output. When empty, SpiceBench uses `etl-hive-output/{scenario}/{run_id}` |
-| `--etl-sink`                 | `Enum`   | `hive`                    | ETL sink type: `hive` (S3 Parquet) or `adbc` (ADBC bulk ingest)                                        |
+| `--etl-sink`                 | `Enum`   | `adbc`                    | ETL sink type: `adbc` (ADBC bulk ingest)                                                               |
 | `--etl-region`               | `String` | `us-east-1`               | AWS region for S3 operations                                                                           |
 | `--etl-endpoint`             | `String` | -                         | Custom S3 endpoint (for MinIO, LocalStack, and similar)                                                |
-| `--etl-partition-by`         | `String` | `__created_at`            | Comma-separated partition columns for Hive sink output                                                 |
 | `--table-format`             | `Enum`   | `parquet`                 | Table format propagated through ETL dataset metadata and adapter setup                                 |
 | `--scheduler-state-location` | `String` | -                         | Optional S3 URI for shared scheduler state passed through setup metadata                               |
 
@@ -127,7 +125,6 @@ data-generation run [OPTIONS]
 | `--prefix`          | `String` | `""`    | S3 key prefix for generated files                                    |
 | `--region`          | `String` | -       | AWS region                                                           |
 | `--endpoint`        | `String` | -       | S3 endpoint URL (for MinIO, LocalStack, and similar)                 |
-| `--max-concurrency` | `usize`  | `16`    | Maximum concurrent S3 writes                                         |
 
 The generated version string is derived automatically from `--scale-factor`, so `--scale-factor 1` writes to a `1.0` version path.
 
@@ -157,7 +154,7 @@ cargo run -p data-generation -- run \
 
 ## `etl`
 
-Standalone ETL pipeline binary. It reads a generated archive, rehydrates records, and writes to an S3 Hive sink, an ADBC target, or a null sink.
+Standalone ETL pipeline binary. It reads a generated archive, rehydrates records, and writes to an ADBC target or a null sink.
 
 ### etl Usage
 
@@ -177,9 +174,7 @@ etl [OPTIONS]
 | `--prefix`             | `String`    | `""`           | S3 key prefix for source data                                          |
 | `--region`             | `String`    | -              | AWS region                                                             |
 | `--endpoint`           | `String`    | -              | Custom S3 endpoint                                                     |
-| `--target-prefix`      | `String`    | `""`           | Output prefix for Hive sink. Defaults to the source prefix when empty  |
-| `--partition-by`       | `String`    | `__created_at` | Partition columns for Hive output                                      |
-| `--sink`               | `Enum`      | `s3-hive`      | Sink type: `s3-hive`, `adbc`, `null`                                   |
+| `--sink`               | `Enum`      | `adbc`         | Sink type: `adbc`, `null`                                              |
 | `--adbc-driver`        | `String`    | -              | ADBC driver name for the `adbc` sink                                   |
 | `--adbc-uri`           | `String`    | -              | ADBC connection URI for the `adbc` sink                                |
 | `--adbc-catalog`       | `String`    | -              | Optional target catalog for ADBC bulk ingest                           |
@@ -188,19 +183,6 @@ etl [OPTIONS]
 | `--adbc-option`        | `KEY=VALUE` | -              | Repeatable. Additional ADBC database options                           |
 
 ### etl Examples
-
-**S3 Hive sink:**
-
-```bash
-cargo run -p etl -- \
-    --scenario tpch \
-    --scale-factor 1 \
-    --bucket my-data \
-    --prefix raw \
-    --sink s3-hive \
-    --target-prefix rehydrated \
-    --partition-by __created_at
-```
 
 **Local archive to null sink:**
 
