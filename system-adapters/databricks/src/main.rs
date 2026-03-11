@@ -2476,7 +2476,16 @@ impl Handler for DatabricksAdapter {
                 .map_err(|e| format!("Failed to initialize schema: {e}"))?;
 
             // Create managed UC tables (sources for synced tables) via SQL Warehouse.
+            // Drop first to handle stale tables left by a failed previous teardown.
             for (table_name, dataset_cfg) in &datasets {
+                let drop_sql = format!(
+                    "DROP TABLE IF EXISTS {}",
+                    self.table_full_name(table_name)
+                );
+                eprintln!("[databricks-adapter] dropping existing table if any '{table_name}': {drop_sql}");
+                self.execute_sql_statement(&drop_sql)
+                    .await
+                    .map_err(|e| format!("Failed to drop existing table '{table_name}': {e}"))?;
                 let ddl = self
                     .create_table_ddl(table_name, dataset_cfg, TableFormat::Delta)
                     .map_err(|e| {
