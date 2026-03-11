@@ -34,7 +34,6 @@ pub(crate) mod load;
 /// This ensures the `SdkMeterProvider` is created with the correct resource,
 /// so metrics recorded after this call will have the proper resource attributes.
 #[must_use]
-#[allow(dead_code)]
 pub(crate) fn create_telemetry_with_resource(common: &CommonArgs, resource: Resource) -> Telemetry {
     if let Some(endpoint) = &common.otlp_endpoint {
         return Telemetry::with_otlp_resource(
@@ -76,7 +75,6 @@ fn rewrite_queries_with_catalog_namespace(
 ///
 /// # Returns
 /// Tuple of (`QuerySet`, `NotStarted` builder)
-#[allow(dead_code)]
 pub(crate) async fn build_test_with_validation(
     scenario: &Scenario,
     test_builder: NotStarted,

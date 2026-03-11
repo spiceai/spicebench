@@ -55,13 +55,11 @@ fn print_summary(result: &IngestResult) {
 
 fn build(args: &CommonArgs, file_storage: Arc<FileStorage>) -> anyhow::Result<DataGenerator> {
     let dataset_config = args.dataset_config();
-    let ingestor_config = args.ingestor_config();
     let version = format_scale_factor(args.scale_factor);
 
     tracing::info!(
         dataset_type = dataset_config.dataset_type,
         num_steps = dataset_config.num_steps,
-        max_concurrency = ingestor_config.max_concurrency,
         version = %version,
         scenario = %args.scenario,
         scale_factor = args.scale_factor,
@@ -88,7 +86,6 @@ fn build(args: &CommonArgs, file_storage: Arc<FileStorage>) -> anyhow::Result<Da
     let ingestor = DataGenerator::new(
         dataset,
         file_storage as Arc<dyn DataStorage>,
-        &ingestor_config,
         metrics,
         version_config,
     );

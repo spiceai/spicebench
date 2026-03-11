@@ -17,7 +17,6 @@ limitations under the License.
 use anyhow::{Result, anyhow};
 use arrow_schema::DataType;
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose};
 use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -25,7 +24,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::{collections::HashMap, time::Duration};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, EtlSinkType, Handler, Server, SetupResponse, TeardownResponse,
+    AdbcDriver, DatasetConfig, EtlSinkType, Handler, IngestionMetrics, MetricsResponse,
+    ResourceMetrics, Server, SetupResponse, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -208,7 +208,6 @@ enum TableFormat {
 }
 
 impl TableFormat {
-    #[allow(dead_code)]
     fn as_sql_using(self) -> &'static str {
         match self {
             Self::Parquet => "PARQUET",
@@ -229,13 +228,14 @@ impl TableFormat {
 
 #[derive(Debug, Clone)]
 struct RunState {
-    #[allow(dead_code)]
     table_format: TableFormat,
     variant: DatabricksVariant,
     scenario_slug: String,
     created_tables: Vec<String>,
     cluster_id: Option<String>,
     cluster_created_by_adapter: bool,
+    /// Epoch millis when the run was set up (for Query History time-range filtering).
+    started_at_ms: u64,
 }
 
 struct DatabricksAdapter {
@@ -592,23 +592,6 @@ impl DatabricksAdapter {
         ))
     }
 
-    /// Build a CTAS statement that creates the table by reading parquet files
-    /// from S3.
-    ///
-    /// `location` is the full S3 URI for the table data, e.g.
-    /// `s3://bucket/etl-hive-output/tpch/<run-id>/lineitem/`.
-    ///
-    /// ```sql
-    /// CREATE OR REPLACE TABLE catalog.schema.table
-    ///   AS SELECT * FROM parquet.`s3://bucket/path/to/table/`
-    /// ```
-    fn create_table_ctas(&self, table_name: &str, location: &str) -> String {
-        format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM parquet.`{location}`",
-            self.table_full_name(table_name),
-        )
-    }
-
     fn table_format_from_setup_metadata(
         &self,
         variant: DatabricksVariant,
@@ -706,7 +689,6 @@ impl DatabricksAdapter {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn delete_uc_table_if_exists(&self, table_name: &str) -> Result<()> {
         let full_name = self.uc_table_full_name(table_name);
         let delete_url = format!(
@@ -890,6 +872,221 @@ impl DatabricksAdapter {
                 }
             }
         }
+    }
+
+    /// Execute a SQL query via the Statements API and return inline result rows.
+    async fn execute_sql_query(&self, statement: &str) -> Result<Vec<Vec<Option<String>>>> {
+        let execute_url = format!("https://{}/api/2.0/sql/statements/", self.config.endpoint);
+        let payload = json!({
+            "warehouse_id": self.config.warehouse_id,
+            "catalog": self.config.catalog,
+            "schema": self.config.schema,
+            "statement": statement,
+            "wait_timeout": "30s",
+        });
+
+        let response = self
+            .client
+            .post(execute_url)
+            .bearer_auth(&self.config.token)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if response.status() != StatusCode::OK {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("SQL query failed ({status}): {body}"));
+        }
+
+        let body: StatementWithResultResponse = response.json().await?;
+        match body.status.state {
+            StatementState::Succeeded => Ok(body.result.map(|r| r.data_array).unwrap_or_default()),
+            StatementState::Failed => {
+                Err(anyhow!("SQL query failed: {}", body.status.error_message()))
+            }
+            StatementState::Canceled => Err(anyhow!("SQL query canceled")),
+            StatementState::Pending | StatementState::Running => Err(anyhow!(
+                "SQL query timed out (statement_id={})",
+                body.statement_id
+            )),
+        }
+    }
+
+    /// Fire a tagged marker query and wait for it to appear in the Query History
+    /// API.  Once the marker is visible, all earlier queries from this warehouse
+    /// are also guaranteed to be visible.
+    ///
+    /// Returns the `query_start_time_ms` of the marker query so the caller can
+    /// use it as the upper bound for the time window.
+    async fn fire_marker_and_wait(&self, marker_tag: &str) -> Result<()> {
+        // Fire a lightweight SELECT that embeds the marker tag in a comment.
+        let marker_sql = format!("SELECT 1 /* spicebench_marker:{marker_tag} */");
+        self.execute_sql_statement(&marker_sql).await?;
+
+        // Now poll the Query History API until we see a FINISHED query whose
+        // query_text contains the marker tag.
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        let history_url = format!(
+            "https://{}/api/2.0/sql/history/queries",
+            self.config.endpoint
+        );
+
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(anyhow!(
+                    "Timed out (10 min) waiting for marker query to appear in Query History"
+                ));
+            }
+
+            let filter = json!({
+                "filter_by": {
+                    "warehouse_ids": [self.config.warehouse_id],
+                    "query_text": {
+                        "pattern": format!("spicebench_marker:{marker_tag}")
+                    },
+                    "statuses": ["FINISHED"]
+                },
+                "max_results": 1
+            });
+
+            let response = self
+                .client
+                .get(&history_url)
+                .bearer_auth(&self.config.token)
+                .query(&[("include_metrics", "true")])
+                .json(&filter)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!("Query History API failed ({status}): {body}"));
+            }
+
+            let body: QueryHistoryResponse = response.json().await?;
+            if !body.res.is_empty() {
+                eprintln!(
+                    "[databricks-adapter] marker query appeared in Query History: tag={marker_tag}"
+                );
+                return Ok(());
+            }
+
+            eprintln!(
+                "[databricks-adapter] waiting for marker query in Query History: tag={marker_tag}"
+            );
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    /// Sum `read_bytes` + `write_remote_bytes` from query history for all
+    /// FINISHED queries on this warehouse since `start_time_ms`.
+    ///
+    /// Uses the REST Query History API (`/api/2.0/sql/history/queries`).
+    ///
+    /// An alternative is querying `system.query.history` via SQL (see
+    /// `sum_query_history_io_sql`) which avoids pagination, but requires the
+    /// service principal to have `USE SCHEMA` on `system.query` — a privilege
+    /// most workspace-scoped tokens lack.
+    async fn sum_query_history_io(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        self.sum_query_history_io_rest(start_time_ms).await
+    }
+
+    /// SQL path: query `system.query.history` for aggregated I/O bytes.
+    /// Currently unused — requires elevated permission `USE SCHEMA` on `system.query`.
+    async fn sum_query_history_io_sql(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        let query = format!(
+            "SELECT COALESCE(SUM(read_bytes), 0), COALESCE(SUM(write_remote_bytes), 0) \
+             FROM system.query.history \
+             WHERE warehouse_id = '{}' \
+               AND start_time >= TIMESTAMP_MILLIS({}) \
+               AND status = 'FINISHED'",
+            self.config.warehouse_id, start_time_ms
+        );
+
+        let rows = self.execute_sql_query(&query).await?;
+        let row = rows
+            .first()
+            .ok_or_else(|| anyhow!("No rows returned from system.query.history sum"))?;
+
+        let total_read = row
+            .first()
+            .and_then(|v| v.as_deref())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let total_write = row
+            .get(1)
+            .and_then(|v| v.as_deref())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        eprintln!(
+            "[databricks-adapter] query history totals (SQL): read_bytes={total_read} write_bytes={total_write}"
+        );
+        Ok((total_read, total_write))
+    }
+
+    /// REST path: paginate through `/api/2.0/sql/history/queries` and sum
+    /// per-query `metrics.read_bytes` and `metrics.write_remote_bytes`.
+    async fn sum_query_history_io_rest(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        let history_url = format!(
+            "https://{}/api/2.0/sql/history/queries",
+            self.config.endpoint
+        );
+
+        let mut total_read: u64 = 0;
+        let mut total_write: u64 = 0;
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut filter = json!({
+                "filter_by": {
+                    "warehouse_ids": [self.config.warehouse_id],
+                    "query_start_time_range": {
+                        "start_time_ms": start_time_ms
+                    },
+                    "statuses": ["FINISHED"]
+                },
+                "include_metrics": true,
+                "max_results": 100
+            });
+
+            if let Some(ref token) = page_token {
+                filter["page_token"] = json!(token);
+            }
+
+            let response = self
+                .client
+                .get(&history_url)
+                .bearer_auth(&self.config.token)
+                .json(&filter)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!("Query History REST API failed ({status}): {body}"));
+            }
+
+            let body: QueryHistoryResponse = response.json().await?;
+
+            for entry in &body.res {
+                if let Some(ref m) = entry.metrics {
+                    total_read += m.read_bytes.unwrap_or(0);
+                    total_write += m.write_remote_bytes.unwrap_or(0);
+                }
+            }
+
+            if body.has_next_page {
+                page_token = body.next_page_token;
+            } else {
+                break;
+            }
+        }
+
+        Ok((total_read, total_write))
     }
 
     async fn ensure_cluster_ready(&self) -> Result<(String, bool)> {
@@ -1083,109 +1280,6 @@ impl DatabricksAdapter {
         Ok(())
     }
 
-    async fn ensure_notebook(
-        &self,
-        scenario_slug: &str,
-        table_locations: &HashMap<String, String>,
-    ) -> Result<()> {
-        let table_locations_json = serde_json::to_string(table_locations)?;
-        let notebook_source = format!(
-            r#"
-from pyspark.sql.functions import *
-import json
-
-catalog = "{catalog}"
-schema = "{schema}"
-
-table_locations = json.loads('{table_locations_json}')
-
-for table, source_path in table_locations.items():
-    target_table = f"{{catalog}}.{{schema}}.{{table}}"
-    checkpoint = f"/tmp/spicebench_{{schema}}_{{table}}_checkpoint"
-    schema_location = f"/tmp/spicebench_{{schema}}_{{table}}_schema"
-
-    (
-        spark.readStream
-            .format("cloudFiles")
-            .option("cloudFiles.format", "parquet")
-            .option("cloudFiles.includeExistingFiles", "true")
-            .option("cloudFiles.schemaLocation", schema_location)
-            .load(source_path)
-            .writeStream
-            .option("checkpointLocation", checkpoint)
-            .option("mergeSchema", "true")
-            .trigger(availableNow=True)
-            .toTable(target_table)
-            .awaitTermination()
-    )
-
-print("OK")
-"#,
-            catalog = self.config.catalog,
-            schema = self.config.schema,
-            table_locations_json = table_locations_json,
-        );
-
-        let encoded = general_purpose::STANDARD.encode(notebook_source);
-
-        let notebook_path = Self::notebook_path_for_scenario(scenario_slug);
-        let mkdirs_url = format!("https://{}/api/2.0/workspace/mkdirs", self.config.endpoint);
-        let mkdirs_response = self
-            .client
-            .post(mkdirs_url)
-            .bearer_auth(&self.config.token)
-            .json(&json!({
-                "path": "/Shared/spicebench"
-            }))
-            .send()
-            .await?;
-
-        if !mkdirs_response.status().is_success() {
-            let status = mkdirs_response.status();
-            let body = mkdirs_response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Databricks workspace/mkdirs failed ({status}): {body}"
-            ));
-        }
-
-        eprintln!(
-            "[databricks-adapter] uploading sync notebook: scenario={scenario_slug} tables_count={} path={notebook_path}",
-            table_locations.len()
-        );
-        let url = format!("https://{}/api/2.0/workspace/import", self.config.endpoint);
-        let response = self
-            .client
-            .post(url)
-            .bearer_auth(&self.config.token)
-            .json(&json!({
-            "path": notebook_path,
-                "language": "PYTHON",
-                "format": "SOURCE",
-                "content": encoded,
-                "overwrite": true
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            eprintln!(
-                "[databricks-adapter] failed to upload sync notebook: scenario={scenario_slug} path={notebook_path} status={status} body={body}"
-            );
-            return Err(anyhow!(
-                "Databricks workspace/import failed ({status}): {body}"
-            ));
-        }
-
-        eprintln!(
-            "[databricks-adapter] sync notebook uploaded: scenario={scenario_slug} tables_count={} path={notebook_path}",
-            table_locations.len()
-        );
-
-        Ok(())
-    }
-
     async fn find_job_id_by_name(&self, job_name: &str) -> Result<Option<i64>> {
         let url = format!("https://{}/api/2.1/jobs/list", self.config.endpoint);
 
@@ -1209,71 +1303,6 @@ print("OK")
         Ok(None)
     }
 
-    async fn ensure_notebook_sync_job(&self, scenario_slug: &str) -> Result<()> {
-        let notebook_path = Self::notebook_path_for_scenario(scenario_slug);
-        let job_name = Self::job_name_for_scenario(scenario_slug);
-
-        if let Some(existing_id) = self.find_job_id_by_name(&job_name).await? {
-            eprintln!(
-                "[databricks-adapter] sync job already exists: scenario={scenario_slug} job_name={job_name} job_id={existing_id}"
-            );
-            return Ok(());
-        }
-
-        eprintln!(
-            "[databricks-adapter] creating scheduled sync job: scenario={scenario_slug} job_name={job_name} path={notebook_path}"
-        );
-        let create_url = format!("https://{}/api/2.1/jobs/create", self.config.endpoint);
-        let response = self
-            .client
-            .post(create_url)
-            .bearer_auth(&self.config.token)
-            .json(&json!({
-                "name": job_name,
-                "max_concurrent_runs": 1,
-                "tasks": [
-                {
-                    "task_key": "sync_autoloader",
-                    "notebook_task": {
-                        "notebook_path": notebook_path
-                    },
-                    "environment_key": "serverless_env"
-                }
-                ],
-                "environments": [
-                {
-                    "environment_key": "serverless_env",
-                    "spec": {
-                        "client": "1"
-                    }
-                }
-                ],
-                "schedule": {
-                    "quartz_cron_expression": "0 0/1 * * * ?",
-                    "timezone_id": "UTC",
-                    "pause_status": "UNPAUSED"
-                }
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            eprintln!(
-                "[databricks-adapter] failed to create scheduled sync job: scenario={scenario_slug} job_name={job_name} status={status} body={body}"
-            );
-            return Err(anyhow!("Databricks jobs/create failed ({status}): {body}"));
-        }
-
-        eprintln!(
-            "[databricks-adapter] scheduled sync job created: scenario={scenario_slug} job_name={job_name} path={notebook_path}"
-        );
-
-        Ok(())
-    }
-
-    #[allow(dead_code)]
     fn uc_column_type_for_arrow(data_type: &DataType) -> Result<UcColumnType> {
         match data_type {
             DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN", "\"boolean\"")),
@@ -1305,7 +1334,6 @@ print("OK")
         }
     }
 
-    #[allow(dead_code)]
     async fn uc_table_exists(&self, table_name: &str) -> Result<bool> {
         let full_name = self.uc_table_full_name(table_name);
         let get_url = format!(
@@ -1335,7 +1363,6 @@ print("OK")
         ))
     }
 
-    #[allow(dead_code)]
     async fn create_uc_table_if_not_exists(
         &self,
         table_name: &str,
@@ -1625,12 +1652,12 @@ print("OK")
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
         let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .map_err(|e| anyhow!("Failed to configure TLS: {e}"))?
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| anyhow!("Failed to configure TLS: {e}"))?
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
         let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
 
         let pg_uri = self.lakebase_pg_uri().await?;
@@ -1701,6 +1728,30 @@ print("OK")
         ))
     }
 
+    /// Query the SQL Warehouse GET API to retrieve warehouse info (num_active_sessions, num_clusters).
+    async fn get_warehouse_info(&self) -> Result<WarehouseInfoResponse> {
+        let url = format!(
+            "https://{}/api/2.0/sql/warehouses/{}",
+            self.config.endpoint, self.config.warehouse_id
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.config.token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Failed to get warehouse info ({status}): {body}"));
+        }
+
+        let info: WarehouseInfoResponse = response.json().await?;
+        Ok(info)
+    }
+
     async fn generate_lakebase_pg_token(&self) -> Result<String> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
@@ -1741,7 +1792,10 @@ print("OK")
 
         eprintln!("[databricks-adapter] generating fresh Lakebase PG OAuth token");
 
-        eprintln!("[databricks-adapter] generate_lakebase_pg_token: url={}, \ntoken={}, \npayload={:#?}", url, self.config.token, payload);
+        eprintln!(
+            "[databricks-adapter] generate_lakebase_pg_token: url={}, \ntoken={}, \npayload={:#?}",
+            url, self.config.token, payload
+        );
 
         let response = self
             .client
@@ -1807,13 +1861,27 @@ enum StatementState {
     Canceled,
 }
 
+/// Statement response that includes inline result data.
+#[derive(Debug, Deserialize)]
+struct StatementWithResultResponse {
+    statement_id: String,
+    status: StatementStatus,
+    #[serde(default)]
+    result: Option<StatementResultData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatementResultData {
+    #[serde(default)]
+    data_array: Vec<Vec<Option<String>>>,
+}
+
 #[derive(Debug, Serialize)]
 struct UcSchemaCreateRequest {
     catalog_name: String,
     name: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 struct UcColumnType {
     type_name: String,
@@ -1821,7 +1889,6 @@ struct UcColumnType {
     type_json: String,
 }
 
-#[allow(dead_code)]
 impl UcColumnType {
     fn new(
         type_name: impl Into<String>,
@@ -1836,7 +1903,6 @@ impl UcColumnType {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct UcTableColumnCreateRequest {
     name: String,
@@ -1847,7 +1913,6 @@ struct UcTableColumnCreateRequest {
     nullable: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct UcTableCreateRequest {
     name: String,
@@ -1856,6 +1921,53 @@ struct UcTableCreateRequest {
     table_type: String,
     data_source_format: String,
     columns: Vec<UcTableColumnCreateRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WarehouseInfoResponse {
+    #[serde(default)]
+    num_active_sessions: Option<u64>,
+    #[serde(default)]
+    num_clusters: Option<u64>,
+    #[serde(default)]
+    warehouse_type: Option<String>,
+    #[serde(default)]
+    cluster_size: Option<String>,
+}
+
+/// A single query entry from the Query History API.
+#[derive(Debug, Deserialize)]
+struct QueryHistoryEntry {
+    #[serde(default)]
+    query_id: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    metrics: Option<QueryHistoryMetrics>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryHistoryMetrics {
+    /// Total bytes read by the query, including both remote cloud storage (`read_remote_bytes`)
+    /// and local SSD/disk cache (`read_cache_bytes`). Maps to `disk_read_bytes`.
+    #[serde(default)]
+    read_bytes: Option<u64>,
+    /// Bytes written to remote cloud storage (S3/ADLS/GCS). This is the only write metric
+    /// available in the REST API — non-zero for DDL/DML that materializes data (e.g. CTAS).
+    /// Maps to `disk_write_bytes`.
+    #[serde(default)]
+    write_remote_bytes: Option<u64>,
+}
+
+/// Response from GET /api/2.0/sql/history/queries
+#[derive(Debug, Deserialize)]
+struct QueryHistoryResponse {
+    #[serde(default)]
+    res: Vec<QueryHistoryEntry>,
+    #[serde(default)]
+    has_next_page: bool,
+    #[serde(default)]
+    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1925,6 +2037,12 @@ impl Handler for DatabricksAdapter {
         let table_format = self
             .table_format_from_setup_metadata(variant, &metadata)
             .map_err(|e| format!("Invalid setup metadata: {e}"))?;
+
+        let started_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         self.runs.insert(
             run_id,
             RunState {
@@ -1934,79 +2052,43 @@ impl Handler for DatabricksAdapter {
                 created_tables: Vec::new(),
                 cluster_id: cluster_id.clone(),
                 cluster_created_by_adapter,
+                started_at_ms,
             },
         );
 
         let mut created_tables = Vec::with_capacity(datasets.len());
-        let mut table_locations: HashMap<String, String> = HashMap::with_capacity(datasets.len());
 
         eprintln!(
             "[databricks-adapter] setup: creating tables...: {:#?}",
             metadata
         );
 
-        if metadata.get("etl_sink") == Some(&Value::String("hive".to_string())) {
-            eprintln!("[databricks-adapter] Initialization for hive sink");
+        eprintln!("[databricks-adapter] Initialization for adbc sink");
 
-            // Create UC tables via CTAS (common to all variants).
-            for (table_name, dataset_cfg) in &datasets {
-                let location = dataset_cfg.location.as_deref().ok_or_else(|| {
-                    format!("Dataset '{table_name}' is missing required 'location' field")
+        let create_schema_sql = format!(
+            "CREATE SCHEMA IF NOT EXISTS {}.{}",
+            Self::quoted_identifier(&self.config.catalog),
+            Self::quoted_identifier(&self.config.schema)
+        );
+
+        eprintln!("[databricks-adapter] Initialize schema: {create_schema_sql}");
+
+        self.execute_sql_statement(&create_schema_sql)
+            .await
+            .map_err(|e| format!("Failed to initialize schema: {e}"))?;
+
+        // Create managed UC tables (sources for synced tables) via SQL Warehouse.
+        for (table_name, dataset_cfg) in &datasets {
+            let ddl = self
+                .create_table_ddl(table_name, dataset_cfg, TableFormat::Delta)
+                .map_err(|e| {
+                    format!("Failed to build DDL for managed table '{table_name}': {e}")
                 })?;
-                let drop_sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
-                self.execute_sql_statement(&drop_sql).await.map_err(|e| {
-                    format!(
-                        "Failed to drop existing table '{table_name}' during create_tables: {e}"
-                    )
-                })?;
-
-                let create_sql = self.create_table_ctas(table_name, location);
-
-                eprintln!("[databricks-adapter] create_table '{table_name}': {create_sql}");
-
-                self.execute_sql_statement(&create_sql)
-                    .await
-                    .map_err(|e| format!("Failed to create table '{table_name}': {e}"))?;
-
-                table_locations.insert(table_name.clone(), location.to_string());
-                created_tables.push(table_name.clone());
-            }
-
-            self.ensure_notebook(&scenario_slug, &table_locations)
+            eprintln!("[databricks-adapter] creating managed table '{table_name}': {ddl}");
+            self.execute_sql_statement(&ddl)
                 .await
-                .map_err(|e| format!("Failed to upload sync notebook: {e}"))?;
-
-            self.ensure_notebook_sync_job(&scenario_slug)
-                .await
-                .map_err(|e| format!("Failed to create scheduled notebook sync job: {e}"))?;
-        } else {
-            eprintln!("[databricks-adapter] Initialization for adbc sink");
-
-            let create_schema_sql = format!(
-                "CREATE SCHEMA IF NOT EXISTS {}.{}",
-                Self::quoted_identifier(&self.config.catalog),
-                Self::quoted_identifier(&self.config.schema)
-            );
-
-            eprintln!("[databricks-adapter] Initialize schema: {create_schema_sql}");
-
-            self.execute_sql_statement(&create_schema_sql)
-                .await
-                .map_err(|e| format!("Failed to initialize schema: {e}"))?;
-
-            // Create managed UC tables (sources for synced tables) via SQL Warehouse.
-            for (table_name, dataset_cfg) in &datasets {
-                let ddl = self
-                    .create_table_ddl(table_name, dataset_cfg, TableFormat::Delta)
-                    .map_err(|e| {
-                        format!("Failed to build DDL for managed table '{table_name}': {e}")
-                    })?;
-                eprintln!("[databricks-adapter] creating managed table '{table_name}': {ddl}");
-                self.execute_sql_statement(&ddl)
-                    .await
-                    .map_err(|e| format!("Failed to create managed table '{table_name}': {e}"))?;
-                created_tables.push(table_name.clone());
-            }
+                .map_err(|e| format!("Failed to create managed table '{table_name}': {e}"))?;
+            created_tables.push(table_name.clone());
         }
 
         // Variant-specific post-processing.
@@ -2174,7 +2256,9 @@ impl Handler for DatabricksAdapter {
                     }
                 };
                 for table_name in &state.created_tables {
-                    eprintln!("[databricks-adapter] teardown: deleting synced table '{table_name}'");
+                    eprintln!(
+                        "[databricks-adapter] teardown: deleting synced table '{table_name}'"
+                    );
                     // a) Delete synced table from Lakebase (via synced tables API).
                     self.delete_synced_table(table_name).await.map_err(|e| {
                         format!("Failed to delete synced table '{table_name}': {e}")
@@ -2197,7 +2281,9 @@ impl Handler for DatabricksAdapter {
                     }
 
                     // c) Drop the managed source table (adapter schema).
-                    eprintln!("[databricks-adapter] teardown: deleting managed table '{table_name}'");
+                    eprintln!(
+                        "[databricks-adapter] teardown: deleting managed table '{table_name}'"
+                    );
                     let sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
                     self.execute_sql_statement(&sql)
                         .await
@@ -2246,6 +2332,74 @@ impl Handler for DatabricksAdapter {
         eprintln!("[databricks-adapter] teardown: done-done");
 
         Ok(TeardownResponse { ok: true })
+    }
+
+    async fn metrics(
+        &mut self,
+        run_id: Uuid,
+        final_scrape: bool,
+    ) -> std::result::Result<MetricsResponse, String> {
+        match &self.config.compute_target {
+            ComputeTarget::SqlWarehouse => {
+                let info = self
+                    .get_warehouse_info()
+                    .await
+                    .map_err(|e| format!("Failed to get warehouse info: {e}"))?;
+
+                eprintln!("[databricks-adapter] SUT metrics: warehouse_info={info:?}");
+
+                let mut resource = ResourceMetrics {
+                    num_compute_nodes: info.num_clusters,
+                    ..Default::default()
+                };
+
+                let ingestion = IngestionMetrics {
+                    active_connections: info.num_active_sessions,
+                    ..Default::default()
+                };
+
+                // Get run start time
+                let started_at_ms = self.runs.get(&run_id).map(|s| s.started_at_ms).unwrap_or(0);
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                if final_scrape {
+                    // Fire marker query and wait for it to appear in Query History.
+                    // Once visible, all earlier queries from this warehouse are also available.
+                    let marker_tag = format!("{run_id}_{now_ms}");
+                    if let Err(e) = self.fire_marker_and_wait(&marker_tag).await {
+                        eprintln!("[databricks-adapter] warning: marker wait failed: {e}");
+                    }
+                }
+
+                // Sum read_bytes and write_bytes from all queries since the run started.
+                // On periodic scrapes this is best-effort (Query History has ~5 min lag).
+                // On final scrape the marker wait above ensures completeness.
+                match self.sum_query_history_io(started_at_ms).await {
+                    Ok((total_read, total_write)) => {
+                        eprintln!(
+                            "[databricks-adapter] query history totals: read_bytes={total_read} write_remote_bytes={total_write}"
+                        );
+                        resource.disk_read_bytes = Some(total_read);
+                        resource.disk_write_bytes = Some(total_write);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[databricks-adapter] warning: query history I/O sum failed: {e}"
+                        );
+                    }
+                }
+
+                Ok(MetricsResponse {
+                    resource,
+                    ingestion,
+                })
+            }
+            _ => Ok(MetricsResponse::default()),
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 # System Adapters
 
-System adapters decouple SpiceBench from specific data platforms. Each adapter implements a JSON-RPC 2.0 interface that SpiceBench calls to provision, configure, and tear down the System Under Test (SUT).
+System adapters decouple SpiceBench from specific data platforms. Each adapter implements a JSON-RPC 2.0 interface that SpiceBench calls to prepare connection details for the System Under Test (SUT), optionally provision benchmark resources, and optionally clean them up afterward.
 
 ## Current Support
 
@@ -12,9 +12,12 @@ SpiceBench currently supports benchmark runs against:
 
 ## Protocol Overview
 
-| Method        | Purpose                                       |
-| ------------- | --------------------------------------------- |
-| `rpc.methods` | Return the list of supported JSON-RPC methods |
+| Method                                             | Purpose                                                               |
+| -------------------------------------------------- | --------------------------------------------------------------------- |
+| `setup(run_id, metadata, datasets, etl_sink_type)` | Return ADBC config and optionally provision/register benchmark assets |
+| `teardown(run_id)`                                 | Optionally clean up resources created or referenced by `setup`        |
+| `metrics(run_id)`                                  | Return resource and ingestion metrics                                 |
+| `rpc.methods`                                      | Return the list of supported JSON-RPC methods                         |
 
 ## Transport Modes
 
@@ -24,14 +27,16 @@ SpiceBench starts the adapter as a child process and communicates via stdin/stdo
 
 ```bash
 spicebench \
+    --scenario tpch \
+    --system-adapter-name my-adapter \
     --system-adapter-stdio-cmd ./my-adapter \
     --system-adapter-stdio-args "stdio" \
     --system-adapter-env SECRET_KEY=$SECRET_KEY
 ```
 
-- `--system-adapter-stdio-cmd` — command to start the adapter
-- `--system-adapter-stdio-args` — arguments passed to the command
-- `--system-adapter-env KEY=VALUE` — environment variables (repeatable, stdio only)
+- `--system-adapter-stdio-cmd` - command to start the adapter
+- `--system-adapter-stdio-args` - arguments passed to the command
+- `--system-adapter-env KEY=VALUE` - environment variables (repeatable, stdio only)
 
 ### HTTP (remote server)
 
@@ -39,6 +44,8 @@ SpiceBench connects to a running adapter server via HTTP POST.
 
 ```bash
 spicebench \
+    --scenario tpch \
+    --system-adapter-name my-adapter \
     --system-adapter-http-url http://127.0.0.1:8080/jsonrpc
 ```
 
@@ -48,7 +55,7 @@ Set **exactly one** of `--system-adapter-stdio-cmd` or `--system-adapter-http-ur
 
 ### `setup`
 
-Provisions the SUT and returns ADBC connection details.
+Returns ADBC connection details for the benchmark run and can optionally provision or register benchmark resources.
 
 **Request:**
 
@@ -66,7 +73,7 @@ Provisions the SUT and returns ADBC connection details.
             "system_under_test": "myplatform",
             "etl_bucket": "spiceai-public-datasets",
             "etl_prefix": "data-gen",
-            "etl_version": "1"
+            "etl_version": "1.0"
         },
         "datasets": {
             "customer": {
@@ -76,7 +83,7 @@ Provisions the SUT and returns ADBC connection details.
                 "partition_columns": ["__created_at"]
             }
         },
-        "etl_sink_type": "hive"
+        "etl_sink_type": "adbc"
     }
 }
 ```
@@ -99,7 +106,7 @@ Provisions the SUT and returns ADBC connection details.
 }
 ```
 
-The response tells SpiceBench which ADBC driver to use for query execution:
+The response tells SpiceBench which ADBC driver to use for query execution. For manually prepared systems, `setup` can simply validate inputs and return the existing driver + connection details without creating any new resources.
 
 | Field               | Required | Description                                                |
 | ------------------- | -------- | ---------------------------------------------------------- |
@@ -110,7 +117,7 @@ The response tells SpiceBench which ADBC driver to use for query execution:
 
 ### `teardown`
 
-Deprovisions resources created during `setup`.
+Optionally cleans up resources created or referenced during `setup`.
 
 **Request:**
 
@@ -177,7 +184,7 @@ Returns current resource usage and ingestion progress from the SUT. SpiceBench s
 }
 ```
 
-All fields in `resource` and `ingestion` are **optional** — return `null` or omit fields that are unavailable from your SUT. The default `Handler::metrics()` implementation returns empty metrics, so existing adapters remain compatible without changes.
+All fields in `resource` and `ingestion` are **optional** - return `null` or omit fields that are unavailable from your SUT. The default `Handler::metrics()` implementation returns empty metrics, so existing adapters remain compatible without changes.
 
 ### `rpc.methods`
 
@@ -204,11 +211,13 @@ Returns the list of JSON-RPC methods supported by the adapter.
 }
 ```
 
+An adapter can therefore implement `teardown` as a no-op when the SUT is managed externally or benchmark artifacts should be preserved for inspection.
+
 ## Adapter Lifecycle
 
-In `direct-query` mode, SpiceBench calls adapter methods in this order:
+In the current shipped benchmark path, SpiceBench calls adapter methods in this order:
 
-```
+```text
 setup(run_id, metadata, datasets, etl_sink_type)
     │
     ▼
@@ -221,7 +230,7 @@ benchmark execution
 teardown(run_id)
 ```
 
-Teardown is **always called**, even if the benchmark encounters errors.
+SpiceBench always invokes `teardown`, even if the benchmark encounters errors, but the adapter may choose to perform full cleanup, partial cleanup, or a no-op depending on how the target system is managed.
 
 ## Adapter Development
 
@@ -248,11 +257,11 @@ All templates:
 
 ### Implementation Checklist
 
-1. **`setup`** — Parse `metadata`, `datasets`, and `etl_sink_type` from the request. Provision your target system (start services, create schemas). Create/register benchmark destination tables from `datasets` (using Arrow schema, `primary_key_columns`, `time_column`, `partition_columns`, and `location` for Hive sources). Return an ADBC `driver` name and `db_kwargs` connection map.
+1. **`setup`** - Parse `metadata`, `datasets`, and `etl_sink_type` from the request. Return an ADBC `driver` name and `db_kwargs` connection map. If your adapter manages lifecycle, this is the place to start services, create schemas, or register benchmark destination tables from `datasets` (using Arrow schema, `primary_key_columns`, and `time_column`).
 
-2. **`teardown`** — Drop tables, stop services, release resources. Track state from `setup` using `run_id`.
+2. **`teardown`** - If your adapter created temporary resources, drop tables, stop services, and release them here. If the SUT is pre-provisioned, a successful no-op teardown is fine. Track any state from `setup` using `run_id`.
 
-3. **`metrics`** (optional) — Poll your SUT for CPU, memory, disk I/O, and ingestion progress. Return whatever is available; omit unavailable fields.
+3. **`metrics`** (optional) - Poll your SUT for CPU, memory, disk I/O, and ingestion progress. Return whatever is available; omit unavailable fields.
 
 ### Rust Adapter (using `system-adapter-protocol`)
 
@@ -266,11 +275,11 @@ struct MyAdapter { /* state */ }
 #[async_trait::async_trait]
 impl Handler for MyAdapter {
     async fn setup(&self, request: SetupRequest) -> Result<SetupResponse, JsonRpcError> {
-        // Provision SUT, return ADBC config
+        // Optionally prepare the SUT, then return ADBC config
     }
 
     async fn teardown(&self, request: TeardownRequest) -> Result<TeardownResponse, JsonRpcError> {
-        // Clean up
+        // Optionally clean up
     }
 }
 
@@ -334,7 +343,7 @@ cargo build --manifest-path system-adapters/databricks/Cargo.toml
 
 ```bash
 spicebench \
-    --query-set tpch \
+    --scenario tpch \
     --system-adapter-name databricks \
     --system-adapter-stdio-cmd system-adapters/databricks/target/debug/databricks-system-adapter \
     --system-adapter-stdio-args "stdio" \

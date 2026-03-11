@@ -30,7 +30,6 @@ pub enum TableFormat {
 #[derive(Clone, Debug, ValueEnum)]
 #[value(rename_all = "lower")]
 pub enum EtlSink {
-    Hive,
     Adbc,
 }
 
@@ -123,13 +122,8 @@ pub struct CommonArgs {
     #[arg(long, default_value_t = 1.0)]
     pub(crate) scale_factor: f64,
 
-    /// Base S3 key prefix for the ETL target (rehydrated) data.
-    /// A random suffix is appended automatically to create a unique destination per run.
-    #[arg(long, default_value = "")]
-    pub(crate) etl_target_base_prefix: String,
-
     /// ETL sink implementation used for loading generated data.
-    #[arg(long, value_enum, default_value = "hive")]
+    #[arg(long, value_enum, default_value = "adbc")]
     pub(crate) etl_sink: EtlSink,
 
     /// AWS region for the ETL S3 bucket
@@ -144,12 +138,6 @@ pub struct CommonArgs {
     /// Passed to the system adapter as `scheduler_state_location` metadata.
     #[arg(long)]
     pub(crate) scheduler_state_location: Option<String>,
-
-    /// Ordered list of columns used for hive-style partitioning of ETL output.
-    ///
-    /// Example: `--etl-partition-by __created_at,product_type`
-    #[arg(long, value_delimiter = ',', default_value = "__created_at")]
-    pub(crate) etl_partition_by: Vec<String>,
 
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]

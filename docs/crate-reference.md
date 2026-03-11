@@ -4,7 +4,7 @@ API overview for all workspace crates in SpiceBench.
 
 ## Dependency Graph
 
-```
+```text
 spicebench (binary)
 ├── test-framework          Core benchmark engine
 ├── system-adapter-protocol JSON-RPC client/server
@@ -26,7 +26,7 @@ spicebench (binary)
 
 The CLI entry point. Parses arguments, connects to the system adapter, manages the run lifecycle (setup → benchmark → teardown), and orchestrates the ETL pipeline and query execution.
 
-### Key Modules
+### `spicebench` Key Modules
 
 | Module                    | Description                                                                                |
 | ------------------------- | ------------------------------------------------------------------------------------------ |
@@ -67,20 +67,20 @@ pub static E2E_LATENCY_MS: LazyLock<Histogram<f64>>;  // "e2e_latency_ms"
 
 **Path:** `crates/test-framework/`
 
-Core benchmark engine — orchestrates query execution pipelines, manages scenarios, and collects statistics.
+Core benchmark engine - orchestrates query execution pipelines, manages scenarios, and collects statistics.
 
-### Public Types
+### `test-framework` Public Types
 
 | Type              | Description                                                                                          |
 | ----------------- | ---------------------------------------------------------------------------------------------------- |
 | `Scenario` (enum) | Benchmark scenarios (e.g., `TPCH`). Methods: `load_query_set()`, `end_condition()`                   |
 | `TestType` (enum) | Test types: `Throughput`, `Load`, `Benchmark`, `DataConsistency`, `Search`, `TextToSql`, `Streaming` |
 
-### Key Modules
+### `test-framework` Key Modules
 
 | Module      | Description                                         |
 | ----------- | --------------------------------------------------- |
-| `execution` | Query execution pipeline (baseline, load test)      |
+| `execution` | Query execution pipeline and benchmark helpers      |
 | `flight`    | Arrow Flight integration                            |
 | `metrics`   | Internal metrics collection                         |
 | `queries`   | Query set loading, parameterization, and management |
@@ -88,7 +88,7 @@ Core benchmark engine — orchestrates query execution pipelines, manages scenar
 | `spicetest` | SpiceTest runner (throughput test orchestrator)     |
 | `telemetry` | Telemetry integration                               |
 
-### Re-exports
+### `test-framework` Re-exports
 
 - `anyhow`, `arrow`, `opentelemetry`, `opentelemetry_sdk`, `rustls`
 
@@ -131,7 +131,7 @@ JSON-RPC 2.0 protocol definitions for system adapter communication. Supports bot
 | `Handler` (trait)    | `setup()`, `teardown()`, `metrics()`, `query_method()`, `rpc_methods()` |
 | `Server<H: Handler>` | JSON-RPC server. Method: `run_stdio()`                                  |
 
-### Constants
+### `system-adapter-protocol` Constants
 
 | Module        | Constants                                                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -144,15 +144,14 @@ JSON-RPC 2.0 protocol definitions for system adapter communication. Supports bot
 
 **Path:** `crates/data-generation/`
 
-Generates Arrow data (TPC-H or simple sequences) with mutation support and writes to S3 as Parquet.
+Generates Arrow data (TPC-H or simple sequences) with mutation support, packages results into a `.tar.zst` archive, and uploads the archive to S3 or writes it to a local path.
 
-### Public Types
+### `data-generation` Public Types
 
 | Type                       | Description                                                    |
 | -------------------------- | -------------------------------------------------------------- |
 | `DatasetConfig`            | Dataset type, scale factor, number of steps                    |
 | `TargetConfig`             | S3 target bucket, prefix, region, endpoint, partition columns  |
-| `IngestorConfig`           | Upload concurrency settings                                    |
 | `DataGenerator`            | Main generator. Method: `run()`                                |
 | `VersionConfig`            | Version configuration for reproducible generation              |
 | `VersionMetadata`          | Metadata read from/written to S3 (`version.json`)              |
@@ -163,14 +162,14 @@ Generates Arrow data (TPC-H or simple sequences) with mutation support and write
 | `PrimaryKeyValue` (enum)   | `Single(i64)` or `Composite(Box<[i64]>)`                       |
 | `Metrics` / `IngestResult` | Atomic write counters                                          |
 
-### Traits
+### `data-generation` Traits
 
 | Trait         | Description                                                                              |
 | ------------- | ---------------------------------------------------------------------------------------- |
 | `Dataset`     | `create()`, `storage()`, `batch_ids()`, `next_batch()`, `tables()`, `primary_key()`      |
 | `DataStorage` | `list_batches()`, `read_batch()`, `write()`, `read_version_metadata()`, `table_params()` |
 
-### Implementations
+### `data-generation` Implementations
 
 | Struct                  | Description                                |
 | ----------------------- | ------------------------------------------ |
@@ -184,27 +183,26 @@ Generates Arrow data (TPC-H or simple sequences) with mutation support and write
 
 **Path:** `crates/etl/`
 
-ETL pipeline — reads from S3, rehydrates, and writes to configurable sinks.
+ETL pipeline - reads from S3, rehydrates, and writes to configurable sinks.
 
-### Public Types
+### `etl` Public Types
 
 | Type                   | Description                                                                       |
 | ---------------------- | --------------------------------------------------------------------------------- |
-| `DatasetSource` (enum) | `SimpleSequence`, `Tpch` — factory for Dataset instances                          |
+| `DatasetSource` (enum) | `SimpleSequence`, `Tpch` - factory for Dataset instances                          |
 | `PipelineState` (enum) | `NotStarted`, `Initialized`, `Running`, `Paused`, `Stopped(StopReason)`           |
 | `StopReason` (enum)    | `Completed`, `Cancelled`, `Error(String)`                                         |
 | `ETLPipeline`          | Full pipeline lifecycle: `initialize()`, `start()`, `run()`, `wait()`, `cancel()` |
 | `InsertOp` (enum)      | `Insert`, `Update { key_columns }`, `Delete { key_columns }`                      |
 
-### Sinks
+### `etl` Sinks
 
 | Struct       | Description                                                      |
 | ------------ | ---------------------------------------------------------------- |
-| `S3HiveSink` | Hive-partitioned Parquet to S3 with concurrency control          |
 | `AdbcSink`   | ADBC bulk ingest. Method: `create_tables_from_dataset_configs()` |
 | `NullSink`   | Discards all writes (for benchmarking pipeline throughput)       |
 
-### Trait
+### `etl` Sink Trait
 
 ```rust
 trait Sink {
@@ -220,7 +218,7 @@ trait Sink {
 
 Generic ADBC connection wrapper with r2d2 connection pooling.
 
-### Public Types
+### `adbc_client` Public Types
 
 | Type                    | Description                                                                             |
 | ----------------------- | --------------------------------------------------------------------------------------- |
@@ -229,13 +227,13 @@ Generic ADBC connection wrapper with r2d2 connection pooling.
 | `AdbcConnectionManager` | Implements `r2d2::ManageConnection`                                                     |
 | `Error` (enum)          | `LoadDriver`, `CreateDatabase`, `CreateConnection`, `ExecuteQuery`, `ReadBatch`         |
 
-### Public Functions
+### `adbc_client` Public Functions
 
 ```rust
 fn create_pool(driver: &str, kwargs: HashMap, size: Option<u32>) -> Result<AdbcConnectionPool>
 ```
 
-### Re-exports
+### `adbc_client` Re-exports
 
 - `IngestMode` from `adbc_core`
 
@@ -247,7 +245,7 @@ fn create_pool(driver: &str, kwargs: HashMap, size: Option<u32>) -> Result<AdbcC
 
 Apache Arrow Flight client for querying and publishing data. Cheap to clone, supports TLS, auth, and cookie middleware.
 
-### Public Types
+### `flight_client` Public Types
 
 | Type                               | Description                                                                  |
 | ---------------------------------- | ---------------------------------------------------------------------------- |
@@ -257,7 +255,7 @@ Apache Arrow Flight client for querying and publishing data. Cheap to clone, sup
 | `CookieStore`                      | Automatic cookie management                                                  |
 | `CookieLayer` / `CookieService<S>` | Tower Layer/Service for cookie middleware                                    |
 
-### Constants
+### `flight_client` Constants
 
 - `MAX_ENCODING_MESSAGE_SIZE`: 100 MB
 - `MAX_DECODING_MESSAGE_SIZE`: 100 MB
@@ -270,7 +268,7 @@ Apache Arrow Flight client for querying and publishing data. Cheap to clone, sup
 
 OpenTelemetry-based metrics collection with Arrow Flight export.
 
-### Public Types
+### `telemetry` Public Types
 
 | Type                              | Description                                   |
 | --------------------------------- | --------------------------------------------- |
@@ -280,7 +278,7 @@ OpenTelemetry-based metrics collection with Arrow Flight export.
 | `NoopMeterProvider` / `NoopMeter` | No-op implementations for testing             |
 | `InitialReader`                   | Wraps `ManualReader` for initial metric reads |
 
-### Public Functions
+### `telemetry` Public Functions
 
 | Function                           | Description                   |
 | ---------------------------------- | ----------------------------- |
@@ -290,9 +288,9 @@ OpenTelemetry-based metrics collection with Arrow Flight export.
 | `track_query_duration()`           | Track query duration          |
 | `track_query_execution_duration()` | Track execution-only duration |
 
-### Features
+### `telemetry` Features
 
-- `anonymous_telemetry` — SHA256-hashed instance IDs for anonymous usage tracking
+- `anonymous_telemetry` - SHA256-hashed instance IDs for anonymous usage tracking
 
 ---
 
@@ -302,7 +300,7 @@ OpenTelemetry-based metrics collection with Arrow Flight export.
 
 Converts OpenTelemetry metrics to Arrow RecordBatch format.
 
-### Public Types
+### `otel-arrow` Public Types
 
 | Type                   | Description                                                   |
 | ---------------------- | ------------------------------------------------------------- |
@@ -310,7 +308,7 @@ Converts OpenTelemetry metrics to Arrow RecordBatch format.
 | `OtelArrowExporter<E>` | Implements `PushMetricExporter`, delegates to `ArrowExporter` |
 | `Error`                | Conversion error type                                         |
 
-### Traits
+### `otel-arrow` Traits
 
 ```rust
 trait ArrowExporter {
@@ -320,7 +318,7 @@ trait ArrowExporter {
 }
 ```
 
-### Public Functions
+### `otel-arrow` Public Functions
 
 ```rust
 fn schema() -> Arc<Schema>  // Flattened OTel metrics Arrow schema
@@ -334,16 +332,16 @@ fn schema() -> Arc<Schema>  // Flattened OTel metrics Arrow schema
 
 Custom YAML serialization/deserialization library with ordered mappings and merge key support.
 
-### Public Types
+### `yaml` Public Types
 
 | Type            | Description                                                         |
 | --------------- | ------------------------------------------------------------------- |
 | `Value` (enum)  | `Null`, `Bool`, `Number`, `String`, `Sequence`, `Mapping`           |
-| `Number` (enum) | `PosInt(u64)`, `NegInt(i64)`, `Float(f64)` — implements `Eq + Hash` |
-| `Mapping`       | `IndexMap<Value, Value>` — ordered key-value map                    |
+| `Number` (enum) | `PosInt(u64)`, `NegInt(i64)`, `Float(f64)` - implements `Eq + Hash` |
+| `Mapping`       | `IndexMap<Value, Value>` - ordered key-value map                    |
 | `Error`         | Parse/serialize errors with source location                         |
 
-### Public Functions
+### `yaml` Public Functions
 
 | Function                   | Description                |
 | -------------------------- | -------------------------- |
@@ -360,7 +358,7 @@ Custom YAML serialization/deserialization library with ordered mappings and merg
 
 Shared utilities.
 
-### Public Functions
+### `util` Public Functions
 
 | Function                            | Description                               |
 | ----------------------------------- | ----------------------------------------- |
@@ -372,7 +370,7 @@ Shared utilities.
 | `humantime_elapsed(duration)`       | Human-readable elapsed time               |
 | `distribute_nulls(batch, fraction)` | Randomly null out values in a RecordBatch |
 
-### Re-exports
+### `util` Re-exports
 
 - `backoff::Error as RetryError`, `ExponentialBackoff`, `backoff::future::retry`
 
@@ -384,14 +382,14 @@ Shared utilities.
 
 Human-readable duration parsing and formatting.
 
-### Public Functions
+### `duration-parse` Public Functions
 
 ```rust
 fn parse_duration(input: &str) -> Result<Duration, ParseError>
 fn format_duration(duration: Duration) -> String
 ```
 
-### Supported Units
+### `duration-parse` Supported Units
 
 `ns`, `us`/`μs`, `ms`, `s`, `m`, `h`, `d`, `w`
 
@@ -405,7 +403,7 @@ Accepts compound durations: `"1h30m"`, `"2.5d"`, `"10s"`.
 
 Captures expected query results at ETL checkpoints for validation.
 
-### Public Types
+### `checkpointer` Public Types
 
 | Type                 | Description                                        |
 | -------------------- | -------------------------------------------------- |
@@ -413,7 +411,7 @@ Captures expected query results at ETL checkpoints for validation.
 | `ScenarioCheckpoint` | Checkpoint indexes, query indexes, interval steps  |
 | `CheckpointStore`    | S3-backed store for upload/download of checkpoints |
 
-### Key Methods
+### `checkpointer` Key Methods
 
 - `CheckpointStore::new(bucket, prefix, region, endpoint)`
 - `CheckpointStore::upload_checkpoints()`

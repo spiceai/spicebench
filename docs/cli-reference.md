@@ -4,90 +4,74 @@ Complete command-line reference for SpiceBench binaries.
 
 ## `spicebench`
 
-The main benchmark binary. Connects to a system adapter, runs setup/benchmark/teardown, and exports metrics.
+The main benchmark binary. It downloads and extracts a pre-generated data archive, connects to a system adapter, runs setup, executes the timed benchmark, and tears the target system down.
 
-### Usage
+### spicebench Usage
 
 ```bash
 spicebench [OPTIONS]
 ```
 
-### Scenario & Query Options
+### Core Options
 
-| Flag                    | Type                | Default | Description                                                        |
-| ----------------------- | ------------------- | ------- | ------------------------------------------------------------------ |
-| `--scenario`            | `Scenario`          | `tpch`  | Benchmark scenario to run                                          |
-| `--concurrency`         | `usize`             | `2`     | Number of concurrent query clients during the load test            |
-| `--query-set`           | `QuerySetArg`       | —       | Query set to execute (see [Query Sets](#query-sets))               |
-| `--query-overrides`     | `QueryOverridesArg` | —       | SQL dialect overrides (see [SQL Dialects](#sql-dialect-overrides)) |
-| `--scenario-query-file` | `String`            | —       | Path to a custom query file (used with `--query-set scenario`)     |
-| `--validate-results`    | `bool`              | `false` | Enable checkpoint-based query result validation                    |
+| Flag                       | Type       | Default   | Description                                                            |
+| -------------------------- | ---------- | --------- | ---------------------------------------------------------------------- |
+| `--scenario`               | `Scenario` | required  | Benchmark scenario to run. Current value: `tpch`                       |
+| `--concurrency`            | `usize`    | `2`       | Number of concurrent query clients during the timed benchmark          |
+| `--validate-results`       | `bool`     | `false`   | Enable checkpoint-based query result validation when checkpoints exist |
+| `--executor-instance-type` | `String`   | `unknown` | Hardware class identifier attached to emitted benchmark metrics        |
+
+The current main `spicebench` binary does not expose separate `--query-set`, `--scenario-query-file`, or `--query-overrides` flags. The scenario selects the built-in benchmark workload.
 
 ### System Adapter Options
 
-| Flag                              | Type        | Default           | Description                                                                            |
-| --------------------------------- | ----------- | ----------------- | -------------------------------------------------------------------------------------- |
-| `--system-adapter-name`           | `String`    | required          | Name identifier for the system adapter                                                 |
-| `--system-adapter-execution-mode` | `Enum`      | `adapter-command` | `adapter-command` or `direct-query`                                                    |
-| `--system-adapter-stdio-cmd`      | `String`    | —                 | Command to start a stdio adapter (mutually exclusive with `--system-adapter-http-url`) |
-| `--system-adapter-stdio-args`     | `String`    | —                 | Arguments passed to the stdio adapter command                                          |
-| `--system-adapter-http-url`       | `String`    | —                 | URL of a running HTTP adapter (mutually exclusive with `--system-adapter-stdio-cmd`)   |
-| `--system-adapter-param`          | `KEY=VALUE` | —                 | Repeatable. Key-value params passed to the adapter in `setup` metadata                 |
-| `--system-adapter-env`            | `KEY=VALUE` | —                 | Repeatable. Environment variables set for stdio adapter processes only                 |
+| Flag                              | Type        | Default           | Description                                                                                                  |
+| --------------------------------- | ----------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| `--system-adapter-name`           | `String`    | `system_adapter`  | Logical name for the system adapter connection                                                               |
+| `--system-adapter-execution-mode` | `Enum`      | `adapter-command` | Accepted values: `adapter-command`, `direct-query`. The current main binary does not branch on this flag yet |
+| `--system-adapter-stdio-cmd`      | `String`    | -                 | Command to start a stdio adapter (mutually exclusive with `--system-adapter-http-url`)                       |
+| `--system-adapter-stdio-args`     | `String`    | -                 | Space-delimited arguments passed to the stdio adapter command                                                |
+| `--system-adapter-http-url`       | `String`    | -                 | URL of a running HTTP adapter (mutually exclusive with `--system-adapter-stdio-cmd`)                         |
+| `--system-adapter-param`          | `KEY=VALUE` | -                 | Repeatable. Adapter-specific params passed in `setup` metadata                                               |
+| `--system-adapter-env`            | `KEY=VALUE` | -                 | Repeatable. Environment variables for stdio adapters only                                                    |
 
-### ETL & Data Options
+Set exactly one of `--system-adapter-stdio-cmd` or `--system-adapter-http-url`.
 
-| Flag                       | Type     | Default                   | Description                                                     |
-| -------------------------- | -------- | ------------------------- | --------------------------------------------------------------- |
-| `--etl-bucket`             | `String` | `spiceai-public-datasets` | S3 bucket containing source data batches                        |
-| `--etl-prefix`             | `String` | `data-gen`                | S3 key prefix for source data                                   |
-| `--etl-version`            | `String` | `1`                       | Version identifier of the data generation to read               |
-| `--etl-sink`               | `Enum`   | `hive`                    | ETL sink type: `hive` (S3 Parquet) or `adbc` (ADBC bulk ingest) |
-| `--etl-target-base-prefix` | `String` | `etl-hive-output`         | Base S3 prefix for Hive sink output                             |
-| `--etl-region`             | `String` | `us-east-1`               | AWS region for S3 operations                                    |
-| `--etl-endpoint`           | `String` | —                         | Custom S3 endpoint (for MinIO, LocalStack, etc.)                |
-| `--etl-partition-by`       | `String` | `__created_at`            | Comma-separated partition columns for Hive sink                 |
-| `--table-format`           | `Enum`   | `parquet`                 | Table format: `parquet`, `iceberg`, or `delta`                  |
+### Data & ETL Options
+
+| Flag                         | Type     | Default                   | Description                                                                                            |
+| ---------------------------- | -------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `--etl-bucket`               | `String` | `spiceai-public-datasets` | S3 bucket containing source data batches                                                               |
+| `--etl-prefix`               | `String` | `data-gen`                | S3 key prefix for source data                                                                          |
+| `--scale-factor`             | `f64`    | `1.0`                     | Dataset scale factor. The ETL version path is derived automatically                                    |
+| `--etl-sink`                 | `Enum`   | `adbc`                    | ETL sink type: `adbc` (ADBC bulk ingest)                                                               |
+| `--etl-region`               | `String` | `us-east-1`               | AWS region for S3 operations                                                                           |
+| `--etl-endpoint`             | `String` | -                         | Custom S3 endpoint (for MinIO, LocalStack, and similar)                                                |
+| `--table-format`             | `Enum`   | `parquet`                 | Table format propagated through ETL dataset metadata and adapter setup                                 |
+| `--scheduler-state-location` | `String` | -                         | Optional S3 URI for shared scheduler state passed through setup metadata                               |
 
 ### Metrics & Telemetry Options
 
-| Flag                       | Type        | Default   | Description                                                             |
-| -------------------------- | ----------- | --------- | ----------------------------------------------------------------------- |
-| `--scrape-sut-metrics`     | `bool`      | `false`   | Enable periodic SUT metrics scraping via adapter `metrics()` (every 5s) |
-| `--otlp-endpoint`          | `String`    | —         | OTLP endpoint for streaming metrics export (every 5s)                   |
-| `--otlp-header`            | `KEY=VALUE` | —         | Repeatable. Headers for OTLP export requests                            |
-| `--executor-instance-type` | `String`    | `unknown` | Hardware class identifier for cross-system comparison                   |
+| Flag                   | Type        | Default | Description                                                              |
+| ---------------------- | ----------- | ------- | ------------------------------------------------------------------------ |
+| `--scrape-sut-metrics` | `bool`      | `false` | Enable periodic SUT metrics scraping via adapter `metrics()`             |
+| `--otlp-endpoint`      | `String`    | -       | OTLP endpoint for streaming metrics export                               |
+| `--otlp-header`        | `KEY=VALUE` | -       | Repeatable. Headers for OTLP export requests. Requires `--otlp-endpoint` |
 
-### Query Sets
+### Scenarios
 
-| Value               | Flag                              | Description                                        |
-| ------------------- | --------------------------------- | -------------------------------------------------- |
-| TPC-H               | `--query-set tpch`                | Standard TPC-H query suite (22 queries)            |
-| TPC-DS              | `--query-set tpcds`               | Standard TPC-DS query suite                        |
-| ClickBench          | `--query-set clickbench`          | ClickBench query suite                             |
-| Parameterized TPC-H | `--query-set tpch[parameterized]` | TPC-H with randomized parameter substitution       |
-| Scenario            | `--query-set scenario`            | Custom queries loaded from `--scenario-query-file` |
+| Scenario | Flag              | Description                                |
+| -------- | ----------------- | ------------------------------------------ |
+| TPC-H    | `--scenario tpch` | Built-in TPC-H scenario and query workload |
 
-### SQL Overrides
+### spicebench Examples
 
-Use `--query-overrides <dialect>` to apply SQL rewrites for currently supported systems:
-
-| Dialect              | Target System            |
-| -------------------- | ------------------------ |
-| `odbc-databricks`    | Databricks SQL via ODBC  |
-| `databricks-catalog` | Databricks Unity Catalog |
-| `spicecloud`         | Spice Cloud              |
-| `spicecloud-catalog` | Spice Cloud with catalog |
-
-### Examples
-
-**Direct-query with HTTP adapter:**
+**HTTP adapter:**
 
 ```bash
 spicebench \
-    --query-set tpch \
+    --scenario tpch \
     --system-adapter-name myplatform \
-    --system-adapter-execution-mode direct-query \
     --system-adapter-http-url http://127.0.0.1:8080/jsonrpc \
     --scrape-sut-metrics \
     --concurrency 4
@@ -97,7 +81,7 @@ spicebench \
 
 ```bash
 spicebench \
-    --query-set tpch \
+    --scenario tpch \
     --system-adapter-name spidapter \
     --system-adapter-stdio-cmd docker \
     --system-adapter-stdio-args "run -i --rm ghcr.io/spiceai/spidapter:latest" \
@@ -109,9 +93,8 @@ spicebench \
 
 ```bash
 spicebench \
-    --query-set tpch \
+    --scenario tpch \
     --system-adapter-name myplatform \
-    --system-adapter-execution-mode direct-query \
     --system-adapter-http-url http://127.0.0.1:8080/jsonrpc \
     --otlp-endpoint http://localhost:4317 \
     --otlp-header "Authorization=Bearer $TOKEN"
@@ -121,27 +104,33 @@ spicebench \
 
 ## `data-generation`
 
-Standalone binary for generating TPC-H datasets and writing Parquet batches to S3.
+Standalone binary for generating versioned datasets and either uploading the resulting archive to S3 or writing it to a local archive file.
 
-### Usage
+### data-generation Usage
 
 ```bash
 data-generation run [OPTIONS]
 ```
 
-### Options
+### data-generation Options
 
-| Flag                       | Type     | Default   | Description                           |
-| -------------------------- | -------- | --------- | ------------------------------------- |
-| `--scale-factor`           | `f64`    | required  | TPC-H scale factor (1, 10, 100, etc.) |
-| `--bucket`                 | `String` | required  | S3 bucket for output                  |
-| `--prefix`                 | `String` | required  | S3 key prefix                         |
-| `--region`                 | `String` | —         | AWS region                            |
-| `--num-steps`              | `usize`  | required  | Number of generation steps (batches)  |
-| `--table-format`           | `String` | `parquet` | Table format metadata                 |
-| `--executor-instance-type` | `String` | —         | Executor hardware class for metadata  |
+| Flag                | Type     | Default | Description                                                          |
+| ------------------- | -------- | ------- | -------------------------------------------------------------------- |
+| `--dataset`         | `String` | `tpch`  | Dataset type to generate                                             |
+| `--scale-factor`    | `f64`    | `1.0`   | Dataset scale factor                                                 |
+| `--num-steps`       | `u16`    | `25`    | Number of data generation steps                                      |
+| `--scenario`        | `String` | `tpch`  | Scenario name used in the output path                                |
+| `--output-archive`  | `String` | -       | Write the generated `.tar.zst` archive to a local path instead of S3 |
+| `--bucket`          | `String` | -       | S3 bucket for output. Required unless `--output-archive` is set      |
+| `--prefix`          | `String` | `""`    | S3 key prefix for generated files                                    |
+| `--region`          | `String` | -       | AWS region                                                           |
+| `--endpoint`        | `String` | -       | S3 endpoint URL (for MinIO, LocalStack, and similar)                 |
 
-### Example
+The generated version string is derived automatically from `--scale-factor`, so `--scale-factor 1` writes to a `1.0` version path.
+
+### data-generation Examples
+
+**Upload generated data to S3:**
 
 ```bash
 cargo run -p data-generation -- run \
@@ -149,58 +138,116 @@ cargo run -p data-generation -- run \
     --bucket my-benchmark-data \
     --region us-west-2 \
     --prefix raw \
+    --num-steps 10
+```
+
+**Write a local archive:**
+
+```bash
+cargo run -p data-generation -- run \
+    --scale-factor 1 \
     --num-steps 10 \
-    --table-format parquet
+    --output-archive ./tpch-sf1.tar.zst
 ```
 
 ---
 
 ## `etl`
 
-Standalone ETL pipeline binary. Reads raw batches from S3, rehydrates records, and writes to a configurable sink.
+Standalone ETL pipeline binary. It reads a generated archive, rehydrates records, and writes to an ADBC target or a null sink.
 
-### Usage
+### etl Usage
 
 ```bash
 etl [OPTIONS]
 ```
 
-### Options
+### etl Options
 
-| Flag                   | Type        | Default        | Description                                  |
-| ---------------------- | ----------- | -------------- | -------------------------------------------- |
-| `--scenario`           | `String`    | `tpch`         | Scenario name                                |
-| `--version`            | `String`    | required       | Version of the generated data                |
-| `--bucket`             | `String`    | required       | S3 bucket with source batches                |
-| `--prefix`             | `String`    | required       | S3 key prefix for source data                |
-| `--region`             | `String`    | —              | AWS region                                   |
-| `--endpoint`           | `String`    | —              | Custom S3 endpoint                           |
-| `--sink`               | `Enum`      | `s3-hive`      | Sink type: `s3-hive`, `adbc`, `null`         |
-| `--target-prefix`      | `String`    | —              | Output prefix for Hive sink                  |
-| `--partition-by`       | `String`    | `__created_at` | Partition columns (comma-separated)          |
-| `--adbc-driver`        | `String`    | —              | ADBC driver name (for `adbc` sink)           |
-| `--adbc-uri`           | `String`    | —              | ADBC connection URI                          |
-| `--adbc-option`        | `KEY=VALUE` | —              | Repeatable. Additional ADBC database options |
-| `--adbc-create-tables` | `bool`      | `false`        | Create tables before ETL starts              |
-| `--adbc-schema`        | `String`    | —              | Target schema for ADBC tables                |
+| Flag                   | Type        | Default        | Description                                                            |
+| ---------------------- | ----------- | -------------- | ---------------------------------------------------------------------- |
+| `--scenario`           | `String`    | `tpch`         | Scenario name                                                          |
+| `--scale-factor`       | `f64`       | `1.0`          | Dataset scale factor. The version path is derived automatically        |
+| `--archive-file`       | `Path`      | -              | Local `.tar.zst` archive to extract instead of downloading from S3     |
+| `--extract-dir`        | `Path`      | temp dir       | Directory to extract the archive into                                  |
+| `--bucket`             | `String`    | -              | S3 bucket with source archive. Required unless `--archive-file` is set |
+| `--prefix`             | `String`    | `""`           | S3 key prefix for source data                                          |
+| `--region`             | `String`    | -              | AWS region                                                             |
+| `--endpoint`           | `String`    | -              | Custom S3 endpoint                                                     |
+| `--sink`               | `Enum`      | `adbc`         | Sink type: `adbc`, `null`                                              |
+| `--adbc-driver`        | `String`    | -              | ADBC driver name for the `adbc` sink                                   |
+| `--adbc-uri`           | `String`    | -              | ADBC connection URI for the `adbc` sink                                |
+| `--adbc-catalog`       | `String`    | -              | Optional target catalog for ADBC bulk ingest                           |
+| `--adbc-schema`        | `String`    | -              | Optional target schema for ADBC bulk ingest                            |
+| `--adbc-create-tables` | `bool`      | `false`        | Create tables before ETL starts. Requires `--sink adbc`                |
+| `--adbc-option`        | `KEY=VALUE` | -              | Repeatable. Additional ADBC database options                           |
 
-### Examples
+### etl Examples
 
-See [Data Generation & ETL](data-generation-and-etl.md) for full examples.
+**Local archive to null sink:**
+
+```bash
+cargo run -p etl -- \
+    --scenario tpch \
+    --scale-factor 1 \
+    --archive-file ./tpch-sf1.tar.zst \
+    --sink null
+```
+
+**ADBC sink:**
+
+```bash
+cargo run -p etl -- \
+    --scenario tpch \
+    --scale-factor 1 \
+    --bucket my-data \
+    --prefix raw \
+    --sink adbc \
+    --adbc-driver databricks \
+    --adbc-uri "databricks://token:${DATABRICKS_TOKEN}@${DATABRICKS_ENDPOINT}:443/${DATABRICKS_HTTP_PATH}" \
+    --adbc-catalog main \
+    --adbc-schema tpch \
+    --adbc-create-tables
+```
 
 ---
 
 ## `checkpointer`
 
-Runs ETL to specific steps and captures expected query results as Parquet checkpoint files.
+Captures expected query results at ETL checkpoints. The current binary requires the `duckdb` feature and writes checkpoint results by replaying ETL into a local DuckDB database.
 
-### Usage
+### checkpointer Usage
 
 ```bash
-cargo run -p checkpointer -- [OPTIONS]
+cargo run -p checkpointer --features duckdb -- [OPTIONS]
 ```
 
-See [Data Generation & ETL — Checkpointing](data-generation-and-etl.md#checkpointing) for details.
+### checkpointer Options
+
+| Flag                          | Type     | Default         | Description                                                  |
+| ----------------------------- | -------- | --------------- | ------------------------------------------------------------ |
+| `--scenario`                  | `String` | `tpch`          | Scenario to checkpoint                                       |
+| `--version`                   | `String` | required        | Data generation version to read from S3                      |
+| `--bucket`                    | `String` | required        | S3 bucket used for the source archive and checkpoint uploads |
+| `--prefix`                    | `String` | `""`            | S3 key prefix                                                |
+| `--region`                    | `String` | -               | AWS region                                                   |
+| `--endpoint`                  | `String` | -               | Custom S3 endpoint                                           |
+| `--duckdb-path`               | `Path`   | required        | Local DuckDB database file used during checkpointing         |
+| `--checkpoint-interval-steps` | `u64`    | `100`           | Capture a checkpoint every N ETL steps                       |
+| `--checkpoint-dir`            | `Path`   | `./checkpoints` | Local directory for checkpoint parquet files                 |
+
+### Example
+
+```bash
+cargo run -p checkpointer --features duckdb -- \
+    --scenario tpch \
+    --version 1.0 \
+    --bucket my-data \
+    --prefix raw \
+    --duckdb-path ./checkpoints.duckdb \
+    --checkpoint-interval-steps 5 \
+    --checkpoint-dir ./checkpoints
+```
 
 ---
 

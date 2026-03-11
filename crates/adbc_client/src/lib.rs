@@ -306,25 +306,22 @@ fn is_opaque_numeric(field: &Field) -> bool {
     let metadata = field.metadata();
 
     // PostgreSQL: arrow.opaque extension type for numeric
-    if let Some(ext_name) = metadata.get("ARROW:extension:name") {
-        if ext_name == "arrow.opaque" {
-            if let Some(ext_meta) = metadata.get("ARROW:extension:metadata") {
-                if serde_json::from_str::<serde_json::Value>(ext_meta)
-                    .ok()
-                    .and_then(|v| v.get("type_name")?.as_str().map(|s| s == "numeric"))
-                    .unwrap_or(false)
-                {
-                    return true;
-                }
-            }
-        }
+    if let Some(ext_name) = metadata.get("ARROW:extension:name")
+        && ext_name == "arrow.opaque"
+        && let Some(ext_meta) = metadata.get("ARROW:extension:metadata")
+        && serde_json::from_str::<serde_json::Value>(ext_meta)
+            .ok()
+            .and_then(|v| v.get("type_name")?.as_str().map(|s| s == "numeric"))
+            .unwrap_or(false)
+    {
+        return true;
     }
 
     // Databricks Spark: decimal type serialised as Utf8 with Spark metadata
-    if let Some(sql_name) = metadata.get("Spark:DataType:SqlName") {
-        if sql_name.starts_with("DECIMAL(") {
-            return true;
-        }
+    if let Some(sql_name) = metadata.get("Spark:DataType:SqlName")
+        && sql_name.starts_with("DECIMAL(")
+    {
+        return true;
     }
 
     false

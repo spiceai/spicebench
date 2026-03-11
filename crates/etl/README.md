@@ -1,98 +1,72 @@
 # ETL Pipeline
 
-`etl` reads raw batches from S3, rehydrates records (for example adding a time column), and writes to either:
+`etl` reads a generated archive, rehydrates records, and writes to either:
 
-- S3 as hive-partitioned Parquet (default), or
-- an ADBC target via bulk ingest, or
-- a null sink that discards writes for throughput benchmarking.
+- an ADBC target via bulk ingest (default)
+- a null sink that discards writes for throughput benchmarking
 
-Dataset configuration (dataset type, scale factor, number of steps, mutations) is read automatically from the `version.json` metadata written by the data generation tool.
+Dataset configuration is read from the extracted `version.json` metadata written by `data-generation`.
 
-## Required arguments
+## Required Inputs
 
-- `--bucket`: S3 bucket containing source batches.
-- `--prefix`: S3 prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`).
-- `--scenario`: Scenario name (default: `tpch`).
-- `--version`: Version identifier for the data generation to read from.
+Provide one of these source modes:
 
-## S3 Hive sink (default)
+- `--archive-file <path>` to read a local `.tar.zst` archive
+- `--bucket <bucket>` plus the S3 source flags to download the archive from S3
 
-Use `--sink s3-hive` (default) to write hive-partitioned Parquet to S3.
+The version path is derived automatically from `--scale-factor`, so `--scale-factor 1` reads from the `1.0` version path.
 
-- `--target-prefix`: Base S3 key prefix for ETL output (defaults to `--prefix`).
-- `--partition-by`: Comma-separated partition columns (default: `__created_at`).
-
-### S3 Hive example
-
-```bash
-cargo run -p etl -- \
-	--scenario tpch \
-	--version 1 \
-	--bucket peasee-indexes \
-	--prefix raw \
-	--target-prefix rehydrated \
-	--partition-by __created_at
-```
-
-## ADBC sink (optional)
+## ADBC Sink
 
 Use `--sink adbc` to write via ADBC bulk ingest.
 
-- `--adbc-driver`: ADBC driver name (for example `databricks` or `flightsql`).
-- `--adbc-uri`: Connection URI passed as ADBC database option `uri`.
-- `--adbc-option key=value`: Additional ADBC database option (repeatable).
-- `--adbc-create-tables`: Send PostgreSQL-compatible `CREATE TABLE IF NOT EXISTS` statements before ETL starts, using dataset table schemas (including `__created_at`).
+- `--adbc-driver`: ADBC driver name such as `databricks` or `flightsql`
+- `--adbc-uri`: Connection URI passed as the ADBC database `uri` option
+- `--adbc-catalog`: Optional target catalog
+- `--adbc-schema`: Optional target schema
+- `--adbc-option key=value`: Additional ADBC database options. Repeatable.
+- `--adbc-create-tables`: Create tables from dataset schemas before ETL starts
 
-When `--adbc-driver flightsql` is used, ETL defaults
-`adbc.flight.sql.client_option.with_max_msg_size` to `78643200` (75 MiB)
-unless you explicitly provide that option via `--adbc-option`.
+When `--adbc-driver flightsql` is used, ETL defaults `adbc.flight.sql.client_option.with_max_msg_size` to `78643200` (75 MiB) unless you override it explicitly.
 
-When using ADBC output, provide both `--adbc-driver` and `--adbc-uri`.
-
-## Null sink (throughput benchmark)
-
-Use `--sink null` to discard all ETL writes (`/dev/null` style). This is useful for measuring source + ETL pipeline throughput without sink/storage overhead.
-
-### Null sink example
+### Databricks Example
 
 ```bash
 cargo run -p etl -- \
-	--scenario tpch \
-	--version 1 \
-	--bucket peasee-indexes \
-	--prefix raw \
-	--sink null
+    --scenario tpch \
+    --scale-factor 1 \
+    --bucket peasee-indexes \
+    --prefix raw \
+    --adbc-driver databricks \
+    --adbc-uri "databricks://token:${DATABRICKS_TOKEN}@${DATABRICKS_ENDPOINT}:443/${DATABRICKS_HTTP_PATH}" \
+    --adbc-catalog main \
+    --adbc-schema tpch \
+    --adbc-create-tables
 ```
 
-### Databricks example
+### FlightSQL Example
 
 ```bash
 cargo run -p etl -- \
-	--scenario tpch \
-	--version 1 \
-	--bucket peasee-indexes \
-	--prefix raw \
-	--region us-west-2 \
-	--adbc-driver databricks \
-	--adbc-uri "databricks://token:${DATABRICKS_TOKEN}@${DATABRICKS_ENDPOINT}:443/${DATABRICKS_HTTP_PATH}" \
-	--adbc-create-tables \
-	--adbc-option some_driver_specific_option=some_value \
-	--adbc-schema tpch
+    --scenario tpch \
+    --scale-factor 1 \
+    --bucket peasee-indexes \
+    --prefix raw \
+    --adbc-driver flightsql \
+    --adbc-uri "grpcs://${SPICE_CLOUD_FLIGHTSQL_HOST}:443" \
+    --adbc-create-tables \
+    --adbc-option username="" \
+    --adbc-option password="${SPICE_CLOUD_API_KEY}"
 ```
 
-### Spice Cloud example (FlightSQL)
+## Null Sink
+
+Use `--sink null` to discard all ETL writes. This is useful for measuring source and ETL throughput without sink overhead.
 
 ```bash
 cargo run -p etl -- \
-	--scenario tpch \
-	--version 1 \
-	--bucket peasee-indexes \
-	--prefix raw \
-	--adbc-driver flightsql \
-	--adbc-uri "grpcs://${SPICE_CLOUD_FLIGHTSQL_HOST}:443" \
-	--adbc-create-tables \
-	--adbc-option username="" \
-	--adbc-option password="${SPICE_CLOUD_API_KEY}"
+    --scenario tpch \
+    --scale-factor 1 \
+    --archive-file ./tpch-sf1.tar.zst \
+    --sink null
 ```
-
-Use the FlightSQL endpoint and credentials from your Spice Cloud deployment/run configuration.

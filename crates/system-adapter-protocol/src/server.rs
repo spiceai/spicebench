@@ -86,9 +86,15 @@ pub trait Handler: Send + Sync {
     ///
     /// Called periodically by spicebench when `--scrape-sut-metrics` is enabled.
     /// Returns a snapshot of resource utilization and ingestion progress.
+    /// When `final_scrape` is true, the benchmark run has finished and the
+    /// adapter may perform heavier queries (e.g. Query History aggregation).
     /// Default implementation returns empty metrics.
-    async fn metrics(&mut self, run_id: Uuid) -> std::result::Result<MetricsResponse, String> {
-        let _ = run_id;
+    async fn metrics(
+        &mut self,
+        run_id: Uuid,
+        final_scrape: bool,
+    ) -> std::result::Result<MetricsResponse, String> {
+        let _ = (run_id, final_scrape);
         Ok(MetricsResponse::default())
     }
 
@@ -263,7 +269,7 @@ impl<H: Handler> Server<H> {
             Ok(r) => r,
             Err(e) => return e,
         };
-        Self::handler_response(self.handler.metrics(req.run_id).await, id)
+        Self::handler_response(self.handler.metrics(req.run_id, req.final_scrape).await, id)
     }
 
     async fn handle_rpc_methods(&mut self, id: serde_json::Value) -> serde_json::Value {
@@ -302,7 +308,11 @@ mod tests {
             Ok(TeardownResponse { ok: true })
         }
 
-        async fn metrics(&mut self, _run_id: Uuid) -> std::result::Result<MetricsResponse, String> {
+        async fn metrics(
+            &mut self,
+            _run_id: Uuid,
+            _final_scrape: bool,
+        ) -> std::result::Result<MetricsResponse, String> {
             Ok(MetricsResponse::default())
         }
     }
