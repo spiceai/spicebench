@@ -235,6 +235,7 @@ struct PgIoBaseline {
 
 #[derive(Debug, Clone)]
 struct RunState {
+    #[allow(dead_code)]
     table_format: TableFormat,
     variant: DatabricksVariant,
     scenario_slug: String,
@@ -700,6 +701,7 @@ impl DatabricksAdapter {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn delete_uc_table_if_exists(&self, table_name: &str) -> Result<()> {
         let full_name = self.uc_table_full_name(table_name);
         let delete_url = format!(
@@ -886,6 +888,7 @@ impl DatabricksAdapter {
     }
 
     /// Execute a SQL query via the Statements API and return inline result rows.
+    #[allow(dead_code)]
     async fn execute_sql_query(&self, statement: &str) -> Result<Vec<Vec<Option<String>>>> {
         let execute_url = format!("https://{}/api/2.0/sql/statements/", self.config.endpoint);
         let payload = json!({
@@ -1006,6 +1009,7 @@ impl DatabricksAdapter {
 
     /// SQL path: query `system.query.history` for aggregated I/O bytes.
     /// Currently unused — requires elevated permission `USE SCHEMA` on `system.query`.
+    #[allow(dead_code)]
     async fn sum_query_history_io_sql(&self, start_time_ms: u64) -> Result<(u64, u64)> {
         let query = format!(
             "SELECT COALESCE(SUM(read_bytes), 0), COALESCE(SUM(write_remote_bytes), 0) \
@@ -1314,6 +1318,7 @@ impl DatabricksAdapter {
         Ok(None)
     }
 
+    #[allow(dead_code)]
     fn uc_column_type_for_arrow(data_type: &DataType) -> Result<UcColumnType> {
         match data_type {
             DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN", "\"boolean\"")),
@@ -1345,6 +1350,7 @@ impl DatabricksAdapter {
         }
     }
 
+    #[allow(dead_code)]
     async fn uc_table_exists(&self, table_name: &str) -> Result<bool> {
         let full_name = self.uc_table_full_name(table_name);
         let get_url = format!(
@@ -1374,6 +1380,7 @@ impl DatabricksAdapter {
         ))
     }
 
+    #[allow(dead_code)]
     async fn create_uc_table_if_not_exists(
         &self,
         table_name: &str,
@@ -1954,6 +1961,7 @@ enum StatementState {
 
 /// Statement response that includes inline result data.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct StatementWithResultResponse {
     statement_id: String,
     status: StatementStatus,
@@ -1962,6 +1970,7 @@ struct StatementWithResultResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct StatementResultData {
     #[serde(default)]
     data_array: Vec<Vec<Option<String>>>,
@@ -1974,12 +1983,14 @@ struct UcSchemaCreateRequest {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct UcColumnType {
     type_name: String,
     type_text: String,
     type_json: String,
 }
 
+#[allow(dead_code)]
 impl UcColumnType {
     fn new(
         type_name: impl Into<String>,
@@ -1995,6 +2006,7 @@ impl UcColumnType {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct UcTableColumnCreateRequest {
     name: String,
     type_name: String,
@@ -2005,6 +2017,7 @@ struct UcTableColumnCreateRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 struct UcTableCreateRequest {
     name: String,
     catalog_name: String,
@@ -2021,8 +2034,10 @@ struct WarehouseInfoResponse {
     #[serde(default)]
     num_clusters: Option<u64>,
     #[serde(default)]
+    #[allow(dead_code)]
     warehouse_type: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     cluster_size: Option<String>,
 }
 
@@ -2030,8 +2045,10 @@ struct WarehouseInfoResponse {
 #[derive(Debug, Deserialize)]
 struct QueryHistoryEntry {
     #[serde(default)]
+    #[allow(dead_code)]
     query_id: String,
     #[serde(default)]
+    #[allow(dead_code)]
     status: Option<String>,
     #[serde(default)]
     metrics: Option<QueryHistoryMetrics>,
