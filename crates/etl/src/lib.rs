@@ -464,7 +464,12 @@ async fn read_batches_until_min_rows(
         {
             let reservation = {
                 let mut state = work_state.lock().expect("work_state lock poisoned");
-                reserve_next_batch_id_for_table(&mut state, table_name, reserve_cursor, max_batch_id)
+                reserve_next_batch_id_for_table(
+                    &mut state,
+                    table_name,
+                    reserve_cursor,
+                    max_batch_id,
+                )
             };
 
             let Some((next_batch_id, removed_step_entry)) = reservation else {
