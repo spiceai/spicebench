@@ -32,6 +32,14 @@ on:
         required: false
         default: '100'
         type: string
+      update_ratio:
+        required: false
+        default: '0'
+        type: string
+      delete_ratio:
+        required: false
+        default: '0'
+        type: string
     secrets:
       MINIO_ENDPOINT:
         required: true
@@ -132,6 +140,8 @@ jobs:
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
+          UPDATE_RATIO: ${{ inputs.update_ratio || github.event.inputs.update_ratio }}
+          DELETE_RATIO: ${{ inputs.delete_ratio || github.event.inputs.delete_ratio }}
           RUST_LOG: info
         run: |
           ARGS="--dataset ${SCENARIO}"
@@ -142,6 +152,13 @@ jobs:
           ARGS="${ARGS} --region ${REGION}"
           ARGS="${ARGS} --num-steps ${NUM_STEPS}"
           ARGS="${ARGS} --endpoint ${MINIO_ENDPOINT}"
+
+          if [ -n "${UPDATE_RATIO}" ]; then
+            ARGS="${ARGS} --update-ratio ${UPDATE_RATIO}"
+          fi
+          if [ -n "${DELETE_RATIO}" ]; then
+            ARGS="${ARGS} --delete-ratio ${DELETE_RATIO}"
+          fi
 
           echo "Running: data-generation run ${ARGS}"
           ~/.spice/bin/data-generation run ${ARGS}
