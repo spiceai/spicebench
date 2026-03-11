@@ -244,6 +244,10 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
 /// Removes and returns the next batch ID (greater than `after_batch_id`) that
 /// still has pending work for `table_name`.
 ///
+/// When `max_batch_id` is `Some(max)`, candidates with a batch ID greater than
+/// `max` are not considered. This is used to prevent coalescing across
+/// checkpoint interval boundaries.
+///
 /// This is used by the ETL runner to coalesce very small reads across multiple
 /// source batch IDs for the same table while ensuring consumed IDs are not
 /// replayed in later steps.
@@ -251,11 +255,15 @@ fn reserve_next_batch_id_for_table(
     work_state: &mut PipelineWorkState,
     table_name: &str,
     after_batch_id: u64,
+    max_batch_id: Option<u64>,
 ) -> Option<(u64, bool)> {
     let mut found: Option<(u64, bool)> = None;
     let start = after_batch_id.saturating_add(1);
 
     for (candidate_batch_id, tables) in work_state.steps.range_mut(start..) {
+        if max_batch_id.is_some_and(|max| *candidate_batch_id > max) {
+            break;
+        }
         if let Some(pos) = tables.iter().position(|t| t == table_name) {
             tables.remove(pos);
             found = Some((*candidate_batch_id, tables.is_empty()));
@@ -371,6 +379,11 @@ async fn read_logical_batch(
 /// reserving and reading subsequent batch IDs for that table until at least
 /// [`target_batch_rows()`] rows have been accumulated (or no further work exists).
 ///
+/// When `max_batch_id` is `Some(max)`, coalescing will not reserve batch IDs
+/// beyond `max`. This prevents reads from crossing a checkpoint interval
+/// boundary, ensuring checkpoint results are deterministic regardless of
+/// the configured [`target_batch_rows()`] value.
+///
 /// Returns `(raw_batches, key_columns, table_finished, consumed_work_units, rows_read)` where
 /// `table_finished=true` means a read returned `None` and the table should be
 /// marked as fully consumed. `consumed_work_units` counts how many table+batch
@@ -382,6 +395,7 @@ async fn read_batches_until_min_rows(
     logical_steps_consumed: &StdArc<AtomicU64>,
     table_name: &str,
     start_batch_id: u64,
+    max_batch_id: Option<u64>,
 ) -> Result<(Vec<RecordBatch>, Vec<String>, bool, u64, u64), String> {
     let mut all_batches: Vec<RecordBatch> = Vec::new();
     let mut total_rows: usize = 0;
@@ -450,7 +464,12 @@ async fn read_batches_until_min_rows(
         {
             let reservation = {
                 let mut state = work_state.lock().expect("work_state lock poisoned");
-                reserve_next_batch_id_for_table(&mut state, table_name, reserve_cursor)
+                reserve_next_batch_id_for_table(
+                    &mut state,
+                    table_name,
+                    reserve_cursor,
+                    max_batch_id,
+                )
             };
 
             let Some((next_batch_id, removed_step_entry)) = reservation else {
@@ -1614,6 +1633,16 @@ async fn run_pipeline(
         })
     };
 
+    // When running with a step budget (checkpoint mode), compute the highest
+    // batch ID that belongs to this checkpoint interval.  Coalescing in
+    // read_batches_until_min_rows is allowed within the interval but will not
+    // reserve batch IDs beyond this boundary, ensuring checkpoint results are
+    // deterministic regardless of the configured target_batch_rows() value.
+    let checkpoint_max_batch_id: Option<u64> = step_limit.and_then(|limit| {
+        let state = work_state.lock().expect("work_state lock poisoned");
+        state.steps.keys().nth(limit.saturating_sub(1)).copied()
+    });
+
     let mut outer_steps_processed: usize = 0;
 
     loop {
@@ -1652,20 +1681,26 @@ async fn run_pipeline(
             return PipelineState::Stopped(StopReason::Cancelled);
         }
 
-        // Pop the next step from the shared work state.
+        // Pop the next step from the shared work state. If the next batch ID
+        // is beyond the checkpoint interval boundary, do not pop it — pause
+        // instead so the checkpoint can be taken with exact data.
         let next_step = {
             let mut state = work_state.lock().expect("work_state lock poisoned");
             if let Some(entry) = state.steps.first_entry() {
                 let batch_id = *entry.key();
-                let tables = entry.remove();
-                // Filter out already-finished tables.
-                let total_tables = tables.len();
-                let active: Vec<String> = tables
-                    .into_iter()
-                    .filter(|t| !state.finished_tables.contains(t))
-                    .collect();
-                let skipped = (total_tables - active.len()) as u64;
-                Some((batch_id, active, skipped))
+                if checkpoint_max_batch_id.is_some_and(|max| batch_id > max) {
+                    None
+                } else {
+                    let tables = entry.remove();
+                    // Filter out already-finished tables.
+                    let total_tables = tables.len();
+                    let active: Vec<String> = tables
+                        .into_iter()
+                        .filter(|t| !state.finished_tables.contains(t))
+                        .collect();
+                    let skipped = (total_tables - active.len()) as u64;
+                    Some((batch_id, active, skipped))
+                }
             } else {
                 None
             }
@@ -1684,6 +1719,23 @@ async fn run_pipeline(
                     batches_processed.fetch_add(skipped_work_units, Ordering::Relaxed);
                 }
                 (bid, tables)
+            }
+            None if checkpoint_max_batch_id.is_some() => {
+                // Reached the checkpoint interval boundary (or all work
+                // within the interval was consumed by coalescing). Pause so
+                // the checkpoint validation can run against exact data.
+                info!(
+                    outer_steps_processed,
+                    logical_steps_consumed = logical_steps_consumed.load(Ordering::Relaxed),
+                    "Checkpoint interval boundary reached, pausing pipeline"
+                );
+                progress_logger.abort();
+                if let Err(e) = data_sink.flush().await {
+                    return PipelineState::Stopped(StopReason::Error(format!(
+                        "Failed to flush sink at checkpoint boundary: {e}"
+                    )));
+                }
+                return PipelineState::Paused;
             }
             None => {
                 // No more work — pipeline is done.
@@ -1723,6 +1775,7 @@ async fn run_pipeline(
                         &logical_steps_consumed,
                         &table_name,
                         batch_id,
+                        checkpoint_max_batch_id,
                     )
                     .await
                     {
