@@ -1707,11 +1707,14 @@ print("OK")
             let err_msg =
                 format!("Failed to create synced table '{synced_table_name}' ({status}): {body}");
 
-            if status.is_server_error() && attempt < 3 {
+            let is_stopped_error = status == StatusCode::BAD_REQUEST
+                && body.contains("STOPPED");
+
+            if (status.is_server_error() || is_stopped_error) && attempt < 3 {
                 eprintln!(
-                    "[databricks-adapter] attempt {attempt}/3 failed (transient {status}), retrying in 5s..."
+                    "[databricks-adapter] attempt {attempt}/3 failed (transient {status}), retrying in 30s..."
                 );
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(Duration::from_secs(30)).await;
                 last_err = Some(err_msg);
                 continue;
             }
@@ -1808,6 +1811,85 @@ print("OK")
     /// `scrape_lakebase_pg_metrics` calls return values that reflect only the
     /// current benchmark run.
     ///
+    /// Ensure the Lakebase database instance is running.
+    /// If it is STOPPED, start it and poll until it reaches RUNNING state.
+    async fn ensure_lakebase_instance_running(&self) -> Result<()> {
+        let lakebase_config = match &self.config.compute_target {
+            ComputeTarget::Lakebase(cfg) => cfg,
+            _ => return Err(anyhow!("ensure_lakebase_instance_running called without Lakebase compute target")),
+        };
+
+        let instance_name = match &lakebase_config.target {
+            LakebaseSyncTarget::Instance { name } => name.clone(),
+            LakebaseSyncTarget::Project { .. } => {
+                eprintln!("[databricks-adapter] Lakebase project mode — skipping instance readiness check");
+                return Ok(());
+            }
+        };
+
+        let url = format!(
+            "https://{}/api/2.0/database/instances/{}",
+            self.config.endpoint,
+            urlencoding::encode(&instance_name),
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(anyhow!(
+                    "Timed out waiting for Lakebase instance '{instance_name}' to become RUNNING"
+                ));
+            }
+
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.config.token)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!(
+                    "Failed to get Lakebase instance status for '{instance_name}' ({status}): {body}"
+                ));
+            }
+
+            let body: Value = response.json().await?;
+            let state = body
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+
+            match state {
+                "RUNNING" => {
+                    eprintln!("[databricks-adapter] Lakebase instance '{instance_name}' is RUNNING");
+                    return Ok(());
+                }
+                "STOPPED" => {
+                    return Err(anyhow!(
+                        "Lakebase instance '{instance_name}' is STOPPED. \
+                         Please start the instance manually via the Databricks UI or CLI \
+                         before running the benchmark."
+                    ));
+                }
+                "FAILED" | "DELETING" | "DELETED" => {
+                    return Err(anyhow!(
+                        "Lakebase instance '{instance_name}' is in unrecoverable state '{state}'"
+                    ));
+                }
+                _ => {
+                    eprintln!(
+                        "[databricks-adapter] Lakebase instance '{instance_name}' state: {state}, waiting..."
+                    );
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+            }
+        }
+    }
+
     /// **Important:** This calls `pg_stat_reset()` which clears *all* statistics
     /// for the current database.  It is safe on a **dedicated** Lakebase
     /// instance used exclusively for benchmarking, but must **never** be run
@@ -2503,6 +2585,11 @@ impl Handler for DatabricksAdapter {
         match variant {
             DatabricksVariant::Databricks => {}
             DatabricksVariant::Lakebase => {
+                // Ensure the Lakebase instance is running before creating synced tables.
+                self.ensure_lakebase_instance_running()
+                    .await
+                    .map_err(|e| format!("Failed to ensure Lakebase instance is running: {e}"))?;
+
                 eprintln!("[databricks-adapter] Waiting 2 minutes for schema to initialize");
                 std::thread::sleep(Duration::from_secs(120));
 
@@ -2692,10 +2779,15 @@ impl Handler for DatabricksAdapter {
                         .map_err(|e| format!("Failed to drop managed table '{table_name}': {e}"))?;
                 }
 
-                // Drop tables directly from Lakebase PG.
-                self.delete_lakebase_pg_tables(&state.created_tables, lakebase_config)
+                // Drop tables directly from Lakebase PG (best-effort — instance may be stopped).
+                if let Err(e) = self
+                    .delete_lakebase_pg_tables(&state.created_tables, lakebase_config)
                     .await
-                    .map_err(|e| format!("Failed to delete Lakebase PG tables: {e}"))?;
+                {
+                    eprintln!(
+                        "[databricks-adapter] warning: failed to delete Lakebase PG tables (instance may be stopped): {e}"
+                    );
+                }
 
                 eprintln!(
                     "[databricks-adapter] cleaned up {} table(s)",
