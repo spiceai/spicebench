@@ -226,6 +226,13 @@ impl TableFormat {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct PgIoBaseline {
+    reads: i64,
+    writes: i64,
+    op_bytes: i64,
+}
+
 #[derive(Debug, Clone)]
 struct RunState {
     table_format: TableFormat,
@@ -236,6 +243,10 @@ struct RunState {
     cluster_created_by_adapter: bool,
     /// Epoch millis when the run was set up (for Query History time-range filtering).
     started_at_ms: u64,
+    /// Baseline `pg_stat_io` counters snapshotted after setup. Because `pg_stat_reset()` is
+    /// denied on Lakebase (requires elevated privileges), server-wide I/O counters accumulate across
+    /// runs. We subtract these baseline values at each metrics scrape to get per-run disk read/write bytes.
+    pg_io_baseline: Option<PgIoBaseline>,
 }
 
 struct DatabricksAdapter {
@@ -1610,11 +1621,8 @@ impl DatabricksAdapter {
         }
     }
 
-    async fn delete_lakebase_pg_tables(
-        &self,
-        table_names: &[String],
-        lakebase_config: &LakebaseConfig,
-    ) -> Result<()> {
+    /// Connect to Lakebase PG with TLS. Returns the client (spawns the connection task).
+    async fn connect_lakebase_pg(&self) -> Result<tokio_postgres::Client> {
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -1631,6 +1639,105 @@ impl DatabricksAdapter {
             .await
             .map_err(|e| anyhow!("Failed to connect to Lakebase PG: {e}"))?;
         tokio::spawn(connection);
+        Ok(client)
+    }
+
+    /// Snapshot pg_stat_io baseline for delta-based I/O metrics.
+    async fn snapshot_pg_io_baseline(&self) -> Result<PgIoBaseline> {
+        let client = self.connect_lakebase_pg().await?;
+        let mut baseline = PgIoBaseline::default();
+
+        let row = client
+            .query_one(
+                "SELECT COALESCE(SUM(reads), 0)::bigint, COALESCE(SUM(writes), 0)::bigint, COALESCE(MIN(op_bytes), 8192)::bigint FROM pg_stat_io",
+                &[],
+            )
+            .await?;
+        baseline.reads = row.get::<_, i64>(0);
+        baseline.writes = row.get::<_, i64>(1);
+        baseline.op_bytes = row.get::<_, i64>(2);
+        eprintln!(
+            "[databricks-adapter] pg_stat_io baseline: reads={}, writes={}, op_bytes={}",
+            baseline.reads, baseline.writes, baseline.op_bytes
+        );
+        Ok(baseline)
+    }
+
+    /// Collect Lakebase PG metrics using delta approach for I/O.
+    async fn collect_lakebase_metrics(
+        &self,
+        lakebase_config: &LakebaseConfig,
+        baseline: Option<&PgIoBaseline>,
+    ) -> Result<MetricsResponse> {
+        let client = self.connect_lakebase_pg().await?;
+        let schema = &lakebase_config.schema;
+
+        // active_connections
+        let active_connections: Option<u64> = client
+            .query_one(
+                "SELECT count(*)::bigint FROM pg_stat_activity WHERE state = 'active'",
+                &[],
+            )
+            .await
+            .ok()
+            .map(|row| row.get::<_, i64>(0) as u64);
+
+        // rows_ingested (per-schema, counters start at 0 since tables are recreated)
+        let rows_ingested: Option<u64> = client
+            .query_one(
+                "SELECT COALESCE(SUM(n_tup_ins), 0)::bigint FROM pg_stat_user_tables WHERE schemaname = $1",
+                &[&schema],
+            )
+            .await
+            .ok()
+            .map(|row| row.get::<_, i64>(0) as u64);
+
+        // bytes_ingested (per-schema)
+        let bytes_ingested: Option<u64> = client
+            .query_one(
+                "SELECT COALESCE(SUM(pg_total_relation_size(schemaname || '.' || tablename)), 0)::bigint FROM pg_tables WHERE schemaname = $1",
+                &[&schema],
+            )
+            .await
+            .ok()
+            .map(|row| row.get::<_, i64>(0) as u64);
+
+        let mut resource = ResourceMetrics::default();
+
+        // I/O metrics via delta approach against pg_stat_io
+        if let Some(base) = baseline {
+            if let Ok(row) = client
+                .query_one(
+                    "SELECT COALESCE(SUM(reads), 0)::bigint, COALESCE(SUM(writes), 0)::bigint, COALESCE(MIN(op_bytes), 8192)::bigint FROM pg_stat_io",
+                    &[],
+                )
+                .await
+            {
+                let reads: i64 = row.get(0);
+                let writes: i64 = row.get(1);
+                let op_bytes: i64 = row.get(2);
+                resource.disk_read_bytes = Some(((reads - base.reads) * op_bytes).max(0) as u64);
+                resource.disk_write_bytes = Some(((writes - base.writes) * op_bytes).max(0) as u64);
+            }
+        }
+
+        Ok(MetricsResponse {
+            resource,
+            ingestion: IngestionMetrics {
+                active_connections,
+                rows_ingested,
+                bytes_ingested,
+                ..Default::default()
+            },
+        })
+    }
+
+    async fn delete_lakebase_pg_tables(
+        &self,
+        table_names: &[String],
+        lakebase_config: &LakebaseConfig,
+    ) -> Result<()> {
+        let client = self.connect_lakebase_pg().await?;
 
         for table_name in table_names {
             let sql = format!(
@@ -1648,23 +1755,7 @@ impl DatabricksAdapter {
     }
 
     async fn create_lakebase_pg_indexes(&self, lakebase_config: &LakebaseConfig) -> Result<()> {
-        let mut root_store = rustls::RootCertStore::empty();
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|e| anyhow!("Failed to configure TLS: {e}"))?
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
-
-        let pg_uri = self.lakebase_pg_uri().await?;
-        let (client, connection) = tokio_postgres::connect(&pg_uri, tls)
-            .await
-            .map_err(|e| anyhow!("Failed to connect to Lakebase PG: {e}"))?;
-        tokio::spawn(connection);
+        let client = self.connect_lakebase_pg().await?;
 
         let index_stmts = [
             format!(
@@ -2053,6 +2144,7 @@ impl Handler for DatabricksAdapter {
                 cluster_id: cluster_id.clone(),
                 cluster_created_by_adapter,
                 started_at_ms,
+                pg_io_baseline: None,
             },
         );
 
@@ -2156,6 +2248,24 @@ impl Handler for DatabricksAdapter {
                 eprintln!("[databricks-adapter] creating performance indexes on Lakebase...");
                 if let Err(e) = self.create_lakebase_pg_indexes(lakebase_config).await {
                     eprintln!("[databricks-adapter] index creation failed (non-fatal): {e}");
+                }
+
+                // Snapshot pg_stat_io counters now so we can subtract them later to
+                // report only the I/O that happened during this benchmark run.
+                eprintln!(
+                    "[databricks-adapter] snapshotting pg_stat_io baseline for disk I/O delta tracking..."
+                );
+                match self.snapshot_pg_io_baseline().await {
+                    Ok(baseline) => {
+                        if let Some(state) = self.runs.get_mut(&run_id) {
+                            state.pg_io_baseline = Some(baseline);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[databricks-adapter] pg_stat_io baseline snapshot failed (non-fatal): {e}"
+                        );
+                    }
                 }
             }
         }
@@ -2397,6 +2507,25 @@ impl Handler for DatabricksAdapter {
                     resource,
                     ingestion,
                 })
+            }
+            ComputeTarget::Lakebase(cfg) => {
+                let baseline = self
+                    .runs
+                    .get(&run_id)
+                    .and_then(|s| s.pg_io_baseline.as_ref());
+                match self.collect_lakebase_metrics(cfg, baseline).await {
+                    Ok(m) => {
+                        eprintln!(
+                            "[databricks-adapter] Lakebase metrics: ingestion={:?}, resource={:?}",
+                            m.ingestion, m.resource
+                        );
+                        Ok(m)
+                    }
+                    Err(e) => {
+                        eprintln!("[databricks-adapter] Lakebase metrics collection failed: {e}");
+                        Ok(MetricsResponse::default())
+                    }
+                }
             }
             _ => Ok(MetricsResponse::default()),
         }
