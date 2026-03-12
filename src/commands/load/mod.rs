@@ -16,23 +16,24 @@ limitations under the License.
 #![allow(dead_code)]
 
 use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
-use arrow::array::{Array, RecordBatch, TimestampMicrosecondArray};
+use arrow::array::RecordBatch;
 use data_generation::version::VersionMetadata;
 use etl::{ETLPipeline, PipelineState, StopReason};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use system_adapter_protocol::MetricsResponse;
 use test_framework::{
     TestType, anyhow,
     arrow::util::pretty::print_batches,
+    execution::QueryExecutor,
     metrics::{MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, StatisticsCollector},
     opentelemetry::KeyValue,
     opentelemetry::metrics::{Counter, Gauge},
     opentelemetry_sdk::Resource,
-    spicetest::datasets::{ValidationCommand, ValidationStatus, create_validation_channels},
+    queries::validation::{self, QueryValidationResult},
+    spicetest::datasets::create_validation_channels,
     spicetest::{SpiceTest, datasets::NotStarted},
     telemetry::SutMetricsPipeline,
     telemetry::streaming::StreamingOtlpExporter,
@@ -232,135 +233,6 @@ fn spawn_sut_metrics_scraper(
     })
 }
 
-/// Spawn a task that periodically queries `SELECT MAX(__created_at)` for each
-/// table and records the freshness delay (`now − max_created_at`).
-///
-/// Returns a map of table name → vec of freshness samples (in milliseconds).
-fn spawn_e2e_latency_check(
-    pool: adbc_client::AdbcConnectionPool,
-    table_names: Vec<String>,
-    query_catalog_namespace: Option<String>,
-    token: CancellationToken,
-    interval: Duration,
-    last_created_at_us: Arc<HashMap<String, AtomicI64>>,
-) -> tokio::task::JoinHandle<HashMap<String, Vec<f64>>> {
-    tokio::spawn(async move {
-        println!(
-            "E2E latency checker started (interval={}s)",
-            interval.as_secs()
-        );
-        let mut samples_by_table: HashMap<String, Vec<f64>> = table_names
-            .iter()
-            .map(|t| (t.clone(), Vec::new()))
-            .collect();
-        let mut ticker = tokio::time::interval(interval);
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {}
-                () = token.cancelled() => break,
-            }
-
-            let pool = pool.clone();
-            let tables = table_names.clone();
-            let timestamps = Arc::clone(&last_created_at_us);
-            let query_catalog_namespace = query_catalog_namespace.clone();
-            let results = tokio::task::spawn_blocking(move || {
-                let mut out: Vec<(String, Option<f64>)> = Vec::new();
-                let mut conn = match pool.get() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("E2E latency checker: failed to get connection: {e}");
-                        return out;
-                    }
-                };
-                for table in &tables {
-                    let last_written_us = timestamps
-                        .get(table.as_str())
-                        .map_or(0, |a| a.load(Ordering::Relaxed));
-                    if last_written_us == 0 {
-                        out.push((table.clone(), None));
-                        continue;
-                    }
-                    let table_ref = if let Some(namespace) = query_catalog_namespace
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|ns| !ns.is_empty())
-                    {
-                        if table.contains('.') {
-                            table.to_string()
-                        } else {
-                            format!("{namespace}.{table}")
-                        }
-                    } else {
-                        table.to_string()
-                    };
-
-                    let sql = format!("SELECT MAX(__created_at) FROM {table_ref}");
-                    match conn.query(&sql) {
-                        Ok(batches) => {
-                            let sample = batches.first().and_then(|batch| {
-                                let col = batch.column(0);
-                                let ts_array =
-                                    col.as_any().downcast_ref::<TimestampMicrosecondArray>()?;
-                                if ts_array.is_null(0) {
-                                    return None;
-                                }
-                                let max_ts_us = ts_array.value(0);
-                                Some((last_written_us - max_ts_us) as f64 / 1000.0)
-                            });
-                            out.push((table.clone(), sample));
-                        }
-                        Err(e) => {
-                            eprintln!("E2E latency checker: query failed for {table}: {e}");
-                            out.push((table.clone(), None));
-                        }
-                    }
-                }
-                out
-            })
-            .await;
-
-            if let Ok(results) = results {
-                let mut sampled_count = 0usize;
-                let mut missing_count = 0usize;
-                let mut min_ms = f64::INFINITY;
-                let mut max_ms = f64::NEG_INFINITY;
-                let mut sum_ms = 0.0;
-
-                for (table, sample) in results {
-                    if let Some(ms) = sample {
-                        samples_by_table.entry(table).or_default().push(ms);
-                        sampled_count += 1;
-                        sum_ms += ms;
-                        min_ms = min_ms.min(ms);
-                        max_ms = max_ms.max(ms);
-                    } else {
-                        missing_count += 1;
-                    }
-                }
-
-                if sampled_count > 0 {
-                    println!(
-                        "E2E latency checker: tables={} sampled={} missing={} min_ms={:.2} avg_ms={:.2} max_ms={:.2}",
-                        sampled_count + missing_count,
-                        sampled_count,
-                        missing_count,
-                        min_ms,
-                        sum_ms / sampled_count as f64,
-                        max_ms
-                    );
-                } else {
-                    println!(
-                        "E2E latency checker: tables={} sampled=0 missing={}",
-                        missing_count, missing_count
-                    );
-                }
-            }
-        }
-        samples_by_table
-    })
-}
-
 /// Load checkpoint expected results from parquet files on disk for a given
 /// checkpoint index.
 ///
@@ -417,6 +289,285 @@ fn load_checkpoint_results(
     }
 
     Ok(results)
+}
+
+/// Result of a checkpoint validation window.
+enum CheckpointValidationResult {
+    /// Validation converged — full query set passed.
+    Converged {
+        /// E2E latency in milliseconds (send_time of first passing Q1 batch
+        /// relative to checkpoint pause time).
+        e2e_latency_ms: f64,
+    },
+    /// Validation timed out before convergence.
+    TimedOut,
+    /// Validation was interrupted by the user (ctrl-c).
+    Interrupted,
+}
+
+/// Outcome of a single probe phase iteration.
+enum ProbeOutcome {
+    /// A probe query returned correct results; carries the send_time of the
+    /// earliest passing dispatch.
+    Passed(std::time::Instant),
+    /// The deadline was reached before any probe passed.
+    TimedOut,
+    /// The user pressed ctrl-c.
+    Interrupted,
+}
+
+/// An in-flight probe query carrying the instant it was dispatched.
+struct ProbeFlight {
+    send_time: std::time::Instant,
+    result: tokio::task::JoinHandle<anyhow::Result<(bool, Vec<RecordBatch>)>>,
+}
+
+/// Dispatch sequential probe queries until one returns correct results,
+/// then return its send_time.
+///
+/// Every tick of `ticker`, a single probe query is dispatched. Waves overlap —
+/// a new probe is sent even if the previous one hasn't returned yet. The
+/// existing test workers already provide concurrent query load against the SUT.
+/// `probe_count` is carried across retries so log output is monotonic.
+async fn probe_until_pass(
+    executor: &dyn QueryExecutor,
+    probe_query: &test_framework::queries::Query,
+    probe_expected: &[RecordBatch],
+    checkpoint_idx: usize,
+    ticker: &mut tokio::time::Interval,
+    deadline: tokio::time::Instant,
+    probe_count: &mut u64,
+) -> ProbeOutcome {
+    let mut in_flight: Vec<ProbeFlight> = Vec::new();
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return ProbeOutcome::TimedOut;
+        }
+
+        tokio::select! {
+            biased;
+            _ = signal::ctrl_c() => return ProbeOutcome::Interrupted,
+            _ = ticker.tick() => {}
+        };
+
+        let send_time = std::time::Instant::now();
+        *probe_count += 1;
+        let exec = executor.clone_box();
+        let query = probe_query.clone();
+        let handle = tokio::spawn(async move {
+            match exec.execute(&query).await {
+                Ok(result) => Ok((true, result.batches.unwrap_or_default())),
+                Err(_) => Ok((false, Vec::new())),
+            }
+        });
+        in_flight.push(ProbeFlight {
+            send_time,
+            result: handle,
+        });
+
+        println!(
+            "Checkpoint {checkpoint_idx}: probe #{} dispatched, {} in-flight",
+            *probe_count,
+            in_flight.len()
+        );
+
+        // Drain completed probes
+        let mut still_in_flight: Vec<ProbeFlight> = Vec::new();
+        for flight in in_flight {
+            if flight.result.is_finished() {
+                if let Ok(Ok((executed, batches))) = flight.result.await
+                    && executed
+                {
+                    let valid = validation::validate_with_expected_batches(
+                        &probe_query.name,
+                        &batches,
+                        probe_expected,
+                    );
+                    if matches!(valid, Ok(QueryValidationResult::Pass)) {
+                        // Abort remaining in-flight probes — no longer needed.
+                        for remaining in still_in_flight {
+                            remaining.result.abort();
+                        }
+                        return ProbeOutcome::Passed(flight.send_time);
+                    }
+                }
+            } else {
+                still_in_flight.push(flight);
+            }
+        }
+        in_flight = still_in_flight;
+    }
+}
+
+/// Run every query in the scenario and validate results.
+///
+/// At most `concurrency` queries execute in parallel. Returns `true` if all
+/// queries with expected results pass validation. On failure, logs details to
+/// stderr and returns `false`.
+async fn validate_full_query_set(
+    executor: &dyn QueryExecutor,
+    queries: &[test_framework::queries::Query],
+    expected_results: &HashMap<Arc<str>, Vec<RecordBatch>>,
+    checkpoint_idx: usize,
+    concurrency: usize,
+) -> bool {
+    use futures::stream::{self, StreamExt};
+
+    let results: Vec<(Arc<str>, _)> = stream::iter(queries)
+        .map(|query| {
+            let query_name = Arc::clone(&query.name);
+            let exec = executor.clone_box();
+            let q = query.clone();
+            async move {
+                let result = exec.execute(&q).await;
+                (query_name, result)
+            }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+
+    let mut all_passed = true;
+    let mut fail_details: Vec<String> = Vec::new();
+
+    for (query_name, result) in &results {
+        match result {
+            Ok(exec_result) => {
+                if let Some(expected) = expected_results.get(query_name) {
+                    let batches = exec_result.batches.as_deref().unwrap_or_default();
+                    let valid =
+                        validation::validate_with_expected_batches(query_name, batches, expected);
+                    match valid {
+                        Ok(QueryValidationResult::Pass) => {}
+                        Ok(QueryValidationResult::Fail(reason)) => {
+                            all_passed = false;
+                            fail_details.push(format!("  FAIL - query '{query_name}': {reason:?}"));
+                        }
+                        Err(e) => {
+                            all_passed = false;
+                            fail_details.push(format!("  ERROR - query '{query_name}': {e}"));
+                        }
+                    }
+                }
+                // Queries without expected results are skipped (pass by default)
+            }
+            Err(e) => {
+                all_passed = false;
+                fail_details.push(format!("  ERROR - query '{query_name}': {e}"));
+            }
+        }
+    }
+
+    if !all_passed {
+        eprintln!(
+            "Checkpoint {checkpoint_idx}: full query set validation failed, returning to probe phase",
+        );
+        for detail in &fail_details {
+            eprintln!("{detail}");
+        }
+    }
+
+    all_passed
+}
+
+/// Run checkpoint validation for a single checkpoint boundary.
+///
+/// Alternates between two phases until convergence or timeout:
+///
+/// **Phase 1 (probe):** Every `probe_period`, dispatch a single probe of the
+/// first scenario query. Waves overlap — a new probe is sent even if the
+/// previous one hasn't returned, so E2E latency resolution is finer than
+/// individual query latency. The existing test workers already provide
+/// concurrent load. When a probe returns correct results, record its **send
+/// time**.
+///
+/// **Phase 2 (validate):** Run the full query set concurrently. If every query
+/// passes, the checkpoint has converged and E2E latency =
+/// `send_time − checkpoint_pause_time`. If any query fails, return to phase 1
+/// to re-probe for a new send_time.
+#[expect(clippy::too_many_arguments)]
+async fn run_checkpoint_validation(
+    executor: &dyn QueryExecutor,
+    queries: &[test_framework::queries::Query],
+    expected_results: &HashMap<Arc<str>, Vec<RecordBatch>>,
+    checkpoint_idx: usize,
+    concurrency: usize,
+    probe_period: Duration,
+    max_wait: Duration,
+    checkpoint_pause_time: std::time::Instant,
+) -> CheckpointValidationResult {
+    let deadline = tokio::time::Instant::now() + max_wait;
+
+    let probe_query = &queries[0];
+    let Some(probe_expected) = expected_results.get(&probe_query.name) else {
+        eprintln!(
+            "Checkpoint {checkpoint_idx}: no expected results for probe query '{}', skipping validation",
+            probe_query.name
+        );
+        return CheckpointValidationResult::TimedOut;
+    };
+
+    println!(
+        "Checkpoint {checkpoint_idx}: probing '{}' every {}s",
+        probe_query.name,
+        probe_period.as_secs()
+    );
+
+    let mut ticker = tokio::time::interval(probe_period);
+    let mut probe_count = 0u64;
+
+    loop {
+        // Phase 1: probe Q1 until it passes
+        let e2e_send_time = match probe_until_pass(
+            executor,
+            probe_query,
+            probe_expected,
+            checkpoint_idx,
+            &mut ticker,
+            deadline,
+            &mut probe_count,
+        )
+        .await
+        {
+            ProbeOutcome::Passed(send_time) => {
+                println!(
+                    "Checkpoint {checkpoint_idx}: probe query '{}' passed, validating full query set",
+                    probe_query.name
+                );
+                send_time
+            }
+            ProbeOutcome::TimedOut => return CheckpointValidationResult::TimedOut,
+            ProbeOutcome::Interrupted => return CheckpointValidationResult::Interrupted,
+        };
+
+        // Phase 2: validate the full query set
+        if tokio::time::Instant::now() >= deadline {
+            return CheckpointValidationResult::TimedOut;
+        }
+
+        if validate_full_query_set(
+            executor,
+            queries,
+            expected_results,
+            checkpoint_idx,
+            concurrency,
+        )
+        .await
+        {
+            let latency_ms = e2e_send_time
+                .duration_since(checkpoint_pause_time)
+                .as_secs_f64()
+                * 1000.0;
+            println!(
+                "Checkpoint {checkpoint_idx} converged: E2E latency = {:.1}s (send_time of first passing probe)",
+                latency_ms / 1000.0
+            );
+            return CheckpointValidationResult::Converged {
+                e2e_latency_ms: latency_ms,
+            };
+        }
+    }
 }
 
 #[expect(clippy::too_many_lines)]
@@ -530,30 +681,15 @@ pub(crate) async fn run(
     }
 
     // Always create validation channels so we can track query-set iteration
-    // completions. When --validate-results is enabled with checkpoint data,
-    // these channels are also used for checkpoint-based results validation.
-    let (mut validation_controller, validation_worker_handles) = create_validation_channels();
+    // completions (used to wait for at least 1 iteration before stopping).
+    let (validation_controller, validation_worker_handles) = create_validation_channels();
     test_builder = test_builder.with_checkpoint_validation(validation_worker_handles);
 
     let has_checkpoint_validation =
         common_args.validate_results && checkpoint_steps.is_some() && checkpoint_dir.is_some();
 
-    // Spawn e2e checker — only when checkpoint validation is NOT enabled,
-    // since checkpoint validation provides its own e2e latency measurement.
-    let e2e_latency_token = CancellationToken::new();
-    let e2e_latency_handle = if !has_checkpoint_validation {
-        let table_names: Vec<String> = etl_pipeline.dataset().tables().keys().cloned().collect();
-        Some(spawn_e2e_latency_check(
-            read_pool.clone(),
-            table_names,
-            query_catalog_namespace.clone(),
-            e2e_latency_token.clone(),
-            Duration::from_secs(5),
-            etl_pipeline.last_created_at_us(),
-        ))
-    } else {
-        None
-    };
+    // Create a dedicated executor for checkpoint validation (separate from the test workers).
+    let validation_executor = adbc_executor::AdbcDirectQueryExecutor::new(read_pool.clone());
 
     let (query_set, test_builder) = super::build_test_with_validation(
         scenario,
@@ -563,7 +699,12 @@ pub(crate) async fn run(
     .await?;
 
     // Build ordered query names for mapping checkpoint query_idx → query name.
-    let queries = query_set.get_queries(None, None, None).await?;
+    // Rewrite queries with catalog namespace so the validation executor
+    // uses the same table references as the test workers.
+    let queries = super::rewrite_queries_with_catalog_namespace(
+        query_set.get_queries(None, None, None).await?,
+        query_catalog_namespace.as_deref(),
+    )?;
     let query_names: Vec<Arc<str>> = queries.iter().map(|q| Arc::clone(&q.name)).collect();
 
     let throughput_test = SpiceTest::<NotStarted>::new(scenario.to_string(), test_builder)
@@ -617,132 +758,44 @@ pub(crate) async fn run(
                                     tracing::info!(
                                         checkpoint_idx,
                                         num_queries = expected_results.len(),
-                                        "Enabling checkpoint validation"
+                                        "Running checkpoint validation"
                                     );
 
-                                    let etl_pause_time = tokio::time::Instant::now();
-                                    // Capture std::time::Instant at the same point so
-                                    // we can compare against the worker's
-                                    // first_pass_instant (which uses std::time::Instant).
-                                    let etl_pause_time_std = std::time::Instant::now();
+                                    let checkpoint_pause_time = std::time::Instant::now();
 
-                                    // Tell worker 0 to start validating.
-                                    let _ = validation_controller.command_tx.send(Some(
-                                        ValidationCommand::Enable {
-                                            checkpoint_idx,
-                                            expected_results,
-                                        },
-                                    ));
+                                    let result = run_checkpoint_validation(
+                                        &validation_executor,
+                                        &queries,
+                                        &expected_results,
+                                        checkpoint_idx,
+                                        common_args.concurrency,
+                                        Duration::from_secs(common_args.checkpoint_validation_period),
+                                        Duration::from_secs(600),
+                                        checkpoint_pause_time,
+                                    )
+                                    .await;
 
-                                    // Poll the validation status until convergence
-                                    // (a complete iteration where every query passes)
-                                    // or until the timeout is reached.
-                                    const MAX_WAIT: Duration = Duration::from_secs(600);
-                                    let deadline =
-                                        tokio::time::Instant::now() + MAX_WAIT;
-                                    let mut timed_out = false;
-                                    let interrupted = false;
-                                    loop {
-                                        let status =
-                                            validation_controller.status_rx.borrow().clone();
-                                        if status.converged() {
-                                            // Use the instant the first query passed
-                                            // as the latency reference point.  This
-                                            // measures when the data was fully ingested
-                                            // (first correct answer), not when the full
-                                            // validation sweep finished.
-                                            let latency_ms = status
-                                                .first_pass_instant()
-                                                .map_or_else(
-                                                    || etl_pause_time_std.elapsed(),
-                                                    |fpi| fpi.duration_since(etl_pause_time_std),
-                                                )
-                                                .as_secs_f64()
-                                                * 1000.0;
-                                            println!(
-                                                "Checkpoint {} converged in {:.1}s ({} iterations)",
-                                                checkpoint_idx,
-                                                latency_ms / 1000.0,
-                                                status.completed_iterations(),
-                                            );
+                                    match result {
+                                        CheckpointValidationResult::Converged { e2e_latency_ms } => {
                                             crate::metrics::E2E_LATENCY_MS
-                                                .record(latency_ms, &metric_attributes);
-                                            break;
+                                                .record(e2e_latency_ms, &metric_attributes);
                                         }
-                                        if etl_pause_time.elapsed() >= MAX_WAIT {
-                                            timed_out = true;
-                                            break;
+                                        CheckpointValidationResult::Interrupted => {
+                                            eprintln!("Interrupt received during checkpoint validation, stopping...");
+                                            shutdown_token.cancel();
+                                            etl_pipeline.cancel();
+                                            break Some("Interrupted by user".to_string());
                                         }
-                                        // Wait for the worker to publish a new status
-                                        // update rather than polling on a fixed interval.
-                                        if tokio::time::timeout_at(
-                                            deadline,
-                                            validation_controller.status_rx.changed(),
-                                        )
-                                        .await
-                                        .is_err()
-                                        {
-                                            timed_out = true;
-                                            break;
+                                        CheckpointValidationResult::TimedOut => {
+                                            eprintln!(
+                                                "Checkpoint {checkpoint_idx} validation timed out after 600s without convergence, aborting run"
+                                            );
+                                            shutdown_token.cancel();
+                                            etl_pipeline.cancel();
+                                            break Some(format!(
+                                                "Checkpoint {checkpoint_idx} validation timed out after 600s"
+                                            ));
                                         }
-                                    }
-
-                                    // Read the validation status before disabling.
-                                    let status = validation_controller.status_rx.borrow().clone();
-                                    if let ValidationStatus::Active {
-                                        checkpoint_idx: idx,
-                                        outcomes,
-                                        completed_iterations: iters,
-                                        converged,
-                                        ..
-                                    } = &status
-                                    {
-                                        let total_pass: usize =
-                                            outcomes.iter().map(|o| o.pass_count).sum();
-                                        let total_fail: usize =
-                                            outcomes.iter().map(|o| o.fail_count).sum();
-                                        println!(
-                                            "Checkpoint {idx} validation ({iters} iterations, converged={converged}): {} queries, {total_pass} pass, {total_fail} fail",
-                                            outcomes.len()
-                                        );
-                                        if total_fail > 0 {
-                                            for o in outcomes {
-                                                if o.fail_count > 0 {
-                                                    eprintln!(
-                                                        "  FAIL - query '{}': {} pass, {} fail, last failure: {:?}",
-                                                        o.query_name,
-                                                        o.pass_count,
-                                                        o.fail_count,
-                                                        o.last_failure
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Disable validation before resuming ETL.
-                                    let _ = validation_controller
-                                        .command_tx
-                                        .send(Some(ValidationCommand::Disable));
-
-                                    if interrupted {
-                                        eprintln!("Interrupt received during checkpoint validation, stopping...");
-                                        shutdown_token.cancel();
-                                        etl_pipeline.cancel();
-                                        break Some("Interrupted by user".to_string());
-                                    }
-
-                                    if timed_out {
-                                        eprintln!(
-                                            "Checkpoint {} validation timed out after {}s without convergence, aborting run",
-                                            checkpoint_idx, MAX_WAIT.as_secs()
-                                        );
-                                        shutdown_token.cancel();
-                                        etl_pipeline.cancel();
-                                        break Some(format!(
-                                            "Checkpoint {checkpoint_idx} validation timed out after {}s",
-                                            MAX_WAIT.as_secs()
-                                        ));
                                     }
                                 }
                                 Ok(_) => {
@@ -902,28 +955,6 @@ pub(crate) async fn run(
     }
     if let Some(pipeline) = sut_pipeline {
         pipeline.shutdown();
-    }
-
-    // Stop freshness scraper and emit raw E2E latency samples.
-    // Percentile calculation is performed in dashboard queries.
-    // Only active when checkpoint validation is NOT enabled.
-    e2e_latency_token.cancel();
-    if let Some(handle) = e2e_latency_handle
-        && let Ok(samples_by_table) = handle.await
-    {
-        let mut total_samples = 0usize;
-        for (table_name, samples) in &samples_by_table {
-            if !samples.is_empty() {
-                total_samples += samples.len();
-                let attrs = vec![KeyValue::new("table_name", table_name.clone())];
-                for sample in samples {
-                    crate::metrics::E2E_LATENCY_MS.record(*sample, &attrs);
-                }
-            }
-        }
-        if total_samples > 0 {
-            println!("Recorded {total_samples} E2E latency samples");
-        }
     }
 
     println!("{}", vec!["-"; 30].join(""));
