@@ -3462,6 +3462,7 @@ dependencies = [
  "clap",
  "data-generation",
  "etl",
+ "futures",
  "parquet",
  "serde",
  "serde_json",
