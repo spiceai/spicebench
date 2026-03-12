@@ -235,8 +235,7 @@ struct PgIoBaseline {
 
 #[derive(Debug, Clone)]
 struct RunState {
-    #[allow(dead_code)]
-    table_format: TableFormat,
+    _table_format: TableFormat,
     variant: DatabricksVariant,
     scenario_slug: String,
     created_tables: Vec<String>,
@@ -701,31 +700,6 @@ impl DatabricksAdapter {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    async fn delete_uc_table_if_exists(&self, table_name: &str) -> Result<()> {
-        let full_name = self.uc_table_full_name(table_name);
-        let delete_url = format!(
-            "https://{}/api/2.1/unity-catalog/tables/{full_name}",
-            self.config.endpoint
-        );
-        let response = self
-            .client
-            .delete(delete_url)
-            .bearer_auth(&self.config.token)
-            .send()
-            .await?;
-
-        if response.status() == StatusCode::OK || response.status() == StatusCode::NOT_FOUND {
-            return Ok(());
-        }
-
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        Err(anyhow!(
-            "Databricks Unity Catalog tables/delete failed ({status}) for '{full_name}': {body}"
-        ))
-    }
-
     async fn execute_sql_statement(&self, statement: &str) -> Result<()> {
         let execute_url = format!("https://{}/api/2.0/sql/statements/", self.config.endpoint);
         let payload = json!({
@@ -887,46 +861,6 @@ impl DatabricksAdapter {
         }
     }
 
-    /// Execute a SQL query via the Statements API and return inline result rows.
-    #[allow(dead_code)]
-    async fn execute_sql_query(&self, statement: &str) -> Result<Vec<Vec<Option<String>>>> {
-        let execute_url = format!("https://{}/api/2.0/sql/statements/", self.config.endpoint);
-        let payload = json!({
-            "warehouse_id": self.config.warehouse_id,
-            "catalog": self.config.catalog,
-            "schema": self.config.schema,
-            "statement": statement,
-            "wait_timeout": "30s",
-        });
-
-        let response = self
-            .client
-            .post(execute_url)
-            .bearer_auth(&self.config.token)
-            .json(&payload)
-            .send()
-            .await?;
-
-        if response.status() != StatusCode::OK {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("SQL query failed ({status}): {body}"));
-        }
-
-        let body: StatementWithResultResponse = response.json().await?;
-        match body.status.state {
-            StatementState::Succeeded => Ok(body.result.map(|r| r.data_array).unwrap_or_default()),
-            StatementState::Failed => {
-                Err(anyhow!("SQL query failed: {}", body.status.error_message()))
-            }
-            StatementState::Canceled => Err(anyhow!("SQL query canceled")),
-            StatementState::Pending | StatementState::Running => Err(anyhow!(
-                "SQL query timed out (statement_id={})",
-                body.statement_id
-            )),
-        }
-    }
-
     /// Fire a tagged marker query and wait for it to appear in the Query History
     /// API.  Once the marker is visible, all earlier queries from this warehouse
     /// are also guaranteed to be visible.
@@ -1005,41 +939,6 @@ impl DatabricksAdapter {
     /// most workspace-scoped tokens lack.
     async fn sum_query_history_io(&self, start_time_ms: u64) -> Result<(u64, u64)> {
         self.sum_query_history_io_rest(start_time_ms).await
-    }
-
-    /// SQL path: query `system.query.history` for aggregated I/O bytes.
-    /// Currently unused — requires elevated permission `USE SCHEMA` on `system.query`.
-    #[allow(dead_code)]
-    async fn sum_query_history_io_sql(&self, start_time_ms: u64) -> Result<(u64, u64)> {
-        let query = format!(
-            "SELECT COALESCE(SUM(read_bytes), 0), COALESCE(SUM(write_remote_bytes), 0) \
-             FROM system.query.history \
-             WHERE warehouse_id = '{}' \
-               AND start_time >= TIMESTAMP_MILLIS({}) \
-               AND status = 'FINISHED'",
-            self.config.warehouse_id, start_time_ms
-        );
-
-        let rows = self.execute_sql_query(&query).await?;
-        let row = rows
-            .first()
-            .ok_or_else(|| anyhow!("No rows returned from system.query.history sum"))?;
-
-        let total_read = row
-            .first()
-            .and_then(|v| v.as_deref())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        let total_write = row
-            .get(1)
-            .and_then(|v| v.as_deref())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-
-        eprintln!(
-            "[databricks-adapter] query history totals (SQL): read_bytes={total_read} write_bytes={total_write}"
-        );
-        Ok((total_read, total_write))
     }
 
     /// REST path: paginate through `/api/2.0/sql/history/queries` and sum
@@ -1318,131 +1217,6 @@ impl DatabricksAdapter {
         Ok(None)
     }
 
-    #[allow(dead_code)]
-    fn uc_column_type_for_arrow(data_type: &DataType) -> Result<UcColumnType> {
-        match data_type {
-            DataType::Boolean => Ok(UcColumnType::new("BOOLEAN", "BOOLEAN", "\"boolean\"")),
-            DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::UInt8
-            | DataType::UInt16 => Ok(UcColumnType::new("INT", "INT", "\"integer\"")),
-            DataType::Int64 | DataType::UInt32 | DataType::UInt64 => {
-                Ok(UcColumnType::new("LONG", "BIGINT", "\"long\""))
-            }
-            DataType::Float32 => Ok(UcColumnType::new("FLOAT", "FLOAT", "\"float\"")),
-            DataType::Float64 => Ok(UcColumnType::new("DOUBLE", "DOUBLE", "\"double\"")),
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
-                Ok(UcColumnType::new("STRING", "STRING", "\"string\""))
-            }
-            DataType::Date32 => Ok(UcColumnType::new("DATE", "DATE", "\"date\"")),
-            DataType::Timestamp(_, _) => {
-                Ok(UcColumnType::new("TIMESTAMP", "TIMESTAMP", "\"timestamp\""))
-            }
-            DataType::Decimal128(precision, scale) => Ok(UcColumnType::new(
-                "DECIMAL",
-                format!("DECIMAL({precision}, {scale})"),
-                format!("\"decimal({precision},{scale})\""),
-            )),
-            other => Err(anyhow!(
-                "Unsupported Arrow data type for Unity Catalog table creation: {other:?}"
-            )),
-        }
-    }
-
-    #[allow(dead_code)]
-    async fn uc_table_exists(&self, table_name: &str) -> Result<bool> {
-        let full_name = self.uc_table_full_name(table_name);
-        let get_url = format!(
-            "https://{}/api/2.1/unity-catalog/tables/{full_name}",
-            self.config.endpoint
-        );
-
-        let response = self
-            .client
-            .get(get_url)
-            .bearer_auth(&self.config.token)
-            .send()
-            .await?;
-
-        if response.status() == StatusCode::OK {
-            return Ok(true);
-        }
-
-        if response.status() == StatusCode::NOT_FOUND {
-            return Ok(false);
-        }
-
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        Err(anyhow!(
-            "Databricks Unity Catalog tables/get failed ({status}) for '{full_name}': {body}"
-        ))
-    }
-
-    #[allow(dead_code)]
-    async fn create_uc_table_if_not_exists(
-        &self,
-        table_name: &str,
-        dataset_cfg: &DatasetConfig,
-    ) -> Result<bool> {
-        if self.uc_table_exists(table_name).await? {
-            return Ok(false);
-        }
-
-        let columns = dataset_cfg
-            .schema
-            .fields()
-            .iter()
-            .enumerate()
-            .map(|(position, field)| {
-                let col_type = Self::uc_column_type_for_arrow(field.data_type())?;
-                Ok::<_, anyhow::Error>(UcTableColumnCreateRequest {
-                    name: field.name().clone(),
-                    type_name: col_type.type_name,
-                    type_text: col_type.type_text,
-                    type_json: col_type.type_json,
-                    position,
-                    nullable: field.is_nullable(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let create_url = format!(
-            "https://{}/api/2.1/unity-catalog/tables",
-            self.config.endpoint
-        );
-        let response = self
-            .client
-            .post(create_url)
-            .bearer_auth(&self.config.token)
-            .json(&UcTableCreateRequest {
-                name: table_name.to_string(),
-                catalog_name: self.config.catalog.clone(),
-                schema_name: self.config.schema.clone(),
-                table_type: "MANAGED".to_string(),
-                data_source_format: "DELTA".to_string(),
-                columns,
-            })
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            return Ok(true);
-        }
-
-        if response.status() == StatusCode::CONFLICT {
-            return Ok(false);
-        }
-
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        Err(anyhow!(
-            "Databricks Unity Catalog tables/create failed ({status}) for '{}': {body}",
-            self.uc_table_full_name(table_name)
-        ))
-    }
-
     async fn lakebase_pg_uri(&self) -> Result<String> {
         let lakebase_config = match &self.config.compute_target {
             ComputeTarget::Lakebase(cfg) => cfg,
@@ -1691,26 +1465,7 @@ impl DatabricksAdapter {
         // rows_ingested / bytes_ingested: not available on Lakebase.
         // The synced table pipeline writes at the storage layer, bypassing PG's
         // tuple tracking (n_tup_ins) and relation size accounting
-        // (pg_total_relation_size), so both are always zero.
-        //
-        // let _schema = &lakebase_config.schema;
-        // let rows_ingested: Option<u64> = client
-        //     .query_one(
-        //         "SELECT COALESCE(SUM(n_tup_ins), 0)::bigint FROM pg_stat_user_tables WHERE schemaname = $1",
-        //         &[&schema],
-        //     )
-        //     .await
-        //     .ok()
-        //     .map(|row| row.get::<_, i64>(0) as u64);
-        //
-        // let bytes_ingested: Option<u64> = client
-        //     .query_one(
-        //         "SELECT COALESCE(SUM(pg_total_relation_size(schemaname || '.' || tablename)), 0)::bigint FROM pg_tables WHERE schemaname = $1",
-        //         &[&schema],
-        //     )
-        //     .await
-        //     .ok()
-        //     .map(|row| row.get::<_, i64>(0) as u64);
+        // (pg_total_relation_size), so both are always zero so we don't query them
 
         let mut resource = ResourceMetrics::default();
 
@@ -1957,72 +1712,10 @@ enum StatementState {
     Canceled,
 }
 
-/// Statement response that includes inline result data.
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct StatementWithResultResponse {
-    statement_id: String,
-    status: StatementStatus,
-    #[serde(default)]
-    result: Option<StatementResultData>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct StatementResultData {
-    #[serde(default)]
-    data_array: Vec<Vec<Option<String>>>,
-}
-
 #[derive(Debug, Serialize)]
 struct UcSchemaCreateRequest {
     catalog_name: String,
     name: String,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-struct UcColumnType {
-    type_name: String,
-    type_text: String,
-    type_json: String,
-}
-
-#[allow(dead_code)]
-impl UcColumnType {
-    fn new(
-        type_name: impl Into<String>,
-        type_text: impl Into<String>,
-        type_json: impl Into<String>,
-    ) -> Self {
-        Self {
-            type_name: type_name.into(),
-            type_text: type_text.into(),
-            type_json: type_json.into(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[allow(dead_code)]
-struct UcTableColumnCreateRequest {
-    name: String,
-    type_name: String,
-    type_text: String,
-    type_json: String,
-    position: usize,
-    nullable: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[allow(dead_code)]
-struct UcTableCreateRequest {
-    name: String,
-    catalog_name: String,
-    schema_name: String,
-    table_type: String,
-    data_source_format: String,
-    columns: Vec<UcTableColumnCreateRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2031,23 +1724,11 @@ struct WarehouseInfoResponse {
     num_active_sessions: Option<u64>,
     #[serde(default)]
     num_clusters: Option<u64>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    warehouse_type: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    cluster_size: Option<String>,
 }
 
 /// A single query entry from the Query History API.
 #[derive(Debug, Deserialize)]
 struct QueryHistoryEntry {
-    #[serde(default)]
-    #[allow(dead_code)]
-    query_id: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    status: Option<String>,
     #[serde(default)]
     metrics: Option<QueryHistoryMetrics>,
 }
@@ -2152,7 +1833,7 @@ impl Handler for DatabricksAdapter {
         self.runs.insert(
             run_id,
             RunState {
-                table_format,
+                _table_format: table_format,
                 variant,
                 scenario_slug: scenario_slug.clone(),
                 created_tables: Vec::new(),
