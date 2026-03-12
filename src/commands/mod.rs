@@ -49,7 +49,7 @@ pub(crate) fn create_telemetry_with_resource(common: &CommonArgs, resource: Reso
     Telemetry::new_with_resource(&resource, "SPICEAI_BENCHMARK_METRICS_KEY")
 }
 
-fn rewrite_queries_with_catalog_namespace(
+pub(crate) fn rewrite_queries_with_catalog_namespace(
     queries: Vec<test_framework::queries::Query>,
     query_catalog_namespace: Option<&str>,
 ) -> anyhow::Result<Vec<test_framework::queries::Query>> {

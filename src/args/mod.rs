@@ -150,6 +150,15 @@ pub struct CommonArgs {
     /// each ETL pause boundary.
     #[arg(long, default_value_t = false)]
     pub(crate) validate_results: bool,
+
+    /// Period in seconds between checkpoint validation probe batches.
+    ///
+    /// During checkpoint validation, the first query in the scenario is
+    /// dispatched at `--concurrency` copies every this many seconds.
+    /// Overlapping batches allow more precise E2E latency measurement
+    /// when individual query latency is high.
+    #[arg(long, default_value_t = 5)]
+    pub(crate) checkpoint_validation_period: u64,
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
