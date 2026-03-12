@@ -28,7 +28,10 @@ use test_framework::{
     TestType, anyhow,
     arrow::util::pretty::print_batches,
     execution::QueryExecutor,
-    metrics::{MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, StatisticsCollector},
+    metrics::{
+        MetricCollector, NoExtendedMetrics, QueryMetrics, QueryStatus, RunOutcome,
+        StatisticsCollector,
+    },
     opentelemetry::KeyValue,
     opentelemetry::metrics::{Counter, Gauge},
     opentelemetry_sdk::Resource,
@@ -54,11 +57,14 @@ struct SutInstruments {
     ingestion_bytes_total: Gauge<u64>,
 }
 
-fn run_metric_attributes(common_args: &CommonArgs) -> Vec<KeyValue> {
-    vec![KeyValue::new(
-        "executor_instance_type",
-        common_args.executor_instance_type.clone(),
-    )]
+fn run_metric_attributes(common_args: &CommonArgs, run_id: uuid::Uuid) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new(
+            "executor_instance_type",
+            common_args.executor_instance_type.clone(),
+        ),
+        KeyValue::new("run_id", run_id.to_string()),
+    ]
 }
 
 fn log_sut_metrics_snapshot(response: &MetricsResponse) {
@@ -168,7 +174,7 @@ fn spawn_sut_metrics_scraper(
     run_id: uuid::Uuid,
     token: CancellationToken,
     interval: Duration,
-    attributes: Vec<KeyValue>,
+    attributes: Arc<std::sync::RwLock<Vec<KeyValue>>>,
     instruments: SutInstruments,
 ) -> tokio::task::JoinHandle<Option<MetricsResponse>> {
     tokio::spawn(async move {
@@ -187,11 +193,12 @@ fn spawn_sut_metrics_scraper(
                     let metrics_result = adapter.lock().await.metrics(run_id, false).await;
                     match metrics_result {
                         Ok(resp) => {
+                            let attrs = attributes.read().expect("SUT attributes lock poisoned");
                             log_sut_metrics_snapshot(&resp);
                             record_sut_metrics(
                                 &resp,
                                 &instruments,
-                                &attributes,
+                                &attrs,
                                 &mut prev_cpu_usage_seconds,
                                 &mut prev_disk_read_bytes,
                                 &mut prev_disk_write_bytes,
@@ -210,11 +217,12 @@ fn spawn_sut_metrics_scraper(
                 () = token.cancelled() => {
                     // Final scrape before exiting
                     if let Ok(resp) = adapter.lock().await.metrics(run_id, true).await {
+                        let attrs = attributes.read().expect("SUT attributes lock poisoned");
                         log_sut_metrics_snapshot(&resp);
                         record_sut_metrics(
                             &resp,
                             &instruments,
-                            &attributes,
+                            &attrs,
                             &mut prev_cpu_usage_seconds,
                             &mut prev_disk_read_bytes,
                             &mut prev_disk_write_bytes,
@@ -584,7 +592,7 @@ pub(crate) async fn run(
     checkpoint_dir: Option<&Path>,
     query_catalog_namespace: Option<String>,
 ) -> anyhow::Result<()> {
-    let metric_attributes = run_metric_attributes(common_args);
+    let metric_attributes = run_metric_attributes(common_args, run_id);
 
     scenario.load_query_set()?;
 
@@ -625,7 +633,8 @@ pub(crate) async fn run(
     // SUT metrics are always periodically exported to the Arrow backend (SPICEAI_BENCHMARK_METRICS_KEY).
     // When --otlp-endpoint is configured, they are also exported there.
     let sut_scraper_token = CancellationToken::new();
-    let (sut_scraper_handle, sut_pipeline) = if common_args.scrape_sut_metrics
+    let (sut_scraper_handle, sut_pipeline, sut_shared_attributes) = if common_args
+        .scrape_sut_metrics
         && (common_args.system_adapter_stdio_cmd.is_some()
             || common_args.system_adapter_http_url.is_some())
     {
@@ -646,8 +655,7 @@ pub(crate) async fn run(
             ingestion_rows_total: m.u64_gauge("ingestion_rows_total").build(),
             ingestion_bytes_total: m.u64_gauge("ingestion_bytes_total").build(),
         };
-        let mut sut_attributes = metric_attributes.clone();
-        sut_attributes.push(KeyValue::new("run_id", run_id.to_string()));
+        let sut_attributes = Arc::new(std::sync::RwLock::new(metric_attributes.clone()));
         println!("SUT metrics scraping enabled (run_id={run_id})");
         (
             Some(spawn_sut_metrics_scraper(
@@ -655,20 +663,17 @@ pub(crate) async fn run(
                 run_id,
                 sut_scraper_token.clone(),
                 Duration::from_secs(5),
-                sut_attributes,
+                Arc::clone(&sut_attributes),
                 instruments,
             )),
             Some(sut_pipeline),
+            Some(sut_attributes),
         )
     } else {
-        (None, None)
+        (None, None, None)
     };
 
-    // Record client concurrency as a gauge
-    crate::metrics::ACTIVE_CONNECTIONS.record(
-        common_args.concurrency.try_into().unwrap_or(0),
-        &metric_attributes,
-    );
+    // ACTIVE_CONNECTIONS is recorded post-loop so it carries the `outcome` dimension.
 
     let mut test_builder = NotStarted::new()
         .with_parallel_count(common_args.concurrency)
@@ -736,7 +741,11 @@ pub(crate) async fn run(
     // validation would be triggered before resuming.
     //
     // If interrupted (ctrl-c), cancel both the test and the ETL pipeline.
-    let etl_error: Option<String> = loop {
+    // Collect checkpoint E2E latency samples during the loop, then emit
+    // them post-loop so they carry the final `outcome` dimension.
+    let mut checkpoint_e2e_latency_samples: Vec<f64> = Vec::new();
+
+    let run_outcome: Option<RunOutcome> = loop {
         tokio::select! {
             // ETL state changed — check if stopped or paused
             _ = etl_state_rx.changed() => {
@@ -777,14 +786,13 @@ pub(crate) async fn run(
 
                                     match result {
                                         CheckpointValidationResult::Converged { e2e_latency_ms } => {
-                                            crate::metrics::E2E_LATENCY_MS
-                                                .record(e2e_latency_ms, &metric_attributes);
+                                            checkpoint_e2e_latency_samples.push(e2e_latency_ms);
                                         }
                                         CheckpointValidationResult::Interrupted => {
                                             eprintln!("Interrupt received during checkpoint validation, stopping...");
                                             shutdown_token.cancel();
                                             etl_pipeline.cancel();
-                                            break Some("Interrupted by user".to_string());
+                                            break Some(RunOutcome::Cancelled);
                                         }
                                         CheckpointValidationResult::TimedOut => {
                                             eprintln!(
@@ -792,9 +800,7 @@ pub(crate) async fn run(
                                             );
                                             shutdown_token.cancel();
                                             etl_pipeline.cancel();
-                                            break Some(format!(
-                                                "Checkpoint {checkpoint_idx} validation timed out after 600s"
-                                            ));
+                                            break Some(RunOutcome::ValidationTimeout);
                                         }
                                     }
                                 }
@@ -817,7 +823,7 @@ pub(crate) async fn run(
                         if let Err(e) = etl_pipeline.continue_pipeline() {
                             eprintln!("Failed to continue ETL pipeline after pause: {e}");
                             shutdown_token.cancel();
-                            break Some(format!("Failed to continue ETL pipeline: {e}"));
+                            break Some(RunOutcome::PipelineFailure(format!("Failed to continue ETL pipeline: {e}")));
                         }
                         tracing::info!("ETL pipeline resumed");
                     }
@@ -853,7 +859,7 @@ pub(crate) async fn run(
                     PipelineState::Stopped(StopReason::Error(ref e)) => {
                         eprintln!("ETL pipeline failed: {e}");
                         shutdown_token.cancel();
-                        break Some(e.clone());
+                        break Some(RunOutcome::PipelineFailure(e.clone()));
                     }
                     PipelineState::Stopped(StopReason::Cancelled) => {
                         println!("ETL pipeline was cancelled, stopping benchmark...");
@@ -868,7 +874,7 @@ pub(crate) async fn run(
                 println!("Interrupt received, stopping benchmark...");
                 shutdown_token.cancel();
                 etl_pipeline.cancel();
-                break None;
+                break Some(RunOutcome::Cancelled);
             }
         }
     };
@@ -880,10 +886,28 @@ pub(crate) async fn run(
         }
     };
 
-    // Propagate ETL error after collecting the test result
-    if let Some(etl_err) = etl_error {
-        return Err(anyhow::anyhow!("ETL pipeline failed: {etl_err}"));
+    // Determine the run outcome from the loop exit reason and test results.
+    // This is resolved before recording any metrics so every emitted metric
+    // carries the `outcome` dimension.
+    let outcome = match &run_outcome {
+        Some(outcome) => outcome.clone(),
+        None if test.succeeded() => RunOutcome::Success,
+        None => RunOutcome::QueryFailure,
+    };
+
+    // Add outcome as a dimension on all subsequently recorded metrics.
+    let mut metric_attributes = metric_attributes;
+    metric_attributes.push(KeyValue::new("outcome", outcome.as_str()));
+
+    // Record deferred metrics now that outcome is available.
+    crate::metrics::ACTIVE_CONNECTIONS.record(
+        common_args.concurrency.try_into().unwrap_or(0),
+        &metric_attributes,
+    );
+    for sample in &checkpoint_e2e_latency_samples {
+        crate::metrics::E2E_LATENCY_MS.record(*sample, &metric_attributes);
     }
+
     test.get_query_durations().statistical_set()?;
 
     // Get all query durations for overall statistics before ending the test
@@ -940,6 +964,13 @@ pub(crate) async fn run(
         }
     }
 
+    // Inject outcome into shared SUT attributes so the final scrape carries it.
+    if let Some(ref sut_attrs) = sut_shared_attributes {
+        sut_attrs
+            .write()
+            .expect("SUT attributes lock poisoned")
+            .push(KeyValue::new("outcome", outcome.as_str()));
+    }
     // Stop SUT metrics scraper and flush its pipeline
     sut_scraper_token.cancel();
     if let Some(handle) = sut_scraper_handle
@@ -967,9 +998,15 @@ pub(crate) async fn run(
         exporter.shutdown().await;
     }
 
-    println!("Benchmark completed");
+    println!("Benchmark completed (outcome: {outcome})");
 
+    // Always emit telemetry — even on failure — so the outcome dimension is recorded.
     telemetry.emit().await?;
+
+    // Propagate failure after telemetry has been emitted.
+    if let Some(failure_outcome) = run_outcome {
+        return Err(anyhow::anyhow!("Benchmark run failed: {failure_outcome}"));
+    }
 
     Ok(())
 }

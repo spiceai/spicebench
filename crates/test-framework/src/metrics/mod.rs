@@ -36,6 +36,48 @@ use crate::{TestType, git};
 
 const FLOAT_ERROR_MARGIN: f64 = 0.0001;
 
+/// The outcome of a benchmark run, applied as a dimension to all emitted metrics.
+///
+/// This allows filtering runs by their terminal state in dashboards and queries.
+/// For example, filtering to `outcome = "success"` excludes runs that had query
+/// failures, pipeline errors, or were interrupted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// All queries passed and the run completed successfully.
+    Success,
+    /// One or more queries returned execution errors.
+    QueryFailure,
+    /// The data ingestion/ETL pipeline failed.
+    PipelineFailure(String),
+    /// Checkpoint validation did not converge within the timeout.
+    ValidationTimeout,
+    /// The run was interrupted by the user (e.g., ctrl-c).
+    Cancelled,
+}
+
+impl RunOutcome {
+    /// Returns the string representation used as the OTel attribute value.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::QueryFailure => "query_failure",
+            Self::PipelineFailure(_) => "pipeline_failure",
+            Self::ValidationTimeout => "validation_timeout",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl std::fmt::Display for RunOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PipelineFailure(reason) => write!(f, "pipeline_failure: {reason}"),
+            other => f.write_str(other.as_str()),
+        }
+    }
+}
+
 #[expect(
     clippy::must_use_candidate,
     clippy::cast_possible_wrap,
