@@ -77,7 +77,6 @@ impl AdbcConnectionManager {
             _ => false,
         }
     }
-
 }
 
 impl r2d2::ManageConnection for AdbcConnectionManager {
