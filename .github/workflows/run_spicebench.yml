@@ -216,19 +216,15 @@ jobs:
 
       - name: Install ADBC Postgres driver
         if: ${{ startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
-        run: |
-          set -euo pipefail
-          curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          source "$HOME/.local/bin/env"
-          dbc install postgresql
+        uses: columnar-tech/setup-dbc@v1
+        with:
+          drivers: postgresql
 
       - name: Install ADBC FlightSQL driver
         if: ${{ !startsWith(github.event.inputs.system_under_test || 'spice_cloud', 'databricks-') }}
-        run: |
-          set -euo pipefail
-          curl -LsSf https://dbc.columnar.tech/install.sh | sh
-          source "$HOME/.local/bin/env"
-          dbc install flightsql
+        uses: columnar-tech/setup-dbc@v1
+        with:
+          drivers: flightsql
 
       - name: Run spicebench
         env:
