@@ -15,8 +15,11 @@ limitations under the License.
 */
 
 use std::collections::HashMap;
+use std::time::Instant;
 
-use adbc_client::{AdbcConnection, AdbcConnectionPool, IngestMode, create_pool};
+use adbc_client::{
+    AdbcConnection, AdbcConnectionManager, AdbcConnectionPool, IngestMode, create_pool,
+};
 use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::{DataType, Schema};
 use arrow_cast::display::array_value_to_string;
@@ -34,6 +37,11 @@ const MAX_ADBC_INGEST_BATCH_BYTES_ENV: &str = "SPICEBENCH_ADBC_MAX_INGEST_BATCH_
 const DEFAULT_ADBC_SINK_POOL_SIZE: u32 = 8;
 const ADBC_SINK_POOL_SIZE_ENV: &str = "SPICEBENCH_ADBC_SINK_POOL_SIZE";
 
+/// When set to a positive integer, deletes are batched into
+/// `DELETE … WHERE key IN (…)` statements of at most this many rows.
+/// When unset or empty, deletes use the original row-by-row approach.
+const ADBC_DELETE_BATCH_SIZE_ENV: &str = "SPICEBENCH_ADBC_DELETE_BATCH_SIZE";
+
 /// ETL sink that writes transformed batches directly to an ADBC target.
 ///
 /// Inserts use ADBC bulk ingest, while updates and deletes execute row-level
@@ -44,6 +52,10 @@ pub struct AdbcSink {
     pool: AdbcConnectionPool,
     target_db_catalog: Option<String>,
     target_db_schema: Option<String>,
+    /// Character used to quote SQL identifiers (e.g. '"' for ANSI, '`' for Databricks).
+    identifier_quote_char: char,
+    /// Whether Int64/UInt64 literals need an `L` suffix (Databricks).
+    bigint_suffix: bool,
 }
 
 impl AdbcSink {
@@ -75,15 +87,25 @@ impl AdbcSink {
             .map_err(|e| anyhow::anyhow!("Failed to create ADBC connection pool: {e}"))?;
         eprintln!("[adbc] Connection pool created (driver: {driver_name}, size: {pool_size})");
 
+        let identifier_quote_char = AdbcConnectionManager::identifier_quote_style(driver_name);
+        let bigint_suffix = AdbcConnectionManager::bigint_suffix(driver_name);
+
         Ok(Self {
             pool,
             target_db_catalog,
             target_db_schema,
+            identifier_quote_char,
+            bigint_suffix,
         })
     }
 
-    fn quote_identifier(value: &str) -> String {
-        format!("\"{}\"", value.replace('"', "\"\""))
+    fn quote_identifier(&self, value: &str) -> String {
+        Self::quote_ident(value, self.identifier_quote_char)
+    }
+
+    fn quote_ident(value: &str, quote_char: char) -> String {
+        let escaped = value.replace(quote_char, &format!("{quote_char}{quote_char}"));
+        format!("{quote_char}{escaped}{quote_char}")
     }
 
     fn postgres_type_for_arrow(data_type: &DataType) -> anyhow::Result<String> {
@@ -129,16 +151,16 @@ impl AdbcSink {
         if let Some(catalog) = self.target_db_catalog.as_deref()
             && !catalog.is_empty()
         {
-            parts.push(Self::quote_identifier(catalog));
+            parts.push(self.quote_identifier(catalog));
         }
 
         if let Some(schema) = self.target_db_schema.as_deref()
             && !schema.is_empty()
         {
-            parts.push(Self::quote_identifier(schema));
+            parts.push(self.quote_identifier(schema));
         }
 
-        parts.push(Self::quote_identifier(table_name));
+        parts.push(self.quote_identifier(table_name));
         parts.join(".")
     }
 
@@ -170,7 +192,7 @@ impl AdbcSink {
             .fields()
             .iter()
             .map(|field| {
-                let col_ident = Self::quote_identifier(field.name());
+                let col_ident = self.quote_identifier(field.name());
                 let col_type = Self::postgres_type_for_arrow(field.data_type())?;
                 let nullable = if field.is_nullable() { "" } else { " NOT NULL" };
                 Ok::<_, anyhow::Error>(format!("{col_ident} {col_type}{nullable}"))
@@ -364,7 +386,12 @@ impl AdbcSink {
         Ok(())
     }
 
-    fn sql_literal(array: &dyn Array, row: usize) -> anyhow::Result<String> {
+    /// Render a cell value as a SQL literal.
+    ///
+    /// When `bigint_suffix` is `true`, integer literals are suffixed with `L` so
+    /// that Databricks treats them as BIGINT instead of INT (avoids
+    /// `DATATYPE_MISMATCH` in composite-key tuple comparisons).
+    fn sql_literal(array: &dyn Array, row: usize, bigint_suffix: bool) -> anyhow::Result<String> {
         if array.is_null(row) {
             return Ok("NULL".to_string());
         }
@@ -374,19 +401,24 @@ impl AdbcSink {
 
         let value = match array.data_type() {
             DataType::Boolean
-            | DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
             | DataType::Float16
             | DataType::Float32
             | DataType::Float64
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _) => raw,
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32 => raw,
+            DataType::Int64 | DataType::UInt64 => {
+                if bigint_suffix {
+                    format!("{raw}L")
+                } else {
+                    raw
+                }
+            }
             DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Utf8View
@@ -429,8 +461,8 @@ impl AdbcSink {
                 anyhow::anyhow!("Key column '{key}' not found in delete batch schema")
             })?;
             let column = batch.column(idx);
-            let key_ident = Self::quote_identifier(key);
-            let literal = Self::sql_literal(column.as_ref(), row)?;
+            let key_ident = self.quote_identifier(key);
+            let literal = Self::sql_literal(column.as_ref(), row, false)?;
             predicates.push(Self::null_safe_predicate_for_literal(&key_ident, &literal));
         }
 
@@ -456,8 +488,8 @@ impl AdbcSink {
                 anyhow::anyhow!("Key column '{key}' not found in update batch schema")
             })?;
             let key_col = batch.column(key_idx);
-            let key_ident = Self::quote_identifier(key);
-            let key_literal = Self::sql_literal(key_col.as_ref(), row)?;
+            let key_ident = self.quote_identifier(key);
+            let key_literal = Self::sql_literal(key_col.as_ref(), row, false)?;
             predicates.push(Self::null_safe_predicate_for_literal(
                 &key_ident,
                 &key_literal,
@@ -470,8 +502,8 @@ impl AdbcSink {
                 continue;
             }
 
-            let col_ident = Self::quote_identifier(field.name());
-            let literal = Self::sql_literal(batch.column(column_idx).as_ref(), row)?;
+            let col_ident = self.quote_identifier(field.name());
+            let literal = Self::sql_literal(batch.column(column_idx).as_ref(), row, false)?;
             set_clauses.push(format!("{col_ident} = {literal}"));
         }
 
@@ -489,6 +521,15 @@ impl AdbcSink {
         ))
     }
 
+    /// Returns the delete batch size from the env var, or `None` if unset/empty
+    /// (meaning row-by-row mode).
+    fn delete_batch_size() -> Option<usize> {
+        std::env::var(ADBC_DELETE_BATCH_SIZE_ENV)
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+    }
+
     fn delete_sql_statements(
         &self,
         table_name: &str,
@@ -499,9 +540,97 @@ impl AdbcSink {
             anyhow::bail!("Delete requires at least one key column");
         }
 
-        (0..batch.num_rows())
-            .map(|row| self.delete_sql_for_row(table_name, batch, row, key_columns))
-            .collect()
+        let batch_size = match Self::delete_batch_size() {
+            Some(size) => size,
+            None => {
+                // Original row-by-row approach.
+                return (0..batch.num_rows())
+                    .map(|row| self.delete_sql_for_row(table_name, batch, row, key_columns))
+                    .collect();
+            }
+        };
+
+        let schema = batch.schema();
+        let key_indices: Vec<usize> = key_columns
+            .iter()
+            .map(|key| {
+                schema.index_of(key).map_err(|_| {
+                    anyhow::anyhow!("Key column '{key}' not found in delete batch schema")
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Self::batched_delete_sql(
+            &self.target_table_identifier(table_name),
+            batch,
+            batch_size,
+            key_columns,
+            &key_indices,
+            self.identifier_quote_char,
+            self.bigint_suffix,
+        )
+    }
+
+    /// Build batched `DELETE` statements, chunked by `batch_size`.
+    ///
+    /// Single key:    `DELETE FROM t WHERE k IN (v1, v2, …)`
+    /// Composite key: `DELETE FROM t WHERE (k1, k2) IN ((v1, v2), …)`
+    ///
+    /// When `bigint_suffix` is `true` (Databricks), Int64/UInt64 literals are
+    /// suffixed with `L` to force BIGINT and avoid `DATATYPE_MISMATCH`.
+    fn batched_delete_sql(
+        table_ident: &str,
+        batch: &RecordBatch,
+        batch_size: usize,
+        key_columns: &[String],
+        key_indices: &[usize],
+        identifier_quote_char: char,
+        bigint_suffix: bool,
+    ) -> anyhow::Result<Vec<String>> {
+        let num_rows = batch.num_rows();
+        let mut statements = Vec::new();
+        let mut start = 0;
+
+        while start < num_rows {
+            let end = (start + batch_size).min(num_rows);
+
+            let sql = if key_columns.len() == 1 {
+                let key_ident = Self::quote_ident(&key_columns[0], identifier_quote_char);
+                let values: Vec<String> = (start..end)
+                    .map(|row| Self::sql_literal(batch.column(key_indices[0]).as_ref(), row, false))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                format!(
+                    "DELETE FROM {table_ident} WHERE {key_ident} IN ({})",
+                    values.join(", ")
+                )
+            } else {
+                let key_idents: Vec<String> = key_columns
+                    .iter()
+                    .map(|k| Self::quote_ident(k, identifier_quote_char))
+                    .collect();
+                let tuples: Vec<String> = (start..end)
+                    .map(|row| {
+                        let vals: Vec<String> = key_indices
+                            .iter()
+                            .map(|&idx| {
+                                Self::sql_literal(batch.column(idx).as_ref(), row, bigint_suffix)
+                            })
+                            .collect::<anyhow::Result<Vec<_>>>()?;
+                        Ok(format!("({})", vals.join(", ")))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                format!(
+                    "DELETE FROM {table_ident} WHERE ({}) IN ({})",
+                    key_idents.join(", "),
+                    tuples.join(", ")
+                )
+            };
+
+            statements.push(sql);
+            start = end;
+        }
+
+        Ok(statements)
     }
 
     fn update_sql_statements(
@@ -545,22 +674,247 @@ impl Sink for AdbcSink {
             }
             InsertOp::Delete { key_columns } => {
                 let statements = self.delete_sql_statements(table_name, &batch, &key_columns)?;
+                let num_statements = statements.len();
+                let start = Instant::now();
                 for sql in statements {
                     conn.execute_update(&sql).map_err(|e| {
                         anyhow::anyhow!("ADBC delete execution failed for '{table_name}': {e}")
                     })?;
                 }
+                let elapsed = start.elapsed();
+                let rows_per_sec = if elapsed.as_secs_f64() > 0.0 {
+                    batch.num_rows() as f64 / elapsed.as_secs_f64()
+                } else {
+                    0.0
+                };
+                tracing::debug!(
+                    table = %table_name,
+                    rows = batch.num_rows(),
+                    num_statements,
+                    elapsed_ms = elapsed.as_millis(),
+                    rows_per_sec = format!("{rows_per_sec:.1}"),
+                    "DELETE executed"
+                );
             }
             InsertOp::Update { key_columns } => {
                 let statements = self.update_sql_statements(table_name, &batch, &key_columns)?;
+                let num_statements = statements.len();
+                let start = Instant::now();
                 for sql in statements {
                     conn.execute_update(&sql).map_err(|e| {
                         anyhow::anyhow!("ADBC update execution failed for '{table_name}': {e}")
                     })?;
                 }
+                let elapsed = start.elapsed();
+                let rows_per_sec = if elapsed.as_secs_f64() > 0.0 {
+                    batch.num_rows() as f64 / elapsed.as_secs_f64()
+                } else {
+                    0.0
+                };
+                tracing::debug!(
+                    table = %table_name,
+                    rows = batch.num_rows(),
+                    num_statements,
+                    elapsed_ms = elapsed.as_millis(),
+                    rows_per_sec = format!("{rows_per_sec:.1}"),
+                    "UPDATE executed"
+                );
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int32Array, Int64Array, StringArray};
+    use arrow::datatypes::{Field, Schema};
+    use std::sync::Arc;
+
+    fn make_int_batch(ids: &[i64]) -> (RecordBatch, Vec<String>, Vec<usize>) {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(ids.to_vec()))]).unwrap();
+        let key_columns = vec!["id".to_string()];
+        let key_indices = vec![0];
+        (batch, key_columns, key_indices)
+    }
+
+    #[test]
+    fn single_key_all_rows_in_one_batch() {
+        let (batch, key_columns, key_indices) = make_int_batch(&[10, 20, 30]);
+        let stmts = AdbcSink::batched_delete_sql(
+            r#""t""#,
+            &batch,
+            1000,
+            &key_columns,
+            &key_indices,
+            '"',
+            false,
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0], r#"DELETE FROM "t" WHERE "id" IN (10, 20, 30)"#);
+    }
+
+    #[test]
+    fn single_key_chunked() {
+        let (batch, key_columns, key_indices) = make_int_batch(&[1, 2, 3, 4, 5]);
+        let stmts = AdbcSink::batched_delete_sql(
+            r#""t""#,
+            &batch,
+            2,
+            &key_columns,
+            &key_indices,
+            '"',
+            false,
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 3);
+        assert_eq!(stmts[0], r#"DELETE FROM "t" WHERE "id" IN (1, 2)"#);
+        assert_eq!(stmts[1], r#"DELETE FROM "t" WHERE "id" IN (3, 4)"#);
+        assert_eq!(stmts[2], r#"DELETE FROM "t" WHERE "id" IN (5)"#);
+    }
+
+    #[test]
+    fn composite_key() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["x", "y"])),
+            ],
+        )
+        .unwrap();
+        let key_columns = vec!["a".to_string(), "b".to_string()];
+        let key_indices = vec![0, 1];
+        let stmts = AdbcSink::batched_delete_sql(
+            r#""t""#,
+            &batch,
+            1000,
+            &key_columns,
+            &key_indices,
+            '"',
+            false,
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(
+            stmts[0],
+            r#"DELETE FROM "t" WHERE ("a", "b") IN ((1, 'x'), (2, 'y'))"#
+        );
+    }
+
+    #[test]
+    fn qualified_table_ident() {
+        let (batch, key_columns, key_indices) = make_int_batch(&[42]);
+        let stmts = AdbcSink::batched_delete_sql(
+            r#""catalog"."schema"."orders""#,
+            &batch,
+            1000,
+            &key_columns,
+            &key_indices,
+            '"',
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            stmts[0],
+            r#"DELETE FROM "catalog"."schema"."orders" WHERE "id" IN (42)"#
+        );
+    }
+
+    #[test]
+    fn composite_key_databricks_bigint_suffix() {
+        // partsupp: both keys are Int64 (BIGINT) → both get L suffix
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ps_partkey", DataType::Int64, false),
+            Field::new("ps_suppkey", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![59, 1688])),
+                Arc::new(Int64Array::from(vec![560, 940])),
+            ],
+        )
+        .unwrap();
+        let key_columns = vec!["ps_partkey".to_string(), "ps_suppkey".to_string()];
+        let key_indices = vec![0, 1];
+        let stmts = AdbcSink::batched_delete_sql(
+            "`t`",
+            &batch,
+            1000,
+            &key_columns,
+            &key_indices,
+            '`',
+            true,
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(
+            stmts[0],
+            "DELETE FROM `t` WHERE (`ps_partkey`, `ps_suppkey`) IN ((59L, 560L), (1688L, 940L))"
+        );
+    }
+
+    #[test]
+    fn composite_key_databricks_mixed_int64_int32() {
+        // lineitem: l_orderkey is Int64 (BIGINT) → L suffix, l_linenumber is Int32 (INT) → no suffix
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("l_orderkey", DataType::Int64, false),
+            Field::new("l_linenumber", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![40194, 55937])),
+                Arc::new(Int32Array::from(vec![1, 3])),
+            ],
+        )
+        .unwrap();
+        let key_columns = vec!["l_orderkey".to_string(), "l_linenumber".to_string()];
+        let key_indices = vec![0, 1];
+        let stmts = AdbcSink::batched_delete_sql(
+            "`t`",
+            &batch,
+            1000,
+            &key_columns,
+            &key_indices,
+            '`',
+            true,
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        // l_orderkey gets L (Int64), l_linenumber does NOT (Int32)
+        assert_eq!(
+            stmts[0],
+            "DELETE FROM `t` WHERE (`l_orderkey`, `l_linenumber`) IN ((40194L, 1), (55937L, 3))"
+        );
+    }
+
+    #[test]
+    fn empty_batch_returns_no_statements() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::new_empty(schema);
+        let key_columns = vec!["id".to_string()];
+        let key_indices = vec![0];
+        let stmts = AdbcSink::batched_delete_sql(
+            r#""t""#,
+            &batch,
+            100,
+            &key_columns,
+            &key_indices,
+            '"',
+            false,
+        )
+        .unwrap();
+        assert!(stmts.is_empty());
     }
 }
