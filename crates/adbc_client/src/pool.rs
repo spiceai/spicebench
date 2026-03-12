@@ -57,6 +57,27 @@ impl AdbcConnectionManager {
             resolve_opaque_numerics,
         }
     }
+
+    /// Returns the identifier quote character for a given ADBC driver.
+    pub fn identifier_quote_style(driver_name: &str) -> char {
+        match driver_name {
+            d if d.eq_ignore_ascii_case("databricks") => '`',
+            _ => '"',
+        }
+    }
+
+    /// Returns whether integer literals need a BIGINT `L` suffix for the given driver.
+    ///
+    /// Databricks treats bare integer literals as INT; composite-key tuple
+    /// comparisons against BIGINT columns fail with `DATATYPE_MISMATCH`
+    /// unless Int64 literals are explicitly suffixed with `L`.
+    pub fn bigint_suffix(driver_name: &str) -> bool {
+        match driver_name {
+            d if d.eq_ignore_ascii_case("databricks") => true,
+            _ => false,
+        }
+    }
+
 }
 
 impl r2d2::ManageConnection for AdbcConnectionManager {
