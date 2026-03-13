@@ -821,9 +821,7 @@ impl Sink for AdbcSink {
         };
 
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        // if table_name == "lineitem" {
-        eprintln!("[adbc-write] {now} | {table_name} | {op_label} | rows: {rows_current}");
-        // }
+        tracing::info!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
 
         match op {
             InsertOp::Insert => {
@@ -910,11 +908,9 @@ impl Sink for AdbcSink {
         };
 
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        // if table_name == "lineitem" {
-        eprintln!(
+        tracing::info!(
             "[adbc] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
         );
-        // }
 
         Ok(())
     }

@@ -128,7 +128,7 @@ async fn log_table_row_counts(
                     .map(|a| a.value(0))
             })
             .unwrap_or(0);
-            eprintln!("[checkpoint] Checkpoint {checkpoint_idx} | {table}: {count} rows");
+            tracing::info!("[checkpoint] Checkpoint {checkpoint_idx} | {table}: {count} rows");
     }
     Ok(())
 }
