@@ -201,7 +201,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: spiceai/adbc-databricks
-          ref: spicebench
+          ref: sgrebnov/native-decimals
           path: adbc-databricks
 
       - name: Build databricks Go ADBC driver
@@ -326,6 +326,7 @@ jobs:
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STAGING_VOLUME_PATH=${DATABRICKS_STAGING_VOLUME_PATH}"
             fi
           else
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
             ADAPTER_CMD="docker"
             ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
