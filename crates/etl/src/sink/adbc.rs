@@ -42,11 +42,35 @@ const ADBC_SINK_POOL_SIZE_ENV: &str = "SPICEBENCH_ADBC_SINK_POOL_SIZE";
 /// When unset or empty, deletes use the original row-by-row approach.
 const ADBC_DELETE_BATCH_SIZE_ENV: &str = "SPICEBENCH_ADBC_DELETE_BATCH_SIZE";
 
-/// When set to a positive integer, updates are batched into
-/// `MERGE INTO … USING (SELECT … FROM VALUES …)` statements of at most
-/// this many rows.  When unset or empty, updates use the original
-/// row-by-row `UPDATE` approach.
-const ADBC_UPDATE_BATCH_SIZE_ENV: &str = "SPICEBENCH_ADBC_UPDATE_BATCH_SIZE";
+/// Controls how UPDATE operations are executed.
+///
+/// - `statement`     — row-by-row `UPDATE … SET … WHERE …` statements (default)
+/// - `staging_table` — bulk ingest into temp staging table + single `MERGE INTO`
+const ADBC_UPDATE_STRATEGY_ENV: &str = "SPICEBENCH_ADBC_UPDATE_STRATEGY";
+
+/// Strategy for executing UPDATE operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateStrategy {
+    /// Row-by-row `UPDATE … SET … WHERE …` SQL statements.
+    Statement,
+    /// Bulk ingest into a temporary staging table, then `MERGE INTO target USING staging …`.
+    StagingTable,
+}
+
+impl UpdateStrategy {
+    fn from_env() -> anyhow::Result<Self> {
+        match std::env::var(ADBC_UPDATE_STRATEGY_ENV).ok().as_deref() {
+            Some(val) => match val.to_lowercase().as_str() {
+                "statement" => Ok(Self::Statement),
+                "staging_table" => Ok(Self::StagingTable),
+                other => anyhow::bail!(
+                    "Unknown update strategy '{other}'. Valid values for {ADBC_UPDATE_STRATEGY_ENV}: statement, staging_table"
+                ),
+            },
+            None => Ok(Self::Statement),
+        }
+    }
+}
 
 /// ETL sink that writes transformed batches directly to an ADBC target.
 ///
@@ -639,158 +663,124 @@ impl AdbcSink {
         Ok(statements)
     }
 
-    /// Returns the update batch size from the env var, or `None` if unset/empty
-    /// (meaning row-by-row mode).
-    fn update_batch_size() -> Option<usize> {
-        std::env::var(ADBC_UPDATE_BATCH_SIZE_ENV)
-            .ok()
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-    }
-
-    fn update_sql_statements(
+    /// Perform an UPDATE via a temporary staging table:
+    ///
+    /// 1. Bulk-ingest the update batch into a staging table.
+    /// 2. `MERGE INTO target USING staging ON … WHEN MATCHED THEN UPDATE SET …`
+    /// 3. `DROP TABLE staging`.
+    fn staging_merge_update(
         &self,
+        conn: &mut AdbcConnection,
         table_name: &str,
-        batch: &RecordBatch,
+        batch: RecordBatch,
         key_columns: &[String],
-    ) -> anyhow::Result<Vec<String>> {
+    ) -> anyhow::Result<()> {
         if key_columns.is_empty() {
             anyhow::bail!("Update requires at least one key column");
         }
 
-        match Self::update_batch_size() {
-            Some(size) => {
-                let schema = batch.schema();
-                let key_indices: Vec<usize> = key_columns
-                    .iter()
-                    .map(|key| {
-                        schema.index_of(key).map_err(|_| {
-                            anyhow::anyhow!("Key column '{key}' not found in update batch schema")
-                        })
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
+        let schema = batch.schema();
+        let has_non_key = schema
+            .fields()
+            .iter()
+            .any(|f| !key_columns.iter().any(|k| k == f.name()));
+        if !has_non_key {
+            anyhow::bail!(
+                "Update requires at least one non-key column in batch schema for table '{table_name}'"
+            );
+        }
 
-                Self::batched_merge_update_sql(
-                    &self.target_table_identifier(table_name),
-                    batch,
-                    size,
-                    key_columns,
-                    &key_indices,
-                    self.identifier_quote_char,
-                    self.bigint_suffix,
-                )
-            }
-            None => {
-                // Original row-by-row approach.
-                (0..batch.num_rows())
-                    .map(|row| self.update_sql_for_row(table_name, batch, row, key_columns))
-                    .collect()
-            }
+        // Generate a unique staging table name.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let staging_table = format!("_spicebench_stg_{table_name}_{ts}");
+
+        // 1. Bulk-ingest batch into the staging table.
+        if let Err(e) = self.ingest_insert_batch(conn, &staging_table, batch) {
+            self.drop_staging_table(conn, &staging_table);
+            return Err(e.context(format!(
+                "Failed to ingest update data into staging table '{staging_table}'"
+            )));
+        }
+
+        // 2. MERGE INTO target from staging.
+        let merge_sql = Self::build_staging_merge_sql(
+            &self.target_table_identifier(table_name),
+            &self.target_table_identifier(&staging_table),
+            &schema,
+            key_columns,
+            self.identifier_quote_char,
+        );
+        let merge_result = conn
+            .execute_update(&merge_sql)
+            .map_err(|e| anyhow::anyhow!("MERGE INTO update failed for '{table_name}': {e}"));
+
+        // 3. Drop staging table (always, even on merge failure).
+        self.drop_staging_table(conn, &staging_table);
+
+        merge_result?;
+        Ok(())
+    }
+
+    /// Best-effort drop of a staging table.
+    fn drop_staging_table(&self, conn: &mut AdbcConnection, staging_table: &str) {
+        let drop_sql = format!(
+            "DROP TABLE IF EXISTS {}",
+            self.target_table_identifier(staging_table)
+        );
+
+        if let Err(e) = conn.execute_update(&drop_sql) {
+            tracing::error!(
+                staging_table = %staging_table,
+                error = %e,
+                "Failed to drop staging table. Manual cleanup may be required."
+            );
         }
     }
 
-    /// Build batched `MERGE INTO` statements using inline `FROM VALUES`, chunked
-    /// by `batch_size`.
+    /// Build a `MERGE INTO` statement that reads from a staging table.
     ///
     /// ```sql
     /// MERGE INTO target t
-    /// USING (
-    ///   SELECT col1 AS key1, col2 AS val1, col3 AS val2
-    ///   FROM VALUES (1, 'a', 10.0), (2, 'b', 20.0)
-    /// ) s
+    /// USING staging s
     /// ON t.key1 = s.key1
-    /// WHEN MATCHED THEN UPDATE SET val1 = s.val1, val2 = s.val2;
+    /// WHEN MATCHED THEN UPDATE SET val1 = s.val1, val2 = s.val2
     /// ```
-    fn batched_merge_update_sql(
-        table_ident: &str,
-        batch: &RecordBatch,
-        batch_size: usize,
+    fn build_staging_merge_sql(
+        target_ident: &str,
+        staging_ident: &str,
+        schema: &Schema,
         key_columns: &[String],
-        key_indices: &[usize],
         identifier_quote_char: char,
-        bigint_suffix: bool,
-    ) -> anyhow::Result<Vec<String>> {
-        let num_rows = batch.num_rows();
-        if num_rows == 0 {
-            return Ok(Vec::new());
-        }
-
-        let schema = batch.schema();
-        let all_fields: Vec<_> = schema.fields().iter().collect();
-
-        // Non-key column indices for SET clause.
-        let non_key_indices: Vec<usize> = (0..all_fields.len())
-            .filter(|i| !key_indices.contains(i))
-            .collect();
-        if non_key_indices.is_empty() {
-            anyhow::bail!("MERGE UPDATE requires at least one non-key column in batch schema");
-        }
-
-        // Build the SELECT column aliases: "col1 AS field_name, col2 AS field_name, …"
-        let select_aliases: Vec<String> = all_fields
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                format!(
-                    "col{} AS {}",
-                    i + 1,
-                    Self::quote_ident(f.name(), identifier_quote_char)
-                )
-            })
-            .collect();
-        let select_clause = select_aliases.join(", ");
-
-        // Build ON clause: "t.key1 = s.key1 AND t.key2 = s.key2"
-        let on_clause: Vec<String> = key_columns
+    ) -> String {
+        let on_clause: String = key_columns
             .iter()
             .map(|k| {
                 let q = Self::quote_ident(k, identifier_quote_char);
                 format!("t.{q} = s.{q}")
             })
-            .collect();
-        let on_clause = on_clause.join(" AND ");
+            .collect::<Vec<_>>()
+            .join(" AND ");
 
-        // Build SET clause: "val1 = s.val1, val2 = s.val2"
-        let set_clause: Vec<String> = non_key_indices
+        let set_clause: String = schema
+            .fields()
             .iter()
-            .map(|&i| {
-                let q = Self::quote_ident(all_fields[i].name(), identifier_quote_char);
+            .filter(|f| !key_columns.iter().any(|k| k == f.name()))
+            .map(|f| {
+                let q = Self::quote_ident(f.name(), identifier_quote_char);
                 format!("{q} = s.{q}")
             })
-            .collect();
-        let set_clause = set_clause.join(", ");
+            .collect::<Vec<_>>()
+            .join(", ");
 
-        let mut statements = Vec::new();
-        let mut start = 0;
-
-        while start < num_rows {
-            let end = (start + batch_size).min(num_rows);
-
-            // Build VALUES tuples for this chunk.
-            let tuples: Vec<String> = (start..end)
-                .map(|row| {
-                    let vals: Vec<String> = (0..all_fields.len())
-                        .map(|col_idx| {
-                            Self::sql_literal(batch.column(col_idx).as_ref(), row, bigint_suffix)
-                        })
-                        .collect::<anyhow::Result<Vec<_>>>()?;
-                    Ok(format!("({})", vals.join(", ")))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-
-            let sql = format!(
-                "MERGE INTO {table_ident} t \
-                 USING (SELECT {select_clause} FROM VALUES {}) s \
-                 ON {on_clause} \
-                 WHEN MATCHED THEN UPDATE SET {set_clause}",
-                tuples.join(", ")
-            );
-
-            statements.push(sql);
-            start = end;
-        }
-
-        Ok(statements)
+        format!(
+            "MERGE INTO {target_ident} t \
+             USING {staging_ident} s \
+             ON {on_clause} \
+             WHEN MATCHED THEN UPDATE SET {set_clause}"
+        )
     }
 }
 
@@ -842,24 +832,40 @@ impl Sink for AdbcSink {
                 );
             }
             InsertOp::Update { key_columns } => {
-                let statements = self.update_sql_statements(table_name, &batch, &key_columns)?;
-                let num_statements = statements.len();
+                let strategy = UpdateStrategy::from_env()?;
+                let num_rows = batch.num_rows();
                 let start = Instant::now();
-                for sql in statements {
-                    conn.execute_update(&sql).map_err(|e| {
-                        anyhow::anyhow!("ADBC update execution failed for '{table_name}': {e}")
-                    })?;
+
+                match strategy {
+                    UpdateStrategy::StagingTable => {
+                        self.staging_merge_update(&mut conn, table_name, batch, &key_columns)?;
+                    }
+                    UpdateStrategy::Statement => {
+                        let statements: Vec<String> = (0..num_rows)
+                            .map(|row| {
+                                self.update_sql_for_row(table_name, &batch, row, &key_columns)
+                            })
+                            .collect::<anyhow::Result<Vec<_>>>()?;
+                        for sql in &statements {
+                            conn.execute_update(sql).map_err(|e| {
+                                anyhow::anyhow!(
+                                    "ADBC update execution failed for '{table_name}': {e}"
+                                )
+                            })?;
+                        }
+                    }
                 }
+
                 let elapsed = start.elapsed();
                 let rows_per_sec = if elapsed.as_secs_f64() > 0.0 {
-                    batch.num_rows() as f64 / elapsed.as_secs_f64()
+                    num_rows as f64 / elapsed.as_secs_f64()
                 } else {
                     0.0
                 };
                 tracing::debug!(
                     table = %table_name,
-                    rows = batch.num_rows(),
-                    num_statements,
+                    rows = num_rows,
+                    strategy = ?strategy,
                     elapsed_ms = elapsed.as_millis(),
                     rows_per_sec = format!("{rows_per_sec:.1}"),
                     "UPDATE executed"
@@ -1063,149 +1069,63 @@ mod tests {
         assert!(stmts.is_empty());
     }
 
-    // ── MERGE UPDATE tests ──────────────────────────────────────────────
+    // ── STAGING MERGE UPDATE tests ───────────────────────────────────────
 
-    fn make_update_batch() -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![
+    #[test]
+    fn staging_merge_sql_single_key() {
+        let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("name", DataType::Utf8, false),
             Field::new("value", DataType::Float64, false),
-        ]));
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int64Array::from(vec![1, 3])),
-                Arc::new(StringArray::from(vec!["alice_updated", "carol_updated"])),
-                Arc::new(arrow::array::Float64Array::from(vec![99.9, 88.8])),
-            ],
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn merge_update_single_key_all_rows() {
-        let batch = make_update_batch();
+        ]);
         let key_columns = vec!["id".to_string()];
-        let key_indices = vec![0];
-        let stmts = AdbcSink::batched_merge_update_sql(
-            r#""t""#,
-            &batch,
-            1000,
+        let sql = AdbcSink::build_staging_merge_sql(
+            r#""target""#,
+            r#""staging""#,
+            &schema,
             &key_columns,
-            &key_indices,
             '"',
-            false,
-        )
-        .unwrap();
-        assert_eq!(stmts.len(), 1);
+        );
         assert_eq!(
-            stmts[0],
-            "MERGE INTO \"t\" t \
-             USING (SELECT col1 AS \"id\", col2 AS \"name\", col3 AS \"value\" \
-             FROM VALUES (1, 'alice_updated', 99.9), (3, 'carol_updated', 88.8)) s \
+            sql,
+            "MERGE INTO \"target\" t \
+             USING \"staging\" s \
              ON t.\"id\" = s.\"id\" \
              WHEN MATCHED THEN UPDATE SET \"name\" = s.\"name\", \"value\" = s.\"value\""
         );
     }
 
     #[test]
-    fn merge_update_chunked() {
-        let batch = make_update_batch();
-        let key_columns = vec!["id".to_string()];
-        let key_indices = vec![0];
-        let stmts = AdbcSink::batched_merge_update_sql(
-            r#""t""#,
-            &batch,
-            1,
-            &key_columns,
-            &key_indices,
-            '"',
-            false,
-        )
-        .unwrap();
-        assert_eq!(stmts.len(), 2);
-        assert!(stmts[0].contains("(1, 'alice_updated', 99.9)"));
-        assert!(!stmts[0].contains("carol_updated"));
-        assert!(stmts[1].contains("(3, 'carol_updated', 88.8)"));
-        assert!(!stmts[1].contains("alice_updated"));
-    }
-
-    #[test]
-    fn merge_update_composite_key() {
-        let schema = Arc::new(Schema::new(vec![
+    fn staging_merge_sql_composite_key() {
+        let schema = Schema::new(vec![
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int32, false),
             Field::new("val", DataType::Utf8, false),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int64Array::from(vec![10, 20])),
-                Arc::new(Int32Array::from(vec![1, 2])),
-                Arc::new(StringArray::from(vec!["x", "y"])),
-            ],
-        )
-        .unwrap();
+        ]);
         let key_columns = vec!["a".to_string(), "b".to_string()];
-        let key_indices = vec![0, 1];
-        let stmts = AdbcSink::batched_merge_update_sql(
-            r#""t""#,
-            &batch,
-            1000,
-            &key_columns,
-            &key_indices,
-            '"',
-            false,
-        )
-        .unwrap();
-        assert_eq!(stmts.len(), 1);
-        assert!(stmts[0].contains(r#"ON t."a" = s."a" AND t."b" = s."b""#));
-        assert!(stmts[0].contains(r#"UPDATE SET "val" = s."val""#));
+        let sql =
+            AdbcSink::build_staging_merge_sql(r#""t""#, r#""stg""#, &schema, &key_columns, '"');
+        assert!(sql.contains(r#"ON t."a" = s."a" AND t."b" = s."b""#));
+        assert!(sql.contains(r#"UPDATE SET "val" = s."val""#));
     }
 
     #[test]
-    fn merge_update_databricks_backticks_bigint_suffix() {
-        let batch = make_update_batch();
-        let key_columns = vec!["id".to_string()];
-        let key_indices = vec![0];
-        let stmts = AdbcSink::batched_merge_update_sql(
-            "`catalog`.`schema`.`target`",
-            &batch,
-            1000,
-            &key_columns,
-            &key_indices,
-            '`',
-            true,
-        )
-        .unwrap();
-        assert_eq!(stmts.len(), 1);
-        assert!(stmts[0].starts_with("MERGE INTO `catalog`.`schema`.`target` t"));
-        // Int64 values get L suffix when bigint_suffix=true
-        assert!(stmts[0].contains("1L, 'alice_updated', 99.9"));
-        assert!(stmts[0].contains("3L, 'carol_updated', 88.8"));
-        assert!(stmts[0].contains("ON t.`id` = s.`id`"));
-        assert!(stmts[0].contains("`name` = s.`name`, `value` = s.`value`"));
-    }
-
-    #[test]
-    fn merge_update_empty_batch() {
-        let schema = Arc::new(Schema::new(vec![
+    fn staging_merge_sql_databricks_backticks() {
+        let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
-            Field::new("val", DataType::Utf8, false),
-        ]));
-        let batch = RecordBatch::new_empty(schema);
+            Field::new("name", DataType::Utf8, false),
+        ]);
         let key_columns = vec!["id".to_string()];
-        let key_indices = vec![0];
-        let stmts = AdbcSink::batched_merge_update_sql(
-            r#""t""#,
-            &batch,
-            100,
+        let sql = AdbcSink::build_staging_merge_sql(
+            "`catalog`.`schema`.`target`",
+            "`catalog`.`schema`.`staging`",
+            &schema,
             &key_columns,
-            &key_indices,
-            '"',
-            false,
-        )
-        .unwrap();
-        assert!(stmts.is_empty());
+            '`',
+        );
+        assert!(sql.starts_with("MERGE INTO `catalog`.`schema`.`target` t"));
+        assert!(sql.contains("USING `catalog`.`schema`.`staging` s"));
+        assert!(sql.contains("ON t.`id` = s.`id`"));
+        assert!(sql.contains("`name` = s.`name`"));
     }
 }
