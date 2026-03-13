@@ -145,15 +145,16 @@ fn datatype_equivalent(expected_type: &DataType, actual_type: &DataType) -> bool
                 (None, Some("UTC" | "+00:00")) | (Some("UTC" | "+00:00"), None)
             )
         }
-        // Decimal128 with same scale but different precision (e.g. DuckDB returns
-        // Decimal128(38,2) while DataFusion returns Decimal128(25,2)).  The stringified
-        // values are identical because scale controls the fractional digits.
-        (DataType::Decimal128(_, s1), DataType::Decimal128(_, s2)) => s1 == s2,
+        // Decimal128 with different precision and/or scale. Different engines
+        // may return different precision/scale for computed expressions (e.g.
+        // DuckDB Decimal128(38,4) vs Databricks Decimal128(38,0) for the same
+        // aggregation). We treat all Decimal128 types as equivalent since
+        // values are compared as strings after formatting.
+        (DataType::Decimal128(_, _), DataType::Decimal128(_, _)) => true,
         // Existing numeric and string type equivalences
         _ => matches!(
             (expected_type, actual_type),
-            (DataType::Decimal128(_, _), DataType::Decimal128(_, _))
-                | (DataType::Float32, DataType::Float64)
+            (DataType::Float32, DataType::Float64)
                 | (
                     DataType::Float64 | DataType::Int64,
                     DataType::Decimal128(_, _)
