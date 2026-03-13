@@ -706,7 +706,7 @@
             "type": "influxdb",
             "uid": "1eox324"
           },
-          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"active_connections\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"active_connections\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scenario\"] =~ /^${scenario:regex}$/)\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
           "refId": "A"
         }
       ],
@@ -801,7 +801,7 @@
             "type": "influxdb",
             "uid": "1eox324"
           },
-          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_duration_ms\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> window(every: 5m)\n  |> quantile(q: 0.99, method: \"estimate_tdigest\")\n  |> duplicate(column: \"_stop\", as: \"_time\")\n  |> window(every: inf)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "query": "from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_duration_ms\")\n     |> filter(fn: (r) => exists r[\"adapter_name\"])\n     |> filter(fn: (r) => r[\"scenario\"] =~ /^${scenario:regex}$/)\n     |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> filter(fn: (r) => r[\"_field\"] != \"count\" and r[\"_field\"] != \"sum\")\n     |> toFloat()\n     |> map(fn: (r) => ({\n         r with\n         le: if r[\"_field\"] == \"+Inf\" then 10000000.0 else float(v: r[\"_field\"])\n       }))\n     |> group(columns: [\"adapter_name\", \"scenario\", \"scale_factor\", \"_time\", \"le\"])\n     |> sum()\n     |> group(columns: [\"adapter_name\", \"scenario\", \"scale_factor\", \"_time\"])\n     |> sort(columns: [\"le\"])\n     |> cumulativeSum()\n     |> histogramQuantile(quantile: 0.99)\n     |> map(fn: (r) => ({r with legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]}))\n     |> group(columns: [\"legend\"])\n     |> sort(columns: [\"_time\"])\n     |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
           "refId": "A"
         }
       ],
@@ -896,7 +896,7 @@
             "type": "influxdb",
             "uid": "1eox324"
           },
-          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_length\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: max, createEmpty: false)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_length\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scenario\"] =~ /^${scenario:regex}$/)\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: max, createEmpty: false)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
           "refId": "A"
         }
       ],
@@ -2079,13 +2079,13 @@
     ]
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-4h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "browser",
   "title": "SpiceBench benchmark insights",
   "uid": "afdqis05ydnuod",
-  "version": 22,
+  "version": 23,
   "weekStart": ""
 }
