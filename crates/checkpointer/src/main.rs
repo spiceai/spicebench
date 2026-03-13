@@ -128,7 +128,7 @@ async fn log_table_row_counts(
                     .map(|a| a.value(0))
             })
             .unwrap_or(0);
-            tracing::info!("[checkpoint] Checkpoint {checkpoint_idx} | {table}: {count} rows");
+        tracing::info!("[checkpoint] Checkpoint {checkpoint_idx} | {table}: {count} rows");
     }
     Ok(())
 }
@@ -238,7 +238,10 @@ async fn main() -> anyhow::Result<()> {
             _extract_dir_handle = None;
             extract_path = cli.data_dir.clone();
         } else {
-            tracing::info!("Local data not found at {}, downloading from S3", cli.data_dir.display());
+            tracing::info!(
+                "Local data not found at {}, downloading from S3",
+                cli.data_dir.display()
+            );
             let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
             let tmp = tempfile::tempdir()?;
             ETLPipeline::download(archive_storage, tmp.path()).await?;

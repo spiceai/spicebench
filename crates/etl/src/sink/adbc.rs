@@ -791,7 +791,6 @@ impl AdbcSink {
              WHEN MATCHED THEN UPDATE SET {set_clause}"
         )
     }
-
 }
 
 #[async_trait]
