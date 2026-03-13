@@ -44,8 +44,10 @@ const ADBC_DELETE_BATCH_SIZE_ENV: &str = "SPICEBENCH_ADBC_DELETE_BATCH_SIZE";
 
 /// Controls how UPDATE operations are executed.
 ///
-/// - `statement`     — row-by-row `UPDATE … SET … WHERE …` statements (default)
-/// - `staging_table` — bulk ingest into temp staging table + single `MERGE INTO`
+/// - `statement`          — row-by-row `UPDATE … SET … WHERE …` statements (default)
+/// - `staging_table`      — bulk ingest into temp staging table + single `MERGE INTO`
+/// - `bulk_ingest_upsert` — bulk ingest directly into the target table (relies on the
+///                          target system's `on_conflict: upsert` or equivalent to merge)
 const ADBC_UPDATE_STRATEGY_ENV: &str = "SPICEBENCH_ADBC_UPDATE_STRATEGY";
 
 /// Strategy for executing UPDATE operations.
@@ -55,6 +57,9 @@ enum UpdateStrategy {
     Statement,
     /// Bulk ingest into a temporary staging table, then `MERGE INTO target USING staging …`.
     StagingTable,
+    /// Bulk ingest directly into the target table, relying on the target system
+    /// to handle upsert semantics (e.g. Spice Cloud `on_conflict: upsert`).
+    BulkIngestUpsert,
 }
 
 impl UpdateStrategy {
@@ -63,8 +68,9 @@ impl UpdateStrategy {
             Some(val) => match val.to_lowercase().as_str() {
                 "statement" => Ok(Self::Statement),
                 "staging_table" => Ok(Self::StagingTable),
+                "bulk_ingest_upsert" => Ok(Self::BulkIngestUpsert),
                 other => anyhow::bail!(
-                    "Unknown update strategy '{other}'. Valid values for {ADBC_UPDATE_STRATEGY_ENV}: statement, staging_table"
+                    "Unknown update strategy '{other}'. Valid values for {ADBC_UPDATE_STRATEGY_ENV}: statement, staging_table, bulk_ingest_upsert"
                 ),
             },
             None => Ok(Self::Statement),
@@ -839,6 +845,9 @@ impl Sink for AdbcSink {
                 match strategy {
                     UpdateStrategy::StagingTable => {
                         self.staging_merge_update(&mut conn, table_name, batch, &key_columns)?;
+                    }
+                    UpdateStrategy::BulkIngestUpsert => {
+                        self.ingest_insert_batch(&mut conn, table_name, batch)?;
                     }
                     UpdateStrategy::Statement => {
                         let statements: Vec<String> = (0..num_rows)
