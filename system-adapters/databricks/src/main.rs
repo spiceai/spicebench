@@ -1522,18 +1522,75 @@ impl DatabricksAdapter {
     async fn create_lakebase_pg_indexes(&self, lakebase_config: &LakebaseConfig) -> Result<()> {
         let client = self.connect_lakebase_pg().await?;
 
+        let s = &lakebase_config.schema;
         let index_stmts = [
+            // Existing indexes
             format!(
-                "CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_quantity ON \"{}\".lineitem (l_partkey, l_quantity)",
-                lakebase_config.schema
+                "CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_quantity ON \"{s}\".lineitem (l_partkey, l_quantity)"
             ),
             format!(
-                "CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_suppkey_shipdate ON \"{}\".lineitem (l_partkey, l_suppkey, l_shipdate, l_quantity)",
-                lakebase_config.schema
+                "CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_suppkey_shipdate ON \"{s}\".lineitem (l_partkey, l_suppkey, l_shipdate, l_quantity)"
             ),
             format!(
-                "CREATE INDEX IF NOT EXISTS idx_part_name_prefix ON \"{}\".part USING btree (p_name text_pattern_ops)",
-                lakebase_config.schema
+                "CREATE INDEX IF NOT EXISTS idx_part_name_prefix ON \"{s}\".part USING btree (p_name text_pattern_ops)"
+            ),
+            // Customer
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_customer_mktsegment ON \"{s}\".customer (c_mktsegment)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_customer_nation_custkey ON \"{s}\".customer (c_nationkey, c_custkey)"
+            ),
+            // Orders
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_orders_cust_orderdate ON \"{s}\".orders (o_custkey, o_orderdate)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_orders_cust_orderdate_key ON \"{s}\".orders (o_custkey, o_orderdate, o_orderkey)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_orders_orderdate_key ON \"{s}\".orders (o_orderdate, o_orderkey)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_orders_status_orderkey ON \"{s}\".orders (o_orderstatus, o_orderkey)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_orders_cust_comment ON \"{s}\".orders (o_custkey, o_comment, o_orderkey)"
+            ),
+            // Lineitem
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_lineitem_order_shipdate ON \"{s}\".lineitem (l_orderkey, l_shipdate)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_lineitem_order_supp ON \"{s}\".lineitem (l_orderkey, l_suppkey)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_lineitem_part_supp_order ON \"{s}\".lineitem (l_partkey, l_suppkey, l_orderkey)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_lineitem_supp_order_commit ON \"{s}\".lineitem (l_suppkey, l_orderkey, l_commitdate, l_receiptdate)"
+            ),
+            // Supplier
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_supplier_nationkey_suppkey ON \"{s}\".supplier (s_nationkey, s_suppkey)"
+            ),
+            // Nation
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_nation_key_name ON \"{s}\".nation (n_nationkey, n_name)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_nation_name_nationkey ON \"{s}\".nation (n_name, n_nationkey)"
+            ),
+            // Part
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_part_type_partkey ON \"{s}\".part (p_type, p_partkey)"
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_part_type_cover ON \"{s}\".part (p_type, p_partkey, p_name)"
+            ),
+            // Partsupp
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_partsupp_part_supp_cost ON \"{s}\".partsupp (ps_partkey, ps_suppkey, ps_supplycost)"
             ),
         ];
 
