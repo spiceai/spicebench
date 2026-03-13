@@ -55,6 +55,7 @@ struct SutInstruments {
     disk_write_ops: Counter<u64>,
     ingestion_rows_total: Gauge<u64>,
     ingestion_bytes_total: Gauge<u64>,
+    ingestion_rows_per_sec: Gauge<f64>,
 }
 
 fn run_metric_attributes(common_args: &CommonArgs, run_id: uuid::Uuid) -> Vec<KeyValue> {
@@ -141,7 +142,7 @@ fn record_sut_metrics(
     // Use adapter-provided rows_per_sec if available; otherwise derive it
     // from the delta in rows_ingested since the last scrape.
     if let Some(v) = response.ingestion.rows_per_sec {
-        crate::metrics::INGESTION_ROWS_PER_SEC.record(v, attributes);
+        instruments.ingestion_rows_per_sec.record(v, attributes);
     } else if let Some(current_rows) = response.ingestion.rows_ingested
         && let Some(prev_rows) = *prev_rows_ingested
         && let Some(prev_time) = *last_scrape_time
@@ -149,7 +150,9 @@ fn record_sut_metrics(
         let elapsed_secs = prev_time.elapsed().as_secs_f64();
         if elapsed_secs > 0.0 {
             let rows_per_sec = current_rows.saturating_sub(prev_rows) as f64 / elapsed_secs;
-            crate::metrics::INGESTION_ROWS_PER_SEC.record(rows_per_sec, attributes);
+            instruments
+                .ingestion_rows_per_sec
+                .record(rows_per_sec, attributes);
         }
     }
     // Update tracking state for the next scrape
@@ -654,6 +657,7 @@ pub(crate) async fn run(
             disk_write_ops: m.u64_counter("sut_disk_write_ops").build(),
             ingestion_rows_total: m.u64_gauge("ingestion_rows_total").build(),
             ingestion_bytes_total: m.u64_gauge("ingestion_bytes_total").build(),
+            ingestion_rows_per_sec: m.f64_gauge("ingestion_rows_per_sec").build(),
         };
         let sut_attributes = Arc::new(std::sync::RwLock::new(metric_attributes.clone()));
         println!("SUT metrics scraping enabled (run_id={run_id})");
