@@ -84,6 +84,16 @@ on:
         required: false
         default: '3'
         type: string
+      update_ratio:
+        description: 'Ratio of rows to update per step (0.0 to 1.0)'
+        required: false
+        default: '0'
+        type: string
+      delete_ratio:
+        description: 'Ratio of rows to delete per step (0.0 to 1.0)'
+        required: false
+        default: '0'
+        type: string
 
 jobs:
   run-data-generation:
