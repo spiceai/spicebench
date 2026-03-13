@@ -1986,7 +1986,7 @@ impl Handler for DatabricksAdapter {
                             Value::String(self.config.staging_volume_path.clone()),
                         ),
                     ]),
-                    catalog_namespace: None,
+                    catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
                     read_driver: Some((
                         AdbcDriver::Postgresql,
                         HashMap::from([("uri".to_string(), Value::String(pg_uri))]),
