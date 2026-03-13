@@ -201,7 +201,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: spiceai/adbc-databricks
-          ref: viktor/improve-databricks-bulk-insert
+          ref: spicebench
           path: adbc-databricks
 
       - name: Build databricks Go ADBC driver
