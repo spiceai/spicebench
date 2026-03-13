@@ -86,6 +86,10 @@ struct Cli {
     /// Directory to write checkpoint parquet files into
     #[arg(long, default_value = "./checkpoints")]
     checkpoint_dir: PathBuf,
+
+    /// Local directory to check for pre-extracted data before downloading from S3
+    #[arg(long, default_value = "./spicebench-data")]
+    data_dir: PathBuf,
 }
 
 #[cfg(feature = "duckdb")]
@@ -103,6 +107,30 @@ impl Cli {
             partition_columns: vec![],
         }
     }
+}
+
+/// Log the row count for each table in the DuckDB sink.
+#[cfg(feature = "duckdb")]
+async fn log_table_row_counts(
+    sink: &DuckDBSink,
+    table_names: &[String],
+    checkpoint_idx: usize,
+) -> anyhow::Result<()> {
+    for table in table_names {
+        let sql = format!("SELECT COUNT(*) AS cnt FROM {table}");
+        let batches = sink.query(&sql).await?;
+        let count: i64 = batches
+            .first()
+            .and_then(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .map(|a| a.value(0))
+            })
+            .unwrap_or(0);
+            eprintln!("[checkpoint] Checkpoint {checkpoint_idx} | {table}: {count} rows");
+    }
+    Ok(())
 }
 
 /// Run all checkpoint queries against the DuckDB sink and write each result
@@ -198,20 +226,34 @@ async fn main() -> anyhow::Result<()> {
 
         let source_config = cli.source_config();
         let version_prefix = source_config.prefix.clone();
-        let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
 
-        // Download and extract the archive to a temporary local directory.
-        let extract_dir = tempfile::tempdir()?;
-        ETLPipeline::download(archive_storage, extract_dir.path()).await?;
-        let source: Arc<dyn DataStorage> = Arc::new(FileStorage::new(extract_dir.path()));
+        // Check local directory first; download from S3 only if version.json is missing.
+        let (_extract_dir_handle, extract_path);
+        let version_json_path = cli.data_dir.join("version.json");
+        if version_json_path.exists() {
+            tracing::info!(
+                data_dir = %cli.data_dir.display(),
+                "Using pre-existing local data, skipping S3 download"
+            );
+            _extract_dir_handle = None;
+            extract_path = cli.data_dir.clone();
+        } else {
+            tracing::info!("Local data not found at {}, downloading from S3", cli.data_dir.display());
+            let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
+            let tmp = tempfile::tempdir()?;
+            ETLPipeline::download(archive_storage, tmp.path()).await?;
+            extract_path = tmp.path().to_path_buf();
+            _extract_dir_handle = Some(tmp);
+        }
+        let source: Arc<dyn DataStorage> = Arc::new(FileStorage::new(&extract_path));
 
         // Read version metadata to derive dataset config and mutations.
         let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No version.json found in extracted data at {}. Was data generation run for this version?",
-            extract_dir.path().display()
-        )
-    })?;
+            anyhow::anyhow!(
+                "No version.json found in extracted data at {}. Was data generation run for this version?",
+                extract_path.display()
+            )
+        })?;
 
         let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
         let dataset_config = version_metadata.dataset_config();
@@ -234,7 +276,7 @@ async fn main() -> anyhow::Result<()> {
             bucket = %cli.bucket,
             prefix = %cli.prefix,
             version_prefix = %version_prefix,
-            extract_dir = %extract_dir.path().display(),
+            extract_dir = %extract_path.display(),
             duckdb_path = %cli.duckdb_path.display(),
             scale_factor = version_metadata.scale_factor,
             num_steps = version_metadata.num_steps,
@@ -242,6 +284,9 @@ async fn main() -> anyhow::Result<()> {
             checkpoint_dir = %cli.checkpoint_dir.display(),
             "Starting Checkpointer"
         );
+
+        let mut table_names: Vec<String> = version_metadata.tables.keys().cloned().collect();
+        table_names.sort();
 
         pipeline.initialize().await?;
         pipeline.run(cli.checkpoint_interval_steps as usize).await?;
@@ -258,6 +303,7 @@ async fn main() -> anyhow::Result<()> {
                         checkpoint = checkpoint_idx,
                         "Pipeline paused, running checkpoint queries"
                     );
+                    log_table_row_counts(&target, &table_names, checkpoint_idx).await?;
                     run_checkpoint_queries(
                         &target,
                         &checkpoint_queries,
@@ -276,6 +322,7 @@ async fn main() -> anyhow::Result<()> {
                         checkpoint = checkpoint_idx,
                         "Pipeline completed, running final checkpoint queries"
                     );
+                    log_table_row_counts(&target, &table_names, checkpoint_idx).await?;
                     run_checkpoint_queries(
                         &target,
                         &checkpoint_queries,

@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use adbc_client::{
@@ -88,6 +89,7 @@ pub struct AdbcSink {
     pool: AdbcConnectionPool,
     target_db_catalog: Option<String>,
     target_db_schema: Option<String>,
+    row_counts: Mutex<HashMap<String, u64>>,
     /// Character used to quote SQL identifiers (e.g. '"' for ANSI, '`' for Databricks).
     identifier_quote_char: char,
     /// Whether Int64/UInt64 literals need an `L` suffix (Databricks).
@@ -130,6 +132,7 @@ impl AdbcSink {
             pool,
             target_db_catalog,
             target_db_schema,
+            row_counts: Mutex::new(HashMap::new()),
             identifier_quote_char,
             bigint_suffix,
         })
@@ -788,6 +791,7 @@ impl AdbcSink {
              WHEN MATCHED THEN UPDATE SET {set_clause}"
         )
     }
+
 }
 
 #[async_trait]
@@ -808,6 +812,18 @@ impl Sink for AdbcSink {
             .pool
             .get()
             .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
+
+        let rows_current = batch.num_rows() as u64;
+        let op_label = match &op {
+            InsertOp::Insert => "insert",
+            InsertOp::Update { .. } => "update",
+            InsertOp::Delete { .. } => "delete",
+        };
+
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
+        // if table_name == "lineitem" {
+        eprintln!("[adbc-write] {now} | {table_name} | {op_label} | rows: {rows_current}");
+        // }
 
         match op {
             InsertOp::Insert => {
@@ -881,6 +897,24 @@ impl Sink for AdbcSink {
                 );
             }
         }
+
+        let rows_total = {
+            let mut counts = self.row_counts.lock().unwrap();
+            let total = counts.entry(table_name.to_string()).or_insert(0);
+            match op_label {
+                "insert" => *total += rows_current,
+                "delete" => *total = total.saturating_sub(rows_current),
+                _ => {} // updates don't change row count
+            }
+            *total
+        };
+
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
+        // if table_name == "lineitem" {
+        eprintln!(
+            "[adbc] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
+        );
+        // }
 
         Ok(())
     }

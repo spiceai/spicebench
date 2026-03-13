@@ -1791,6 +1791,14 @@ async fn run_pipeline(
                         }
                     };
 
+                let source_rows: usize = source_batches.iter().map(|b| b.num_rows()).sum();
+                if table_name == "lineitem" {
+                    eprintln!(
+                        "!!!!!!!!!!!!!!! [etl] table={table_name} batch_id={batch_id} source_batches={} source_rows={source_rows} consumed_work_units={consumed_work_units}",
+                        source_batches.len(),
+                    );
+                }
+
                 if source_batches.is_empty() {
                     debug!(
                         table = %table_name,
