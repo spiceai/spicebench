@@ -1,2057 +1,2091 @@
 {
-    "annotations": {
-        "list": [
-            {
-                "builtIn": 1,
-                "datasource": {
-                    "type": "grafana",
-                    "uid": "-- Grafana --"
-                },
-                "enable": true,
-                "hide": true,
-                "iconColor": "rgba(0, 211, 255, 1)",
-                "name": "Annotations & Alerts",
-                "type": "dashboard"
-            }
-        ]
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Operational benchmark dashboard for end-to-end performance, client behavior, ingestion throughput, and system resource utilization.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 79,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 2,
+      "panels": [],
+      "title": "Benchmark summary",
+      "type": "row"
     },
-    "editable": true,
-    "fiscalYearStartMonth": 0,
-    "graphTooltip": 0,
-    "id": null,
-    "links": [],
-    "panels": [
-        {
-            "collapsed": false,
-            "gridPos": {
-                "h": 1,
-                "w": 24,
-                "x": 0,
-                "y": 0
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Wall-clock benchmark duration by adapter and scenario.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
             },
-            "id": 2,
-            "panels": [],
-            "title": "Benchmark summary",
-            "description": "Top-level benchmark outcomes across duration, throughput, and latency.",
-            "type": "row"
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
         },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "ms"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 0,
-                "y": 1
-            },
-            "id": 1,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"test_duration_ms\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Benchmark duration (ms)",
-            "description": "Wall-clock benchmark duration by adapter and scenario.",
-            "type": "timeseries"
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "ops"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 8,
-                "y": 1
-            },
-            "id": 15,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"queries_per_sec\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Throughput (queries/sec)",
-            "description": "Observed query throughput over time.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "ms"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 16,
-                "y": 1
-            },
-            "id": 17,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"e2e_latency_ms\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> toFloat()\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> window(every: 5m)\n  |> quantile(q: 0.99, method: \"estimate_tdigest\")\n  |> duplicate(column: \"_stop\", as: \"_time\")\n  |> window(every: inf)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "End-to-end latency P99 (ms)",
-            "description": "99th percentile end-to-end request latency.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "ms"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 0,
-                "y": 9
-            },
-            "id": 4,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"p99_duration_ms\")\n  |> filter(fn: (r) => exists r[\"query_name\"])\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\", \"_time\"])\n  |> sum(column: \"_value\")\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Query latency P99 — overall (ms)",
-            "description": "Sum of per-query P99 latencies across the full query set (for example Q1..Q22).",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "ms"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 8,
-                "y": 9
-            },
-            "id": 3,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"p99_duration_ms\")\n  |> filter(fn: (r) => exists r[\"query_name\"])\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"query_name\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Query latency P99 — by query (ms)",
-            "description": "Per-query P99 latency to highlight slow or regressing queries.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "short"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 16,
-                "y": 9
-            },
-            "id": 18,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_status\")\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"],\n      _value: 1 - r._value\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: sum, createEmpty: false)\n  |> fill(column: \"_value\", value: 0)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Failed queries (count)",
-            "description": "Number of failed query executions over time.",
-            "type": "timeseries"
-        },
-        {
-            "collapsed": false,
-            "gridPos": {
-                "h": 1,
-                "w": 24,
-                "x": 0,
-                "y": 17
-            },
-            "id": 19,
-            "panels": [],
-            "title": "Client queue & concurrency",
-            "description": "Client-side concurrency and queueing pressure signals.",
-            "type": "row"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "short"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 0,
-                "y": 18
-            },
-            "id": 20,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"active_connections\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => \"${scale_factor}\" == \"All\" or (exists r[\"scale_factor\"] and r[\"scale_factor\"] == \"${scale_factor}\"))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Active clients (count)",
-            "description": "Number of active concurrent client connections.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "ms"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 8,
-                "y": 18
-            },
-            "id": 21,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_duration_ms\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => \"${scale_factor}\" == \"All\" or (exists r[\"scale_factor\"] and r[\"scale_factor\"] == \"${scale_factor}\"))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> window(every: 5m)\n  |> quantile(q: 0.99, method: \"estimate_tdigest\")\n  |> duplicate(column: \"_stop\", as: \"_time\")\n  |> window(every: inf)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Queue wait P99 (ms)",
-            "description": "99th percentile time spent waiting in the query queue.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "short"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 16,
-                "y": 18
-            },
-            "id": 22,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_length\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => \"${scale_factor}\" == \"All\" or (exists r[\"scale_factor\"] and r[\"scale_factor\"] == \"${scale_factor}\"))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: max, createEmpty: false)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Queue depth (max)",
-            "description": "Maximum queued query count within each aggregation window.",
-            "type": "timeseries"
-        },
-        {
-            "collapsed": false,
-            "gridPos": {
-                "h": 1,
-                "w": 24,
-                "x": 0,
-                "y": 26
-            },
-            "id": 23,
-            "panels": [],
-            "title": "Ingestion performance",
-            "description": "Dataset ingestion volume and sustained ingestion rate.",
-            "type": "row"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "ops"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 0,
-                "y": 27
-            },
-            "id": 24,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"ingestion_rows_total\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => \"${scale_factor}\" == \"All\" or (exists r[\"scale_factor\"] and r[\"scale_factor\"] == \"${scale_factor}\"))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Ingested rows (total)",
-            "description": "Total ingested row count over time.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "decbytes"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 8,
-                "y": 27
-            },
-            "id": 25,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"ingestion_bytes_total\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => \"${scale_factor}\" == \"All\" or (exists r[\"scale_factor\"] and r[\"scale_factor\"] == \"${scale_factor}\"))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Ingested bytes (total)",
-            "description": "Total ingested data volume in bytes.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "short"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 8,
-                "x": 16,
-                "y": 27
-            },
-            "id": 26,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"ingestion_rows_per_sec\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => \"${scenario}\" == \"All\" or r[\"scenario\"] == \"${scenario}\")\n  |> filter(fn: (r) => \"${scale_factor}\" == \"All\" or (exists r[\"scale_factor\"] and r[\"scale_factor\"] == \"${scale_factor}\"))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Ingestion rate (rows/sec)",
-            "description": "Current ingestion throughput in rows per second.",
-            "type": "timeseries"
-        },
-        {
-            "collapsed": false,
-            "gridPos": {
-                "h": 1,
-                "w": 24,
-                "x": 0,
-                "y": 35
-            },
-            "id": 5,
-            "panels": [],
-            "title": "System resource utilization",
-            "description": "CPU and memory usage reported by the system adapter.",
-            "type": "row"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "percent"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 36
-            },
-            "id": 6,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_cpu_usage_percent\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "CPU utilization (%)",
-            "description": "System CPU usage percentage over time.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "decbytes"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 36
-            },
-            "id": 7,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_memory_usage_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Memory usage over time (bytes)",
-            "description": "Raw memory usage sampled over time.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "decbytes"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 44
-            },
-            "id": 9,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_memory_usage_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: median, createEmpty: false)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Memory usage median (bytes)",
-            "description": "Median memory usage across each aggregation window.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "decbytes"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 44
-            },
-            "id": 16,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_memory_usage_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: max, createEmpty: false)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Memory usage peak (bytes)",
-            "description": "Peak memory usage across each aggregation window.",
-            "type": "timeseries"
-        },
-        {
-            "collapsed": false,
-            "gridPos": {
-                "h": 1,
-                "w": 24,
-                "x": 0,
-                "y": 52
-            },
-            "id": 10,
-            "panels": [],
-            "title": "Disk I/O utilization",
-            "description": "Disk throughput and IOPS characteristics.",
-            "type": "row"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "decbytes"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 53
-            },
-            "id": 8,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_disk_read_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> max(column: \"_value\")\n  |> keep(columns: [\"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Disk read volume (bytes)",
-            "description": "Maximum observed disk read bytes.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "decbytes"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 53
-            },
-            "id": 12,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_disk_write_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> max(column: \"_value\")\n  |> keep(columns: [\"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Disk write volume (bytes)",
-            "description": "Maximum observed disk write bytes.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "iops"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 61
-            },
-            "id": 13,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_disk_read_iops\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> max(column: \"_value\")\n  |> keep(columns: [\"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Disk read IOPS",
-            "description": "Maximum observed disk read operations per second.",
-            "type": "timeseries"
-        },
-        {
-            "datasource": {
-                "type": "influxdb",
-                "uid": "1eox324"
-            },
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "palette-classic"
-                    },
-                    "custom": {
-                        "axisBorderShow": false,
-                        "axisCenteredZero": false,
-                        "axisColorMode": "text",
-                        "axisLabel": "",
-                        "axisPlacement": "auto",
-                        "barAlignment": 0,
-                        "barWidthFactor": 0.6,
-                        "drawStyle": "line",
-                        "fillOpacity": 0,
-                        "gradientMode": "none",
-                        "hideFrom": {
-                            "legend": false,
-                            "tooltip": false,
-                            "viz": false
-                        },
-                        "insertNulls": false,
-                        "lineInterpolation": "linear",
-                        "lineWidth": 1,
-                        "pointSize": 5,
-                        "scaleDistribution": {
-                            "type": "linear"
-                        },
-                        "showPoints": "auto",
-                        "spanNulls": false,
-                        "stacking": {
-                            "group": "A",
-                            "mode": "none"
-                        },
-                        "thresholdsStyle": {
-                            "mode": "off"
-                        }
-                    },
-                    "mappings": [],
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 80
-                            }
-                        ]
-                    },
-                    "unit": "iops"
-                },
-                "overrides": []
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 61
-            },
-            "id": 14,
-            "options": {
-                "legend": {
-                    "calcs": [],
-                    "displayMode": "list",
-                    "placement": "bottom",
-                    "showLegend": true
-                },
-                "tooltip": {
-                    "mode": "single",
-                    "sort": "none"
-                }
-            },
-            "pluginVersion": "11.3.1",
-            "targets": [
-                {
-                    "datasource": {
-                        "type": "influxdb",
-                        "uid": "1eox324"
-                    },
-                    "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_disk_write_iops\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> max(column: \"_value\")\n  |> keep(columns: [\"_value\", \"legend\"])",
-                    "refId": "A"
-                }
-            ],
-            "title": "Disk write IOPS",
-            "description": "Maximum observed disk write operations per second.",
-            "type": "timeseries"
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
         }
-    ],
-    "preload": false,
-    "schemaVersion": 40,
-    "tags": [],
-    "templating": {
-        "list": [
-            {
-                "current": {
-                    "text": "All",
-                    "value": "All"
-                },
-                "datasource": {
-                    "type": "influxdb",
-                    "uid": "1eox324"
-                },
-                "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"benchmarks-telemetry\",\n  tag: \"scenario\",\n  predicate: (r) => r.type == \"spicebench\",\n  start: -30d\n)",
-                "hide": 0,
-                "includeAll": true,
-                "label": "Scenario",
-                "multi": false,
-                "name": "scenario",
-                "options": [],
-                "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"benchmarks-telemetry\",\n  tag: \"scenario\",\n  predicate: (r) => r.type == \"spicebench\",\n  start: -30d\n)",
-                "refresh": 1,
-                "regex": "",
-                "sort": 1,
-                "type": "query"
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"test_duration_ms\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Benchmark duration (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Observed query throughput over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
             },
-            {
-                "current": {
-                    "text": "All",
-                    "value": "All"
-                },
-                "datasource": {
-                    "type": "influxdb",
-                    "uid": "1eox324"
-                },
-                "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"benchmarks-telemetry\",\n  tag: \"scale_factor\",\n  predicate: (r) => r.type == \"spicebench\",\n  start: -30d\n)",
-                "hide": 0,
-                "includeAll": true,
-                "label": "Scale Factor",
-                "multi": false,
-                "name": "scale_factor",
-                "options": [],
-                "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"benchmarks-telemetry\",\n  tag: \"scale_factor\",\n  predicate: (r) => r.type == \"spicebench\",\n  start: -30d\n)",
-                "refresh": 1,
-                "regex": "",
-                "sort": 1,
-                "type": "query"
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
-        ]
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 1
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"queries_per_sec\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Throughput (queries/sec)",
+      "type": "timeseries"
     },
-    "time": {
-        "from": "now-6h",
-        "to": "now"
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "99th percentile end-to-end request latency.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"e2e_latency_ms\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> toFloat()\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> window(every: 5m)\n  |> quantile(q: 0.99, method: \"estimate_tdigest\")\n  |> duplicate(column: \"_stop\", as: \"_time\")\n  |> window(every: inf)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "End-to-end latency P99 (ms)",
+      "type": "timeseries"
     },
-    "timepicker": {},
-    "timezone": "browser",
-    "title": "SpiceBench benchmark insights",
-    "description": "Operational benchmark dashboard for end-to-end performance, client behavior, ingestion throughput, and system resource utilization.",
-    "uid": "afdqis05ydnuod",
-    "version": 16,
-    "weekStart": ""
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Sum of per-query P99 latencies across the full query set (for example Q1..Q22).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 9
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"p99_duration_ms\")\n  |> filter(fn: (r) => exists r[\"query_name\"])\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\", \"_time\"])\n  |> sum(column: \"_value\")\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Query latency P99 — overall (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Per-query P99 latency to highlight slow or regressing queries.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 9
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"p99_duration_ms\")\n  |> filter(fn: (r) => exists r[\"query_name\"])\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"query_name\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Query latency P99 — by query (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Number of failed query executions over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 9
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_status\")\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"],\n      _value: 1 - r._value\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: sum, createEmpty: false)\n  |> fill(column: \"_value\", value: 0)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Failed queries (count)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "id": 19,
+      "panels": [],
+      "title": "Client queue & concurrency",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Number of active concurrent client connections.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 18
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"active_connections\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scenario\"] =~ /^${scenario:regex}$/)\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Active clients (count)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "99th percentile time spent waiting in the query queue.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 18
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_duration_ms\")\n     |> filter(fn: (r) => exists r[\"adapter_name\"])\n     |> filter(fn: (r) => r[\"scenario\"] =~ /^${scenario:regex}$/)\n     |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> filter(fn: (r) => r[\"_field\"] != \"count\" and r[\"_field\"] != \"sum\")\n     |> toFloat()\n     |> map(fn: (r) => ({\n         r with\n         le: if r[\"_field\"] == \"+Inf\" then 10000000.0 else float(v: r[\"_field\"])\n       }))\n     |> group(columns: [\"adapter_name\", \"scenario\", \"scale_factor\", \"_time\", \"le\"])\n     |> sum()\n     |> group(columns: [\"adapter_name\", \"scenario\", \"scale_factor\", \"_time\"])\n     |> sort(columns: [\"le\"])\n     |> cumulativeSum()\n     |> histogramQuantile(quantile: 0.99)\n     |> map(fn: (r) => ({r with legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]}))\n     |> group(columns: [\"legend\"])\n     |> sort(columns: [\"_time\"])\n     |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Queue wait P99 (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Maximum queued query count within each aggregation window.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 18
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "from(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"query_queue_length\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => r[\"scenario\"] =~ /^${scenario:regex}$/)\n  |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => \"${outcome}\" == \"All\" or r[\"outcome\"] == \"${outcome}\")\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> aggregateWindow(every: 5m, fn: max, createEmpty: false)\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Queue depth (max)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "id": 23,
+      "panels": [],
+      "title": "Ingestion performance",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Total ingested row count over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 27
+      },
+      "id": 24,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => r[\"_measurement\"] == \"ingestion_rows_total\")\n     |> filter(fn: (r) => exists r[\"adapter_name\"])\n     |> filter(fn: (r) => exists r[\"scenario\"] and r[\"scenario\"] =~ /^${scenario:regex}$/)\n     |> filter(fn: (r) => exists r[\"scale_factor\"] and r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n     |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n     |> map(fn: (r) => ({\n       r with\n         legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"run_id\"]\n       }))\n     |> group(columns: [\"legend\"])\n     |> sort(columns: [\"_time\"])\n     |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Ingested rows (total)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Total ingested data volume in bytes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 27
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"ingestion_bytes_total\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => exists r[\"scenario\"] and r[\"scenario\"] =~ /^${scenario:regex}$/)\n  |> filter(fn: (r) => exists r[\"scale_factor\"] and r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"run_id\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Ingested bytes (total)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Current ingestion throughput in rows per second.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 27
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"ingestion_rows_per_sec\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => exists r[\"scenario\"] and r[\"scenario\"] =~ /^${scenario:regex}$/)\n  |> filter(fn: (r) => exists r[\"scale_factor\"] and r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"run_id\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Ingestion rate (rows/sec)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "id": 5,
+      "panels": [],
+      "title": "System resource utilization",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "System CPU usage percentage over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => exists r[\"run_id\"])\n    |> filter(fn: (r) => r[\"_measurement\"] == \"sut_cpu_usage_percent\")\n    |> filter(fn: (r) => exists r[\"adapter_name\"])\n    |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n    |> map(fn: (r) => ({\n      r with\n        legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]  + \" - \" + r[\"run_id\"]\n      }))\n    |> group(columns: [\"legend\"])\n    |> keep(columns: [\"_value\", \"_time\", \"legend\"])\n    |> aggregateWindow(every: 30s, fn: last, createEmpty: false)\n    |> derivative(unit: 1s, nonNegative: true)",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU utilization (%)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Raw memory usage sampled over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => exists r[\"run_id\"])\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_memory_usage_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"run_id\"]\n    }))\n  |> group(columns: [\"legend\"])\n  |> sort(columns: [\"_time\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])\n  |> aggregateWindow(every: 30s, fn: last, createEmpty: false)",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory usage over time (bytes)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Median memory usage across each aggregation window.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_memory_usage_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => exists r[\"run_id\"])\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n      r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"run_id\"]\n  }))\n  |> group(columns: [\"legend\"])\n  |> window(every: 1h)        // or any window you want\n  |> median(column: \"_value\") \n  |> duplicate(column: \"_stop\", as: \"_time\")  // restore timestamp from window end\n  |> window(every: inf)       // unwindow to get one table\n  |> keep(columns: [\"_time\", \"legend\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory usage median (bytes)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Peak memory usage across each aggregation window.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => exists r[\"run_id\"])\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_memory_usage_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n      r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"run_id\"]\n  }))\n  |> group(columns: [\"legend\"])\n  |> window(every: 1h)        // or any window you want\n  |> max(column: \"_value\") \n  |> duplicate(column: \"_stop\", as: \"_time\")  // restore timestamp from window end\n  |> window(every: inf)       // unwindow to get one table\n  |> keep(columns: [\"_time\", \"legend\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory usage peak (bytes)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 52
+      },
+      "id": 10,
+      "panels": [],
+      "title": "Disk I/O utilization",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Maximum observed disk read bytes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 53
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => exists r[\"run_id\"])\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_disk_read_bytes\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] + \" - \" + r[\"run_id\"] \n    }))\n  |> group(columns: [\"legend\"])\n  |> keep(columns: [\"_value\", \"_time\", \"legend\"])\n  |> aggregateWindow(every: 30s, fn: last, createEmpty: false)\n  |> derivative(unit: 1s, nonNegative: true)",
+          "refId": "A"
+        }
+      ],
+      "title": "Disk read volume (bytes)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Maximum observed disk write bytes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 53
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_disk_write_bytes\")\n  |> filter(fn: (r) => exists r[\"run_id\"])\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]  + \" - \" + r[\"run_id\"] \n    }))\n  |> group(columns: [\"legend\"])\n  |> keep(columns: [\"_value\", \"_time\", \"legend\"])\n  |> aggregateWindow(every: 30s, fn: last, createEmpty: false)\n  |> derivative(unit: 1s, nonNegative: true)",
+          "refId": "A"
+        }
+      ],
+      "title": "Disk write volume (bytes)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Maximum observed disk read operations per second.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "iops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 61
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => exists r[\"run_id\"])\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_disk_read_ops\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]  + \" - \" + r[\"run_id\"] \n    }))\n  |> group(columns: [\"legend\"])\n  |> keep(columns: [\"_time\", \"_value\", \"legend\"])\n  |> aggregateWindow(every: 30s, fn: last, createEmpty: false)\n  |> derivative(unit: 1s, nonNegative: true)",
+          "refId": "A"
+        }
+      ],
+      "title": "Disk read IOPS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Maximum observed disk write operations per second.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "iops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 61
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n     |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n     |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n     |> filter(fn: (r) => exists r[\"run_id\"])\n     |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n     |> keep(columns: [\"run_id\"])\n     |> group()\n     |> distinct(column: \"run_id\")\n     |> findColumn(fn: (key) => true, column: \"_value\")\n\nfrom(bucket: \"benchmarks-telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n  |> filter(fn: (r) => exists r[\"run_id\"])\n  |> filter(fn: (r) => r[\"_measurement\"] == \"sut_disk_write_ops\")\n  |> filter(fn: (r) => exists r[\"adapter_name\"])\n  |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n  |> map(fn: (r) => ({\n    r with\n      legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"]  + \" - \" + r[\"run_id\"] \n    }))\n  |> group(columns: [\"legend\"])\n  |> keep(columns: [\"_value\", \"_time\", \"legend\"])\n  |> aggregateWindow(every: 30s, fn: last, createEmpty: false)\n  |> derivative(unit: 1s, nonNegative: true)",
+          "refId": "A"
+        }
+      ],
+      "title": "Disk write IOPS",
+      "type": "timeseries"
+    }
+  ],
+  "preload": false,
+  "schemaVersion": 40,
+  "tags": [],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "influxdb",
+          "uid": "1eox324"
+        },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"benchmarks-telemetry\",\n  tag: \"scenario\",\n  predicate: (r) => r.type == \"spicebench\",\n  start: -30d\n)",
+        "includeAll": true,
+        "label": "Scenario",
+        "name": "scenario",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"benchmarks-telemetry\",\n  tag: \"scenario\",\n  predicate: (r) => r.type == \"spicebench\",\n  start: -30d\n)",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "influxdb",
+          "uid": "1eox324"
+        },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"benchmarks-telemetry\",\n  tag: \"scale_factor\",\n  predicate: (r) => r.type == \"spicebench\",\n  start: -30d\n)",
+        "includeAll": true,
+        "label": "Scale Factor",
+        "name": "scale_factor",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"benchmarks-telemetry\",\n  tag: \"scale_factor\",\n  predicate: (r) => r.type == \"spicebench\",\n  start: -30d\n)",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": "All",
+          "value": "All"
+        },
+        "description": "Filter runs on the dashboard based on the final outcome.",
+        "label": "Outcome",
+        "name": "outcome",
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "All"
+          },
+          {
+            "selected": false,
+            "text": "success",
+            "value": "success"
+          },
+          {
+            "selected": false,
+            "text": "query_failure",
+            "value": "query_failure"
+          },
+          {
+            "selected": false,
+            "text": "pipeline_failure",
+            "value": "pipeline_failure"
+          },
+          {
+            "selected": false,
+            "text": "validation_timeout",
+            "value": "validation_timeout"
+          },
+          {
+            "selected": false,
+            "text": "cancelled",
+            "value": "cancelled"
+          }
+        ],
+        "query": "All,success,query_failure,pipeline_failure,validation_timeout,cancelled",
+        "type": "custom"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-4h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SpiceBench benchmark insights",
+  "uid": "afdqis05ydnuod",
+  "version": 23,
+  "weekStart": ""
 }

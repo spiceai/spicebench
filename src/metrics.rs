@@ -100,16 +100,6 @@ pub static MEDIAN_MEMORY_USAGE: LazyLock<Gauge<f64>> = LazyLock::new(|| {
         .build()
 });
 
-// --- Ingestion metrics ---
-
-pub static INGESTION_ROWS_PER_SEC: LazyLock<Gauge<f64>> = LazyLock::new(|| {
-    meter()
-        .f64_gauge("ingestion_rows_per_sec")
-        .with_description("Sustained ingestion throughput in rows per second.")
-        .with_unit("rows/s")
-        .build()
-});
-
 // --- Query throughput ---
 
 pub static QUERIES_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
