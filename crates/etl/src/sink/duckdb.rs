@@ -405,7 +405,7 @@ impl Sink for DuckDBSink {
             *total
         };
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        eprintln!(
+        tracing::info!(
             "[duckdb] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
         );
 
