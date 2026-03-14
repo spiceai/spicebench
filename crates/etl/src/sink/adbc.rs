@@ -226,7 +226,12 @@ impl AdbcSink {
         parts.join(".")
     }
 
-    fn create_table_sql(&self, table_name: &str, schema: &Schema) -> anyhow::Result<String> {
+    fn create_table_sql(
+        &self,
+        table_name: &str,
+        schema: &Schema,
+        partition_by: Vec<String>,
+    ) -> anyhow::Result<String> {
         let columns = schema
             .fields()
             .iter()
@@ -239,8 +244,12 @@ impl AdbcSink {
             .collect::<anyhow::Result<Vec<_>>>()?
             .join(", ");
 
+        let partition_clause = (!partition_by.is_empty())
+            .then(|| format!("PARTITION BY ({})", partition_by.join(", ")))
+            .unwrap_or_default();
+
         Ok(format!(
-            "CREATE TABLE IF NOT EXISTS {} ({columns})",
+            "CREATE TABLE IF NOT EXISTS {} ({columns}) {partition_clause}",
             self.target_table_identifier(table_name)
         ))
     }
@@ -249,16 +258,16 @@ impl AdbcSink {
         &self,
         datasets: &HashMap<String, DatasetConfig>,
     ) -> anyhow::Result<()> {
-        let mut statements = Vec::with_capacity(datasets.len());
-        let mut table_names: Vec<_> = datasets.keys().cloned().collect();
-        table_names.sort();
-
-        for table_name in table_names {
-            let config = datasets.get(&table_name).ok_or_else(|| {
-                anyhow::anyhow!("Missing dataset config for table '{table_name}'")
-            })?;
-            statements.push(self.create_table_sql(&table_name, config.schema.as_ref())?);
-        }
+        let statements = datasets
+            .iter()
+            .map(|(table_name, config)| {
+                self.create_table_sql(
+                    &table_name,
+                    config.schema.as_ref(),
+                    config.primary_key_columns,
+                )
+            })
+            .collect::<Result<Vec<String>, anyhow::Error>>()?;
 
         let mut conn = self
             .pool
@@ -801,7 +810,7 @@ impl Sink for AdbcSink {
         _batch_id: u64,
         batch: RecordBatch,
         op: InsertOp,
-        _partition_columns: Vec<String>,
+        partition_columns: Vec<String>,
     ) -> anyhow::Result<()> {
         if batch.num_rows() == 0 {
             return Ok(());
