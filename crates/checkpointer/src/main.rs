@@ -105,6 +105,30 @@ impl Cli {
     }
 }
 
+/// Log the row count for each table in the DuckDB sink.
+#[cfg(feature = "duckdb")]
+async fn log_table_row_counts(
+    sink: &DuckDBSink,
+    table_names: &[String],
+    checkpoint_idx: usize,
+) -> anyhow::Result<()> {
+    for table in table_names {
+        let sql = format!("SELECT COUNT(*) AS cnt FROM {table}");
+        let batches = sink.query(&sql).await?;
+        let count: i64 = batches
+            .first()
+            .and_then(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .map(|a| a.value(0))
+            })
+            .unwrap_or(0);
+        tracing::info!("[checkpoint] Checkpoint {checkpoint_idx} | {table}: {count} rows");
+    }
+    Ok(())
+}
+
 /// Run all checkpoint queries against the DuckDB sink and write each result
 /// set to a parquet file at `<checkpoint_dir>/<checkpoint_idx>/<query_idx>.parquet`.
 #[cfg(feature = "duckdb")]
@@ -207,11 +231,11 @@ async fn main() -> anyhow::Result<()> {
 
         // Read version metadata to derive dataset config and mutations.
         let version_metadata = source.read_version_metadata().await?.ok_or_else(|| {
-        anyhow::anyhow!(
+            anyhow::anyhow!(
             "No version.json found in extracted data at {}. Was data generation run for this version?",
             extract_dir.path().display()
         )
-    })?;
+        })?;
 
         let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
         let dataset_config = version_metadata.dataset_config();
@@ -243,6 +267,9 @@ async fn main() -> anyhow::Result<()> {
             "Starting Checkpointer"
         );
 
+        let mut table_names: Vec<String> = version_metadata.tables.keys().cloned().collect();
+        table_names.sort();
+
         pipeline.initialize().await?;
         pipeline.run(cli.checkpoint_interval_steps as usize).await?;
 
@@ -258,6 +285,7 @@ async fn main() -> anyhow::Result<()> {
                         checkpoint = checkpoint_idx,
                         "Pipeline paused, running checkpoint queries"
                     );
+                    log_table_row_counts(&target, &table_names, checkpoint_idx).await?;
                     run_checkpoint_queries(
                         &target,
                         &checkpoint_queries,
@@ -276,6 +304,7 @@ async fn main() -> anyhow::Result<()> {
                         checkpoint = checkpoint_idx,
                         "Pipeline completed, running final checkpoint queries"
                     );
+                    log_table_row_counts(&target, &table_names, checkpoint_idx).await?;
                     run_checkpoint_queries(
                         &target,
                         &checkpoint_queries,

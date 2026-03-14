@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -35,6 +35,7 @@ use super::{InsertOp, Sink};
 pub struct DuckDBSink {
     conn: Arc<Mutex<duckdb::Connection>>,
     created_tables: TokioMutex<HashSet<String>>,
+    row_counts: Mutex<HashMap<String, u64>>,
 }
 
 impl DuckDBSink {
@@ -45,6 +46,7 @@ impl DuckDBSink {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             created_tables: TokioMutex::new(HashSet::new()),
+            row_counts: Mutex::new(HashMap::new()),
         })
     }
 
@@ -389,6 +391,23 @@ impl Sink for DuckDBSink {
             let mut created = self.created_tables.lock().await;
             created.insert(table_name.to_string());
         }
+
+        let rows_current = num_rows as u64;
+        let op_label = match &op {
+            InsertOp::Insert => "insert",
+            InsertOp::Update { .. } => "update",
+            InsertOp::Delete { .. } => "delete",
+        };
+        let rows_total = {
+            let mut counts = self.row_counts.lock().unwrap();
+            let total = counts.entry(table_name.to_string()).or_insert(0);
+            *total += rows_current;
+            *total
+        };
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
+        tracing::info!(
+            "[duckdb] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
+        );
 
         Ok(())
     }
