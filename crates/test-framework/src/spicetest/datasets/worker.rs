@@ -24,8 +24,7 @@ use std::{
 use anyhow::Result;
 use arrow::array::RecordBatch;
 use dashmap::DashMap;
-use futures::StreamExt;
-use futures::{FutureExt, TryStreamExt, future::BoxFuture, stream::FuturesUnordered};
+use futures::TryStreamExt;
 use indicatif::ProgressBar;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -44,9 +43,7 @@ use crate::{
 };
 
 use super::EndCondition;
-use super::checkpoint_validation::{
-    QueryValidationOutcome, ValidationCommand, ValidationStatus, ValidationWorkerHandles,
-};
+use super::checkpoint_validation::{ValidationStatus, ValidationWorkerHandles};
 
 static QUERY_QUEUE_LENGTH: LazyLock<Gauge<u64>> = LazyLock::new(|| {
     meter()
@@ -64,236 +61,39 @@ static QUERY_QUEUE_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
         .build()
 });
 
-static CHECKPOINT_IN_FLIGHT_QUERIES: LazyLock<Gauge<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_gauge("checkpoint_in_flight_queries")
-        .with_description("In-flight query count while checkpoint validation window is active")
-        .with_unit("queries")
-        .build()
-});
-
-/// Mutable state for checkpoint-based results validation.
+/// Tracks query-set iteration counts and publishes them to the load runner.
 ///
-/// Held only by worker 0 when validation handles are configured. Tracks the
-/// current checkpoint data and accumulated per-query outcomes.
-struct CheckpointValidationState {
-    /// Whether checkpoint validation is currently enabled.
-    active: bool,
-    /// The checkpoint index for the current validation window.
-    checkpoint_idx: usize,
-    /// Expected results keyed by query name.
-    expected_results: HashMap<Arc<str>, Vec<RecordBatch>>,
-    /// Per-query validation outcomes accumulated during this window.
-    outcomes: HashMap<Arc<str>, QueryValidationOutcome>,
-    /// Number of complete query-set iterations since validation was enabled.
+/// Held only by worker 0 when validation handles are configured. The load
+/// runner polls `completed_iterations` to decide when enough iterations
+/// have been recorded after ETL completion.
+struct IterationTracker {
+    /// Number of complete query-set iterations.
     completed_iterations: usize,
     /// Sender for publishing validation status updates.
     status_tx: Arc<tokio::sync::watch::Sender<ValidationStatus>>,
-    /// Receiver for validation commands from the load runner.
-    command_rx: tokio::sync::watch::Receiver<Option<ValidationCommand>>,
-    /// Per-query latest validation result in the current iteration window.
-    /// Cleared each time an iteration boundary is detected.
-    current_iteration_results: HashMap<Arc<str>, bool>,
-    /// Set to `true` once a complete iteration finishes with every query
-    /// passing. Sticky — once set, stays `true` for the validation window.
-    converged: bool,
-    /// The instant at which the first query passed in the current
-    /// (non-converged) iteration.  Reset at each iteration boundary.
-    first_pass_instant: Option<Instant>,
 }
 
-impl CheckpointValidationState {
+impl IterationTracker {
     fn new(handles: ValidationWorkerHandles) -> Self {
         Self {
-            active: false,
-            checkpoint_idx: 0,
-            expected_results: HashMap::new(),
-            outcomes: HashMap::new(),
             completed_iterations: 0,
             status_tx: handles.status_tx,
-            command_rx: handles.command_rx,
-            current_iteration_results: HashMap::new(),
-            converged: false,
-            first_pass_instant: None,
-        }
-    }
-
-    /// Check for new commands, returning true if the validation state changed.
-    fn poll_commands(&mut self) -> bool {
-        // Check if there's a new command without blocking
-        if !self.command_rx.has_changed().unwrap_or(false) {
-            return false;
-        }
-
-        let command = self.command_rx.borrow_and_update().clone();
-        match command {
-            Some(ValidationCommand::Enable {
-                checkpoint_idx,
-                expected_results,
-            }) => {
-                self.active = true;
-                self.checkpoint_idx = checkpoint_idx;
-                self.expected_results = expected_results;
-                self.outcomes.clear();
-                self.completed_iterations = 0;
-                self.current_iteration_results.clear();
-                self.converged = false;
-                self.first_pass_instant = None;
-                eprintln!(
-                    "Checkpoint validation enabled for checkpoint {}",
-                    checkpoint_idx
-                );
-                self.publish_status();
-                true
-            }
-            Some(ValidationCommand::Disable) => {
-                self.active = false;
-                self.expected_results.clear();
-                self.outcomes.clear();
-                self.current_iteration_results.clear();
-                self.converged = false;
-                self.first_pass_instant = None;
-                eprintln!("Checkpoint validation disabled");
-                let _ = self.status_tx.send(ValidationStatus::Inactive);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Validate query results against the checkpoint expected data.
-    ///
-    /// Returns `None` if no expected data exists for the given query,
-    /// or `Some(result)` with the validation outcome.
-    fn validate(
-        &mut self,
-        query_name: &Arc<str>,
-        actual_batches: &[RecordBatch],
-    ) -> Option<QueryValidationResult> {
-        if !self.active {
-            return None;
-        }
-
-        let expected_batches = self.expected_results.get(query_name)?;
-
-        let result = validation::validate_with_expected_batches(
-            query_name,
-            actual_batches,
-            expected_batches,
-        );
-
-        match &result {
-            Ok(QueryValidationResult::Pass) => {
-                self.record_outcome(query_name, true, None);
-                if !self.converged {
-                    self.current_iteration_results
-                        .insert(Arc::clone(query_name), true);
-                    if self.first_pass_instant.is_none() {
-                        self.first_pass_instant = Some(Instant::now());
-                    }
-                }
-            }
-            Ok(QueryValidationResult::Fail(reason)) => {
-                eprintln!(
-                    "Checkpoint validation FAIL - checkpoint {} - query '{}': {:?}",
-                    self.checkpoint_idx, query_name, reason
-                );
-                self.record_outcome(query_name, false, Some(reason.clone()));
-                if !self.converged {
-                    self.current_iteration_results
-                        .insert(Arc::clone(query_name), false);
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Checkpoint validation error - checkpoint {} - query '{}': {}",
-                    self.checkpoint_idx, query_name, e
-                );
-                // Treat errors as failures
-                self.record_outcome(
-                    query_name,
-                    false,
-                    Some(crate::queries::validation::QueryValidationFailReason::NoExpectedAnswer),
-                );
-                if !self.converged {
-                    self.current_iteration_results
-                        .insert(Arc::clone(query_name), false);
-                }
-            }
-        }
-
-        self.publish_status();
-        result.ok()
-    }
-
-    fn record_outcome(
-        &mut self,
-        query_name: &Arc<str>,
-        passed: bool,
-        failure: Option<crate::queries::validation::QueryValidationFailReason>,
-    ) {
-        let outcome = self
-            .outcomes
-            .entry(Arc::clone(query_name))
-            .or_insert_with(|| QueryValidationOutcome {
-                query_name: Arc::clone(query_name),
-                pass_count: 0,
-                fail_count: 0,
-                last_failure: None,
-            });
-
-        if passed {
-            outcome.pass_count += 1;
-        } else {
-            outcome.fail_count += 1;
-            outcome.last_failure = failure;
         }
     }
 
     /// Notify that a complete query-set iteration has finished.
     ///
-    /// This should be called once per iteration of the main query loop so
-    /// the load runner can poll `completed_iterations` to decide when
-    /// enough validation passes have been recorded.
-    ///
-    /// Iteration counts are always tracked and published regardless of
-    /// whether checkpoint validation is active, so the load runner can
-    /// wait for at least one completed iteration before shutting down
-    /// query workers.
-    ///
-    /// When active, also checks whether the just-completed iteration had
-    /// every query pass.  If so, sets `converged = true` (sticky).
+    /// Called once per iteration of the main query loop so the load runner
+    /// can poll `completed_iterations` to decide when enough iterations
+    /// have been recorded.
     fn record_iteration_completed(&mut self) {
         self.completed_iterations += 1;
-
-        if !self.converged && !self.current_iteration_results.is_empty() {
-            let all_passed = self.current_iteration_results.values().all(|&v| v);
-            if all_passed {
-                self.converged = true;
-                // first_pass_instant is preserved — it holds the instant
-                // the first query passed (possibly in an earlier iteration)
-                // indicating when the data first became correct.
-                eprintln!(
-                    "Checkpoint {} validation converged after {} iterations",
-                    self.checkpoint_idx, self.completed_iterations
-                );
-            }
-            // Do NOT reset first_pass_instant on failure — it marks
-            // when the data first became queryable, even if a mixed
-            // iteration didn't fully converge yet.
-        }
-        self.current_iteration_results.clear();
-
-        self.publish_status();
-    }
-
-    fn publish_status(&self) {
         let status = ValidationStatus::Active {
-            checkpoint_idx: self.checkpoint_idx,
-            outcomes: self.outcomes.values().cloned().collect(),
+            checkpoint_idx: 0,
+            outcomes: Vec::new(),
             completed_iterations: self.completed_iterations,
-            converged: self.converged,
-            first_pass_instant: self.first_pass_instant,
+            converged: false,
+            first_pass_instant: None,
         };
         let _ = self.status_tx.send(status);
     }
@@ -338,7 +138,6 @@ struct QueryRunResult {
     connection_failed: bool,
     query_failure: Option<String>,
     shutdown: bool,
-    checkpoint_batches: Option<Vec<RecordBatch>>,
 }
 
 impl SpiceTestQueryWorkerResult {
@@ -373,15 +172,6 @@ impl SpiceTestQueryWorker {
 
         QUERY_QUEUE_LENGTH.record(queue_depth.try_into().unwrap_or(u64::MAX), &attributes);
         QUERY_QUEUE_DURATION_MS.record(queue_duration.as_secs_f64() * 1000.0, &attributes);
-    }
-
-    fn record_checkpoint_in_flight_queries(&self, in_flight: usize) {
-        let attributes = vec![
-            KeyValue::new("client_id", self.id.to_string()),
-            KeyValue::new("mode", "checkpoint_validation"),
-        ];
-
-        CHECKPOINT_IN_FLIGHT_QUERIES.record(in_flight.try_into().unwrap_or(u64::MAX), &attributes);
     }
 
     pub fn new(
@@ -437,11 +227,11 @@ impl SpiceTestQueryWorker {
         self
     }
 
-    /// Set the checkpoint validation handles for this worker.
+    /// Set the iteration tracking handles for this worker.
     ///
     /// Only worker 0 should receive these handles. When set, the worker will
-    /// react to [`ValidationCommand`]s, validating query results against
-    /// checkpoint data and publishing [`ValidationStatus`] updates.
+    /// publish iteration counts via [`ValidationStatus`] updates so the load
+    /// runner can wait for at least one completed query-set iteration.
     pub fn with_validation_handles(mut self, handles: ValidationWorkerHandles) -> Self {
         self.validation_handles = Some(handles);
         self
@@ -551,10 +341,7 @@ impl SpiceTestQueryWorker {
             let start = Instant::now();
 
             // Initialize checkpoint validation state if handles were provided (worker 0 only).
-            let mut checkpoint_validation = self
-                .validation_handles
-                .take()
-                .map(CheckpointValidationState::new);
+            let mut iteration_tracker = self.validation_handles.take().map(IterationTracker::new);
 
             match self.end_condition {
                 EndCondition::Duration(_) | EndCondition::Unlimited => {
@@ -562,11 +349,6 @@ impl SpiceTestQueryWorker {
                     while !self.shutdown_token.is_cancelled()
                         && !self.end_condition.is_met(&start, query_set_count)
                     {
-                        // Poll for checkpoint validation commands (non-blocking).
-                        if let Some(ref mut cv) = checkpoint_validation {
-                            cv.poll_commands();
-                        }
-
                         if self.progress_bar.is_none() && self.id == 0 {
                             println!(
                                 "Worker {} - Query set count: {} - Elapsed time: {:?}",
@@ -582,16 +364,12 @@ impl SpiceTestQueryWorker {
                             &query_sets[set_index]
                         };
 
-                        let checkpoint_validation_was_active =
-                            checkpoint_validation.as_ref().is_some_and(|cv| cv.active);
-
                         if !self
                             .run_query_set(
                                 Arc::clone(&query_durations),
                                 &mut query_statuses,
                                 &mut row_counts,
                                 queries_to_run,
-                                &mut checkpoint_validation,
                             )
                             .await?
                         {
@@ -609,11 +387,9 @@ impl SpiceTestQueryWorker {
                         }
                         query_set_count += 1;
 
-                        // Notify checkpoint validation that a full iteration completed.
-                        if !checkpoint_validation_was_active
-                            && let Some(ref mut cv) = checkpoint_validation
-                        {
-                            cv.record_iteration_completed();
+                        // Notify that a full iteration completed.
+                        if let Some(ref mut tracker) = iteration_tracker {
+                            tracker.record_iteration_completed();
                         }
                     }
                 }
@@ -651,10 +427,8 @@ impl SpiceTestQueryWorker {
                                 &mut BTreeMap::new(),
                                 snapshot_results,
                                 false,
-                                false,
                                 0,
                                 Instant::now(),
-                                &mut checkpoint_validation,
                             )
                             .await?;
                         if shutdown {
@@ -716,7 +490,6 @@ impl SpiceTestQueryWorker {
                                 connection_failed,
                                 query_failure,
                                 shutdown,
-                                ..
                             } = self
                                 .run_single_query(
                                     query,
@@ -724,10 +497,8 @@ impl SpiceTestQueryWorker {
                                     &mut row_counts,
                                     false, // don't attempt to snapshot results more than once
                                     self.validate,
-                                    false,
                                     0,
                                     Instant::now(),
-                                    &mut checkpoint_validation,
                                 )
                                 .await?;
 
@@ -771,225 +542,33 @@ impl SpiceTestQueryWorker {
         })
     }
 
-    // run queries as a duration-based test
+    // Run each query in the set sequentially.
     async fn run_query_set(
         &self,
         query_durations: Arc<DashMap<Arc<str>, Vec<Duration>>>,
         query_statuses: &mut BTreeMap<Arc<str>, QueryStatus>,
         row_counts: &mut BTreeMap<Arc<str>, Vec<usize>>,
         queries: &[Query],
-        checkpoint_validation: &mut Option<CheckpointValidationState>,
     ) -> Result<bool> {
-        if checkpoint_validation.as_ref().is_some_and(|cv| cv.active) {
-            let mut completion_counts: HashMap<Arc<str>, usize> = queries
-                .iter()
-                .map(|q| (Arc::clone(&q.name), 0usize))
-                .collect();
-            let mut completed_iterations = 0usize;
-
-            type CheckpointRunResult = (
-                usize,
-                Arc<str>,
-                QueryRunResult,
-                BTreeMap<Arc<str>, Vec<usize>>,
-            );
-
-            let mut in_flight: FuturesUnordered<BoxFuture<'_, Result<CheckpointRunResult>>> =
-                FuturesUnordered::new();
-            for (query_idx, query) in queries.iter().enumerate() {
-                if self.shutdown_token.is_cancelled() {
-                    self.record_checkpoint_in_flight_queries(0);
-                    return Ok(false);
-                }
-                let queue_depth = in_flight.len();
-                let enqueued_at = Instant::now();
-                let query_durations_for_task = Arc::clone(&query_durations);
-
-                in_flight.push(
-                    async move {
-                        let query_name = Arc::clone(&query.name);
-                        let query_durations = query_durations_for_task;
-                        let mut local_row_counts = BTreeMap::new();
-                        let mut local_checkpoint_validation: Option<CheckpointValidationState> =
-                            None;
-                        let run_result = self
-                            .run_single_query(
-                                query,
-                                query_durations,
-                                &mut local_row_counts,
-                                false,
-                                false,
-                                true,
-                                queue_depth,
-                                enqueued_at,
-                                &mut local_checkpoint_validation,
-                            )
-                            .await?;
-
-                        Ok::<_, anyhow::Error>((
-                            query_idx,
-                            query_name,
-                            run_result,
-                            local_row_counts,
-                        ))
-                    }
-                    .boxed(),
-                );
-            }
-
-            self.record_checkpoint_in_flight_queries(in_flight.len());
-
-            while let Some(result) = in_flight.next().await {
-                let (query_idx, query_name, run_result, local_row_counts) = result?;
-
-                if let Some(cv) = checkpoint_validation {
-                    cv.poll_commands();
-                }
-
-                if run_result.shutdown || run_result.connection_failed {
-                    self.record_checkpoint_in_flight_queries(0);
-                    return Ok(false);
-                }
-
-                for (name, counts) in local_row_counts {
-                    row_counts.entry(name).or_default().extend(counts);
-                }
-
-                if let Some(cv) = checkpoint_validation
-                    && let Some(batches) = run_result.checkpoint_batches.as_deref()
-                {
-                    cv.validate(&query_name, batches);
-                }
-
-                let worker_status = if let Some(query_failure) = run_result.query_failure {
-                    QueryStatus::Failed(Some(query_failure.into()))
-                } else {
-                    QueryStatus::Passed
-                };
-
-                query_statuses
-                    .entry(query_name)
-                    .and_modify(|existing_status| {
-                        if matches!(worker_status, QueryStatus::Failed(_)) {
-                            *existing_status = worker_status.clone();
-                        }
-                    })
-                    .or_insert(worker_status);
-
-                if let Some(count) = completion_counts.get_mut(&queries[query_idx].name) {
-                    *count += 1;
-                }
-
-                let min_completed = completion_counts.values().copied().min().unwrap_or(0);
-                if min_completed > completed_iterations {
-                    let delta = min_completed - completed_iterations;
-                    for _ in 0..delta {
-                        if let Some(cv) = checkpoint_validation {
-                            cv.record_iteration_completed();
-                        }
-                    }
-                    completed_iterations = min_completed;
-                }
-
-                if self.shutdown_token.is_cancelled() {
-                    self.record_checkpoint_in_flight_queries(0);
-                    return Ok(false);
-                }
-
-                if checkpoint_validation.as_ref().is_some_and(|cv| cv.active) {
-                    let query = &queries[query_idx];
-                    let queue_depth = in_flight.len();
-                    let enqueued_at = Instant::now();
-                    let query_durations_for_task = Arc::clone(&query_durations);
-
-                    in_flight.push(
-                        async move {
-                            let query_name = Arc::clone(&query.name);
-                            let query_durations = query_durations_for_task;
-                            let mut local_row_counts = BTreeMap::new();
-                            let mut local_checkpoint_validation: Option<CheckpointValidationState> =
-                                None;
-                            let run_result = self
-                                .run_single_query(
-                                    query,
-                                    query_durations,
-                                    &mut local_row_counts,
-                                    false,
-                                    false,
-                                    true,
-                                    queue_depth,
-                                    enqueued_at,
-                                    &mut local_checkpoint_validation,
-                                )
-                                .await?;
-
-                            Ok::<_, anyhow::Error>((
-                                query_idx,
-                                query_name,
-                                run_result,
-                                local_row_counts,
-                            ))
-                        }
-                        .boxed(),
-                    );
-                }
-
-                self.record_checkpoint_in_flight_queries(in_flight.len());
-
-                if !checkpoint_validation.as_ref().is_some_and(|cv| cv.active) {
-                    break;
-                }
-            }
-
-            self.record_checkpoint_in_flight_queries(0);
-
-            return Ok(true);
-        }
-
-        // For duration-based load runs, fan out all queries for this worker/client
-        // concurrently so each client can drive maximum request pressure.
-        // Concurrency is still controlled by the number of clients (workers).
-        let mut in_flight = FuturesUnordered::new();
         for query in queries {
             if self.shutdown_token.is_cancelled() {
                 return Ok(false);
             }
 
-            let query_name = Arc::clone(&query.name);
-            let query_durations = Arc::clone(&query_durations);
-            let queue_depth = in_flight.len();
-            let enqueued_at = Instant::now();
-
-            in_flight.push(async move {
-                let mut local_row_counts = BTreeMap::new();
-                let mut local_checkpoint_validation: Option<CheckpointValidationState> = None;
-                let run_result = self
-                    .run_single_query(
-                        query,
-                        query_durations,
-                        &mut local_row_counts,
-                        false,
-                        false,
-                        false,
-                        queue_depth,
-                        enqueued_at,
-                        &mut local_checkpoint_validation,
-                    )
-                    .await?;
-
-                Ok::<_, anyhow::Error>((query_name, run_result, local_row_counts))
-            });
-        }
-
-        while let Some(result) = in_flight.next().await {
-            let (query_name, run_result, local_row_counts) = result?;
+            let run_result = self
+                .run_single_query(
+                    query,
+                    Arc::clone(&query_durations),
+                    row_counts,
+                    false,
+                    false,
+                    0,
+                    Instant::now(),
+                )
+                .await?;
 
             if run_result.shutdown || run_result.connection_failed {
                 return Ok(false);
-            }
-
-            for (name, counts) in local_row_counts {
-                row_counts.entry(name).or_default().extend(counts);
             }
 
             let worker_status = if let Some(query_failure) = run_result.query_failure {
@@ -999,7 +578,7 @@ impl SpiceTestQueryWorker {
             };
 
             query_statuses
-                .entry(query_name)
+                .entry(Arc::clone(&query.name))
                 .and_modify(|existing_status| {
                     if matches!(worker_status, QueryStatus::Failed(_)) {
                         *existing_status = worker_status.clone();
@@ -1020,10 +599,8 @@ impl SpiceTestQueryWorker {
         row_counts: &mut BTreeMap<Arc<str>, Vec<usize>>,
         results_snapshot: bool,
         validate: bool,
-        capture_checkpoint_batches: bool,
         queue_depth: usize,
         enqueued_at: Instant,
-        checkpoint_validation: &mut Option<CheckpointValidationState>,
     ) -> Result<QueryRunResult> {
         match self
             .execute_query(
@@ -1032,18 +609,15 @@ impl SpiceTestQueryWorker {
                 row_counts,
                 results_snapshot,
                 validate,
-                capture_checkpoint_batches,
                 queue_depth,
                 enqueued_at,
-                checkpoint_validation,
             )
             .await
         {
-            Ok(checkpoint_batches) => Ok(QueryRunResult {
+            Ok(()) => Ok(QueryRunResult {
                 connection_failed: false,
                 query_failure: None,
                 shutdown: false,
-                checkpoint_batches,
             }),
             Err(e) => {
                 // If shutdown was requested, exit quietly without logging errors
@@ -1052,7 +626,6 @@ impl SpiceTestQueryWorker {
                         connection_failed: false,
                         query_failure: None,
                         shutdown: true,
-                        checkpoint_batches: None,
                     });
                 }
 
@@ -1077,7 +650,6 @@ impl SpiceTestQueryWorker {
                         connection_failed: true,
                         query_failure: None,
                         shutdown: false,
-                        checkpoint_batches: None,
                     })
                 } else {
                     eprintln!(
@@ -1093,7 +665,6 @@ impl SpiceTestQueryWorker {
                         connection_failed: false,
                         query_failure: Some(format!("{e}")),
                         shutdown: false,
-                        checkpoint_batches: None,
                     })
                 }
             }
@@ -1108,11 +679,9 @@ impl SpiceTestQueryWorker {
         row_counts: &mut BTreeMap<Arc<str>, Vec<usize>>,
         results_snapshot: bool,
         validate: bool,
-        capture_checkpoint_batches: bool,
         queue_depth: usize,
         enqueued_at: Instant,
-        checkpoint_validation: &mut Option<CheckpointValidationState>,
-    ) -> Result<Option<Vec<RecordBatch>>> {
+    ) -> Result<()> {
         self.record_queue_metrics(&query.name, queue_depth, enqueued_at.elapsed());
 
         // Race query execution against shutdown signal so in-flight queries
@@ -1123,25 +692,6 @@ impl SpiceTestQueryWorker {
                 return Err(anyhow::anyhow!("Shutdown requested"));
             }
             result = self.executor.execute(query) => result?,
-        };
-
-        // --- Checkpoint validation (worker 0 only) ---
-        // This does NOT fail the query; it only records pass/fail outcomes.
-        if let Some(cv) = checkpoint_validation
-            && cv.active
-            && self.executor.supports_validation()
-            && let Some(batches) = &result.batches
-        {
-            cv.validate(&query.name, batches);
-        }
-
-        let checkpoint_batches = if capture_checkpoint_batches
-            && self.executor.supports_validation()
-            && let Some(batches) = &result.batches
-        {
-            Some(batches.clone())
-        } else {
-            None
         };
 
         // Handle validation if supported and requested
@@ -1302,7 +852,7 @@ impl SpiceTestQueryWorker {
             pb.inc(1);
         }
 
-        Ok(checkpoint_batches)
+        Ok(())
     }
 }
 
