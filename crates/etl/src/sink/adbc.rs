@@ -264,7 +264,7 @@ impl AdbcSink {
                 self.create_table_sql(
                     &table_name,
                     config.schema.as_ref(),
-                    config.primary_key_columns,
+                    config.partition_columns.clone(),
                 )
             })
             .collect::<Result<Vec<String>, anyhow::Error>>()?;
