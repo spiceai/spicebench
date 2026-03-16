@@ -833,7 +833,71 @@ pub(crate) async fn run(
                     }
                     PipelineState::Stopped(StopReason::Completed) => {
                         println!("ETL pipeline completed");
-                        if !has_checkpoint_validation {
+
+                        // --- Final checkpoint validation ---
+                        // The pipeline transitions directly from Running →
+                        // Completed after the last batch, so the final
+                        // checkpoint boundary is never seen as a Paused state.
+                        // Run validation for it here.
+                        if has_checkpoint_validation
+                            && let Some(cp_dir) = checkpoint_dir
+                        {
+                            let checkpoint_idx = etl_pipeline.checkpoint_idx();
+                            match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
+                                Ok(expected_results) if !expected_results.is_empty() => {
+                                    tracing::info!(
+                                        checkpoint_idx,
+                                        num_queries = expected_results.len(),
+                                        "Running final checkpoint validation"
+                                    );
+
+                                    let checkpoint_pause_time = std::time::Instant::now();
+
+                                    let result = run_checkpoint_validation(
+                                        &validation_executor,
+                                        &queries,
+                                        &expected_results,
+                                        checkpoint_idx,
+                                        common_args.concurrency,
+                                        Duration::from_secs(common_args.checkpoint_validation_period),
+                                        Duration::from_secs(600),
+                                        checkpoint_pause_time,
+                                    )
+                                    .await;
+
+                                    match result {
+                                        CheckpointValidationResult::Converged { e2e_latency_ms } => {
+                                            checkpoint_e2e_latency_samples.push(e2e_latency_ms);
+                                        }
+                                        CheckpointValidationResult::Interrupted => {
+                                            eprintln!("Interrupt received during final checkpoint validation, stopping...");
+                                            shutdown_token.cancel();
+                                            break Some(RunOutcome::Cancelled);
+                                        }
+                                        CheckpointValidationResult::TimedOut => {
+                                            eprintln!(
+                                                "Final checkpoint {checkpoint_idx} validation timed out after 600s without convergence, aborting run"
+                                            );
+                                            shutdown_token.cancel();
+                                            break Some(RunOutcome::ValidationTimeout);
+                                        }
+                                    }
+                                }
+                                Ok(_) => {
+                                    tracing::info!(
+                                        checkpoint_idx,
+                                        "No final checkpoint results found, skipping validation"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        checkpoint_idx,
+                                        error = %e,
+                                        "Failed to load final checkpoint results, skipping validation"
+                                    );
+                                }
+                            }
+                        } else if !has_checkpoint_validation {
                             // When results validation is not enabled, wait for
                             // at least 1 query set iteration to complete so we
                             // collect meaningful query metrics before stopping.
@@ -856,6 +920,7 @@ pub(crate) async fn run(
                                 tokio::time::sleep(POLL_INTERVAL).await;
                             }
                         }
+
                         println!("Stopping benchmark...");
                         shutdown_token.cancel();
                         break None;
