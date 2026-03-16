@@ -51,6 +51,15 @@ const ADBC_DELETE_BATCH_SIZE_ENV: &str = "SPICEBENCH_ADBC_DELETE_BATCH_SIZE";
 ///                          target system's `on_conflict: upsert` or equivalent to merge)
 const ADBC_UPDATE_STRATEGY_ENV: &str = "SPICEBENCH_ADBC_UPDATE_STRATEGY";
 
+/// Maximum number of retry attempts for transient gRPC/connection errors
+/// (e.g. UNAVAILABLE, connection reset). Each retry acquires a fresh
+/// connection from the pool.
+const MAX_TRANSIENT_RETRIES: u32 = 3;
+
+/// Initial backoff in milliseconds before the first retry. Doubles on each
+/// subsequent attempt (500 → 1000 → 2000 ms).
+const INITIAL_RETRY_BACKOFF_MS: u64 = 500;
+
 /// Strategy for executing UPDATE operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpdateStrategy {
@@ -325,6 +334,16 @@ impl AdbcSink {
 
     fn is_message_too_large_error(message: &str) -> bool {
         message.contains("ResourceExhausted") || message.contains("message larger than max")
+    }
+
+    /// Returns `true` for transient gRPC / connection errors that may succeed
+    /// on retry with a fresh connection (e.g. load-balancer GOAWAY, TCP reset).
+    fn is_transient_error(message: &str) -> bool {
+        let lower = message.to_lowercase();
+        lower.contains("unavailable")
+            || lower.contains("connection reset")
+            || lower.contains("broken pipe")
+            || lower.contains("connection refused")
     }
 
     fn bulk_ingest_with_retry(
@@ -791,43 +810,23 @@ impl AdbcSink {
              WHEN MATCHED THEN UPDATE SET {set_clause}"
         )
     }
-}
 
-#[async_trait]
-impl Sink for AdbcSink {
-    async fn write(
+    /// Execute a single write operation (insert / update / delete) on the given
+    /// connection. Factored out of [`Sink::write`] so the retry loop can call it
+    /// with a fresh connection on each attempt.
+    fn execute_write_op(
         &self,
+        conn: &mut AdbcConnection,
         table_name: &str,
-        _batch_id: u64,
-        batch: RecordBatch,
-        op: InsertOp,
-        _partition_columns: Vec<String>,
+        batch: &RecordBatch,
+        op: &InsertOp,
     ) -> anyhow::Result<()> {
-        if batch.num_rows() == 0 {
-            return Ok(());
-        }
-
-        let mut conn = self
-            .pool
-            .get()
-            .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
-
-        let rows_current = batch.num_rows() as u64;
-        let op_label = match &op {
-            InsertOp::Insert => "insert",
-            InsertOp::Update { .. } => "update",
-            InsertOp::Delete { .. } => "delete",
-        };
-
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        tracing::info!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
-
         match op {
             InsertOp::Insert => {
-                self.ingest_insert_batch(&mut conn, table_name, batch)?;
+                self.ingest_insert_batch(conn, table_name, batch.clone())?;
             }
             InsertOp::Delete { key_columns } => {
-                let statements = self.delete_sql_statements(table_name, &batch, &key_columns)?;
+                let statements = self.delete_sql_statements(table_name, batch, key_columns)?;
                 let num_statements = statements.len();
                 let start = Instant::now();
                 for sql in statements {
@@ -857,15 +856,15 @@ impl Sink for AdbcSink {
 
                 match strategy {
                     UpdateStrategy::StagingTable => {
-                        self.staging_merge_update(&mut conn, table_name, batch, &key_columns)?;
+                        self.staging_merge_update(conn, table_name, batch.clone(), key_columns)?;
                     }
                     UpdateStrategy::BulkIngestUpsert => {
-                        self.ingest_insert_batch(&mut conn, table_name, batch)?;
+                        self.ingest_insert_batch(conn, table_name, batch.clone())?;
                     }
                     UpdateStrategy::Statement => {
                         let statements: Vec<String> = (0..num_rows)
                             .map(|row| {
-                                self.update_sql_for_row(table_name, &batch, row, &key_columns)
+                                self.update_sql_for_row(table_name, batch, row, key_columns)
                             })
                             .collect::<anyhow::Result<Vec<_>>>()?;
                         for sql in &statements {
@@ -893,6 +892,73 @@ impl Sink for AdbcSink {
                     "UPDATE executed"
                 );
             }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Sink for AdbcSink {
+    async fn write(
+        &self,
+        table_name: &str,
+        _batch_id: u64,
+        batch: RecordBatch,
+        op: InsertOp,
+        _partition_columns: Vec<String>,
+    ) -> anyhow::Result<()> {
+        if batch.num_rows() == 0 {
+            return Ok(());
+        }
+
+        let rows_current = batch.num_rows() as u64;
+        let op_label = match &op {
+            InsertOp::Insert => "insert",
+            InsertOp::Update { .. } => "update",
+            InsertOp::Delete { .. } => "delete",
+        };
+
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
+        tracing::info!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
+
+        let mut last_err = None;
+        for attempt in 1..=MAX_TRANSIENT_RETRIES {
+            // Acquire a fresh connection on every attempt so that a stale /
+            // reset HTTP/2 connection from the pool is replaced.
+            let mut conn = self
+                .pool
+                .get()
+                .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
+
+            match self.execute_write_op(&mut conn, table_name, &batch, &op) {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if attempt < MAX_TRANSIENT_RETRIES && Self::is_transient_error(&msg) {
+                        let backoff_ms =
+                            INITIAL_RETRY_BACKOFF_MS * u64::from(2u32.pow(attempt - 1));
+                        tracing::warn!(
+                            "[adbc] Transient error on attempt {attempt}/{MAX_TRANSIENT_RETRIES} \
+                             for {table_name} ({op_label}): {msg}. \
+                             Retrying in {backoff_ms}ms with a fresh connection…"
+                        );
+                        // Drop the connection before sleeping so the pool can
+                        // recycle or replace it.
+                        drop(conn);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        last_err = Some(e);
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        if let Some(e) = last_err {
+            return Err(e);
         }
 
         let rows_total = {
