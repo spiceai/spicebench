@@ -12,10 +12,6 @@ version.workspace = true
 name = "etl"
 path = "src/lib.rs"
 
-[[bin]]
-name = "etl"
-path = "src/main.rs"
-
 [dependencies]
 adbc_client = { path = "../adbc_client" }
 anyhow.workspace = true
@@ -23,7 +19,6 @@ arrow.workspace = true
 arrow-cast = "57"
 async-trait.workspace = true
 chrono.workspace = true
-clap = { workspace = true, features = ["derive"] }
 data-generation = { path = "../data-generation" }
 duckdb = { workspace = true, optional = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
 indexmap = { workspace = true }
@@ -35,7 +30,6 @@ tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = []

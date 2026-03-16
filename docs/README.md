@@ -8,7 +8,7 @@ Detailed documentation for SpiceBench - an end-to-end benchmark for data & AI pl
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | [Architecture](architecture.md)                     | High-level system architecture, run lifecycle, benchmark phases, and data flow                     |
 | [Getting Started](getting-started.md)               | Installation, first run, prerequisites, and quick-start examples                                   |
-| [CLI Reference](cli-reference.md)                   | Complete `spicebench`, `data-generation`, `etl`, and `checkpointer` CLI flags and options          |
+| [CLI Reference](cli-reference.md)                   | Complete `spicebench run`, `generate`, `etl`, and `checkpoint` CLI flags and options               |
 | [System Adapters](system-adapters.md)               | JSON-RPC 2.0 adapter protocol, transport modes, and current supported systems                      |
 | [Data Generation & ETL](data-generation-and-etl.md) | Dataset generation, ETL pipeline, sinks, checkpointing, and S3 layout                              |
 | [Metrics & Telemetry](metrics-and-telemetry.md)     | All OTel instruments, streaming metrics, SUT scraping, Arrow Flight export, and Grafana dashboards |

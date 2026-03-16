@@ -14,10 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 mod dataset;
 use crate::scenario::Scenario;
+
+pub mod checkpoint;
+pub mod etl;
+pub mod generate;
 
 #[derive(Clone, Debug, ValueEnum)]
 #[value(rename_all = "lower")]
@@ -44,9 +48,32 @@ impl std::fmt::Display for TableFormat {
     }
 }
 
-/// Arguments Common to all [`TestCommands`].
+/// Top-level CLI with subcommands.
+#[derive(Parser)]
+#[command(author, version, about = "SpiceBench — benchmark for data & AI platforms", long_about = None)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Run the full benchmark lifecycle (setup → ETL + queries → teardown)
+    Run(Box<RunArgs>),
+
+    /// Generate a dataset archive and upload to S3 or write locally
+    Generate(generate::GenerateArgs),
+
+    /// Run a standalone ETL pipeline (S3/local → ADBC or null sink)
+    Etl(etl::EtlArgs),
+
+    /// Capture checkpoint query results at ETL boundaries for validation
+    Checkpoint(checkpoint::CheckpointArgs),
+}
+
+/// Arguments for the `run` subcommand (full benchmark lifecycle).
 #[derive(Parser, Debug, Clone)]
-pub struct CommonArgs {
+pub struct RunArgs {
     /// The scenario to use for the benchmark run, which determines the query set and other parameters.
     #[arg(long)]
     pub(crate) scenario: Scenario,

@@ -12,7 +12,7 @@ Detailed documentation is available in the [`docs/`](docs/) directory:
 | -------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | [Architecture](docs/architecture.md)                     | System architecture, run lifecycle, benchmark phases, and data flow           |
 | [Getting Started](docs/getting-started.md)               | Installation, prerequisites, and first run                                    |
-| [CLI Reference](docs/cli-reference.md)                   | Complete `spicebench`, `data-generation`, `etl`, and `checkpointer` CLI flags |
+| [CLI Reference](docs/cli-reference.md)                   | Complete `spicebench run`, `generate`, `etl`, and `checkpoint` CLI flags |
 | [System Adapters](docs/system-adapters.md)               | JSON-RPC 2.0 protocol, transport modes, and building new adapters             |
 | [Data Generation & ETL](docs/data-generation-and-etl.md) | Dataset generation, ETL pipeline, sinks, and checkpointing                    |
 | [Metrics & Telemetry](docs/metrics-and-telemetry.md)     | All OTel instruments, streaming metrics, and Grafana dashboards               |

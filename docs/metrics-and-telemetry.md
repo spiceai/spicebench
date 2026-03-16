@@ -105,7 +105,7 @@ When `--otlp-endpoint` is specified, a separate `StreamingOtlpExporter` sends re
 Usage:
 
 ```bash
-spicebench \
+spicebench run \
     --otlp-endpoint http://localhost:4317 \
     --otlp-header "Authorization=Bearer $TOKEN" \
     ...

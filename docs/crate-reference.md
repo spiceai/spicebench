@@ -24,15 +24,21 @@ spicebench (binary)
 
 **Path:** `src/`
 
-The CLI entry point. Parses arguments, connects to the system adapter, manages the run lifecycle (setup → benchmark → teardown), and orchestrates the ETL pipeline and query execution.
+The single CLI entry point with four subcommands: `run` (benchmark lifecycle), `generate` (data generation), `etl` (standalone ETL pipeline), and `checkpoint` (checkpoint capture). Parses arguments, dispatches to the appropriate command handler, and orchestrates the full workflow.
 
 ### `spicebench` Key Modules
 
 | Module                    | Description                                                                                |
 | ------------------------- | ------------------------------------------------------------------------------------------ |
-| `args`                    | CLI argument definitions via `clap` derive macros                                          |
+| `args`                    | CLI argument definitions via `clap` derive macros, including `Cli`, `Command`, and per-subcommand arg structs |
+| `args::generate`          | `GenerateArgs` for the `generate` subcommand                                               |
+| `args::etl`              | `EtlArgs` and `EtlSinkType` for the `etl` subcommand                                      |
+| `args::checkpoint`        | `CheckpointArgs` for the `checkpoint` subcommand                                           |
 | `args::dataset`           | Query-related argument types (`QueryArgs`, `DatasetTestArgs`, `QuerySetArg`)               |
-| `commands`                | Benchmark execution logic                                                                  |
+| `commands::run`           | Full benchmark lifecycle (setup → ETL + queries → teardown)                                |
+| `commands::generate`      | Data generation and archive creation/upload                                                |
+| `commands::etl_cmd`       | Standalone ETL pipeline execution                                                          |
+| `commands::checkpoint`    | Checkpoint capture with DuckDB (behind `duckdb` feature)                                   |
 | `commands::load`          | Main load test runner with metrics scraping, E2E latency checks, and checkpoint validation |
 | `commands::adbc_executor` | ADBC direct query executor implementing `QueryExecutor`                                    |
 | `metrics`                 | OTel metric instrument definitions (all `LazyLock` statics)                                |

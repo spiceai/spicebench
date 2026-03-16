@@ -1,15 +1,29 @@
 # CLI Reference
 
-Complete command-line reference for SpiceBench binaries.
+Complete command-line reference for SpiceBench.
 
-## `spicebench`
+All functionality is accessed through the single `spicebench` binary with subcommands:
 
-The main benchmark binary. It downloads and extracts a pre-generated data archive, connects to a system adapter, runs setup, executes the timed benchmark, and tears the target system down.
+```
+spicebench <COMMAND>
 
-### spicebench Usage
+Commands:
+  run         Run the full benchmark lifecycle
+  generate    Generate a dataset archive
+  etl         Run a standalone ETL pipeline
+  checkpoint  Capture checkpoint query results
+```
+
+---
+
+## `spicebench run`
+
+Run the full benchmark lifecycle: download and extract a pre-generated data archive, connect to a system adapter, run setup, execute the timed benchmark, and tear the target system down.
+
+### Usage
 
 ```bash
-spicebench [OPTIONS]
+spicebench run [OPTIONS] --scenario <SCENARIO>
 ```
 
 ### Core Options
@@ -21,7 +35,7 @@ spicebench [OPTIONS]
 | `--validate-results`       | `bool`     | `false`   | Enable checkpoint-based query result validation when checkpoints exist |
 | `--executor-instance-type` | `String`   | `unknown` | Hardware class identifier attached to emitted benchmark metrics        |
 
-The current main `spicebench` binary does not expose separate `--query-set`, `--scenario-query-file`, or `--query-overrides` flags. The scenario selects the built-in benchmark workload.
+The `run` subcommand does not expose separate `--query-set`, `--scenario-query-file`, or `--query-overrides` flags. The scenario selects the built-in benchmark workload.
 
 ### System Adapter Options
 
@@ -64,12 +78,12 @@ Set exactly one of `--system-adapter-stdio-cmd` or `--system-adapter-http-url`.
 | -------- | ----------------- | ------------------------------------------ |
 | TPC-H    | `--scenario tpch` | Built-in TPC-H scenario and query workload |
 
-### spicebench Examples
+### Examples
 
 **HTTP adapter:**
 
 ```bash
-spicebench \
+spicebench run \
     --scenario tpch \
     --system-adapter-name myplatform \
     --system-adapter-http-url http://127.0.0.1:8080/jsonrpc \
@@ -80,7 +94,7 @@ spicebench \
 **Stdio adapter with Docker:**
 
 ```bash
-spicebench \
+spicebench run \
     --scenario tpch \
     --system-adapter-name spidapter \
     --system-adapter-stdio-cmd docker \
@@ -92,7 +106,7 @@ spicebench \
 **With streaming metrics:**
 
 ```bash
-spicebench \
+spicebench run \
     --scenario tpch \
     --system-adapter-name myplatform \
     --system-adapter-http-url http://127.0.0.1:8080/jsonrpc \
@@ -102,17 +116,17 @@ spicebench \
 
 ---
 
-## `data-generation`
+## `spicebench generate`
 
-Standalone binary for generating versioned datasets and either uploading the resulting archive to S3 or writing it to a local archive file.
+Generate versioned datasets and either upload the resulting archive to S3 or write it to a local archive file.
 
-### data-generation Usage
+### Usage
 
 ```bash
-data-generation run [OPTIONS]
+spicebench generate [OPTIONS]
 ```
 
-### data-generation Options
+### Options
 
 | Flag                | Type     | Default | Description                                                          |
 | ------------------- | -------- | ------- | -------------------------------------------------------------------- |
@@ -125,15 +139,17 @@ data-generation run [OPTIONS]
 | `--prefix`          | `String` | `""`    | S3 key prefix for generated files                                    |
 | `--region`          | `String` | -       | AWS region                                                           |
 | `--endpoint`        | `String` | -       | S3 endpoint URL (for MinIO, LocalStack, and similar)                 |
+| `--update-ratio`    | `f64`    | `0.0`   | Ratio of update mutations per batch (0.0 to 1.0)                    |
+| `--delete-ratio`    | `f64`    | `0.0`   | Ratio of delete mutations per batch (0.0 to 1.0)                    |
 
 The generated version string is derived automatically from `--scale-factor`, so `--scale-factor 1` writes to a `1.0` version path.
 
-### data-generation Examples
+### Examples
 
 **Upload generated data to S3:**
 
 ```bash
-cargo run -p data-generation -- run \
+spicebench generate \
     --scale-factor 1 \
     --bucket my-benchmark-data \
     --region us-west-2 \
@@ -144,7 +160,7 @@ cargo run -p data-generation -- run \
 **Write a local archive:**
 
 ```bash
-cargo run -p data-generation -- run \
+spicebench generate \
     --scale-factor 1 \
     --num-steps 10 \
     --output-archive ./tpch-sf1.tar.zst
@@ -152,17 +168,17 @@ cargo run -p data-generation -- run \
 
 ---
 
-## `etl`
+## `spicebench etl`
 
-Standalone ETL pipeline binary. It reads a generated archive, rehydrates records, and writes to an ADBC target or a null sink.
+Standalone ETL pipeline. Reads a generated archive, rehydrates records, and writes to an ADBC target or a null sink.
 
-### etl Usage
+### Usage
 
 ```bash
-etl [OPTIONS]
+spicebench etl [OPTIONS]
 ```
 
-### etl Options
+### Options
 
 | Flag                   | Type        | Default        | Description                                                            |
 | ---------------------- | ----------- | -------------- | ---------------------------------------------------------------------- |
@@ -182,12 +198,12 @@ etl [OPTIONS]
 | `--adbc-create-tables` | `bool`      | `false`        | Create tables before ETL starts. Requires `--sink adbc`                |
 | `--adbc-option`        | `KEY=VALUE` | -              | Repeatable. Additional ADBC database options                           |
 
-### etl Examples
+### Examples
 
 **Local archive to null sink:**
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
     --archive-file ./tpch-sf1.tar.zst \
@@ -197,7 +213,7 @@ cargo run -p etl -- \
 **ADBC sink:**
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
     --bucket my-data \
@@ -212,17 +228,23 @@ cargo run -p etl -- \
 
 ---
 
-## `checkpointer`
+## `spicebench checkpoint`
 
-Captures expected query results at ETL checkpoints. The current binary requires the `duckdb` feature and writes checkpoint results by replaying ETL into a local DuckDB database.
+Capture expected query results at ETL checkpoints. Requires the `duckdb` feature (`--features duckdb`) and writes checkpoint results by replaying ETL into a local DuckDB database.
 
-### checkpointer Usage
+### Usage
 
 ```bash
-cargo run -p checkpointer --features duckdb -- [OPTIONS]
+spicebench checkpoint [OPTIONS] --version <VERSION> --bucket <BUCKET> --duckdb-path <DUCKDB_PATH>
 ```
 
-### checkpointer Options
+Building with the `duckdb` feature:
+
+```bash
+cargo build -p spicebench --features duckdb
+```
+
+### Options
 
 | Flag                          | Type     | Default         | Description                                                  |
 | ----------------------------- | -------- | --------------- | ------------------------------------------------------------ |
@@ -239,7 +261,7 @@ cargo run -p checkpointer --features duckdb -- [OPTIONS]
 ### Example
 
 ```bash
-cargo run -p checkpointer --features duckdb -- \
+spicebench checkpoint \
     --scenario tpch \
     --version 1.0 \
     --bucket my-data \

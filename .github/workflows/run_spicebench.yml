@@ -344,7 +344,7 @@ jobs:
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_DATABASE_INSTANCE=${LAKEBASE_DATABASE_INSTANCE}"
           fi
 
-          ~/.spice/bin/spicebench \
+          ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
