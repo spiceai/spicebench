@@ -2,12 +2,14 @@
 
 Generate versioned dataset archives and upload them to S3 or write them locally.
 
+This crate provides the `data-generation` library used by the `spicebench generate` subcommand.
+
 ## Example
 
 ```bash
-cargo run -p data-generation -- run \
+spicebench generate \
     --scale-factor 1 \
-    --bucket peasee-indexes \
+    --bucket my-benchmark-data \
     --region us-west-2 \
     --prefix raw \
     --num-steps 10

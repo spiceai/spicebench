@@ -26,7 +26,7 @@ SpiceBench currently supports benchmark runs against:
 SpiceBench starts the adapter as a child process and communicates via stdin/stdout using line-delimited JSON-RPC.
 
 ```bash
-spicebench \
+spicebench run \
     --scenario tpch \
     --system-adapter-name my-adapter \
     --system-adapter-stdio-cmd ./my-adapter \
@@ -43,7 +43,7 @@ spicebench \
 SpiceBench connects to a running adapter server via HTTP POST.
 
 ```bash
-spicebench \
+spicebench run \
     --scenario tpch \
     --system-adapter-name my-adapter \
     --system-adapter-http-url http://127.0.0.1:8080/jsonrpc
@@ -342,7 +342,7 @@ cargo build --manifest-path system-adapters/databricks/Cargo.toml
 **Run:**
 
 ```bash
-spicebench \
+spicebench run \
     --scenario tpch \
     --system-adapter-name databricks \
     --system-adapter-stdio-cmd system-adapters/databricks/target/debug/databricks-system-adapter \

@@ -1,12 +1,12 @@
 # Data Generation & ETL
 
-SpiceBench uses a two-stage data pipeline: `data-generation` produces versioned raw archives, and the ETL pipeline reads those archives, rehydrates records, and ingests them into the System Under Test.
+SpiceBench uses a two-stage data pipeline: `spicebench generate` produces versioned raw archives, and the ETL pipeline reads those archives, rehydrates records, and ingests them into the System Under Test.
 
 The main `spicebench` binary benchmarks ingestion and querying against a pre-generated archive. Archive download and extraction happen before the timed benchmark starts.
 
 ## Data Generation
 
-The `data-generation` crate produces versioned datasets locally and then packages them into a `.tar.zst` archive. The archive is either written to a local path or uploaded to S3.
+The `data-generation` crate (accessed via `spicebench generate`) produces versioned datasets locally and then packages them into a `.tar.zst` archive. The archive is either written to a local path or uploaded to S3.
 
 ### S3 Layout
 
@@ -90,12 +90,12 @@ The ETL pipeline understands three raw operation codes:
 | Update    | `__op = "u"`    | Modify existing row (tracked by primary key) |
 | Delete    | `__op = "d"`    | Remove existing row (tracked by primary key) |
 
-The current `data-generation run` CLI does not expose mutation-ratio flags and currently emits create-only batches. The generated `version.json` therefore records `update_ratio = 0.0` and `delete_ratio = 0.0` in the shipped path.
+The current `spicebench generate` CLI emits create-only batches and records zero mutation ratios in `version.json` by default.
 
 ### Running Data Generation
 
 ```bash
-cargo run -p data-generation -- run \
+spicebench generate \
     --scale-factor 1 \
     --bucket my-benchmark-data \
     --region us-west-2 \
@@ -125,7 +125,7 @@ The ETL pipeline reads a generated archive, processes raw batches, and writes to
 Instead of downloading from S3, standalone ETL can read a local archive directly:
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
     --archive-file ./tpch-sf1.tar.zst \
@@ -139,7 +139,7 @@ cargo run -p etl -- \
 Writes directly to the SUT via ADBC bulk ingest.
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
     --bucket my-data \
@@ -157,7 +157,7 @@ When using FlightSQL, ETL automatically sets `adbc.flight.sql.client_option.with
 **Databricks example:**
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
     --bucket my-data \
@@ -175,7 +175,7 @@ cargo run -p etl -- \
 Discards all writes. Useful for measuring source and ETL throughput without sink overhead.
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
     --bucket my-data \
@@ -219,7 +219,7 @@ The ETL sink type is selected with `--etl-sink`:
 
 ## Checkpointing
 
-The `checkpointer` binary captures expected query results at specific ETL steps so benchmark runs can validate correctness while ingestion is active.
+The `spicebench checkpoint` subcommand captures expected query results at specific ETL steps so benchmark runs can validate correctness while ingestion is active.
 
 ### How It Works
 
@@ -261,7 +261,7 @@ s3://{bucket}/{prefix}/
 Enable checkpoint validation with `--validate-results`:
 
 ```bash
-spicebench \
+spicebench run \
     --scenario tpch \
     --system-adapter-name myplatform \
     --system-adapter-http-url http://127.0.0.1:8080/jsonrpc \

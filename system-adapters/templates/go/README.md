@@ -35,7 +35,7 @@ go run ./system-adapters/templates/go --transport http --host 127.0.0.1 --port 8
 ### Stdio transport
 
 ```bash
-spicebench \
+spicebench run \
   --scenario tpch \
   --system-adapter-name go-template \
   --system-adapter-stdio-cmd go \
@@ -45,7 +45,7 @@ spicebench \
 ### HTTP transport
 
 ```bash
-spicebench \
+spicebench run \
   --scenario tpch \
   --system-adapter-name go-template \
   --system-adapter-http-url http://127.0.0.1:8080/jsonrpc

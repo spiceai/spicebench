@@ -73,8 +73,8 @@ Teardown always runs, even if the benchmark phase encounters errors, and adapter
 
 ```text
 ┌─────────────────┐     ┌────────────────┐     ┌──────────────────┐
-│ data-generation │────▶│  S3 (archive)  │────▶│  ETL Pipeline    │
-│   (TPC-H)       │     │  .tar.zst      │     │  download +      │
+│ spicebench    │────▶│  S3 (archive)  │────▶│  ETL Pipeline    │
+│ generate      │     │  .tar.zst      │     │  download +      │
 │                 │     │                │     │  extract +       │
 └─────────────────┘     └────────────────┘     │  rehydrate       │
                                                └────────┬─────────┘
@@ -91,13 +91,13 @@ Teardown always runs, even if the benchmark phase encounters errors, and adapter
 
 ### Data Generation
 
-The `data-generation` binary produces versioned datasets and writes the resulting archive to S3 or a local file. It supports:
+The `spicebench generate` subcommand produces versioned datasets and writes the resulting archive to S3 or a local file. It supports:
 
 - Configurable scale factors (SF1, SF10, SF100, etc.)
 - Multi-step generation for simulating streaming data arrival
 - Version metadata (`version.json`) for downstream ETL
 
-The shipped `data-generation run` CLI currently emits create-only batches and records zero mutation ratios in `version.json`.
+The shipped `spicebench generate` subcommand currently emits create-only batches and records zero mutation ratios in `version.json`.
 
 ### ETL Pipeline
 
@@ -213,7 +213,7 @@ Custom adapters can still expose additional RPC methods for their own workflows,
 
 SpiceBench supports **checkpoint-based result validation** to verify query correctness during active data ingestion:
 
-1. The `checkpointer` binary pre-computes expected query results at specific ETL steps and stores them as Parquet files in S3
+1. The `spicebench checkpoint` subcommand pre-computes expected query results at specific ETL steps and stores them as Parquet files in S3
 2. During a benchmark run, when the ETL pipeline reaches a checkpoint step, it pauses ingestion
 3. SpiceBench runs the scenario workload and compares results against the stored expected results
 4. After validation, ETL resumes

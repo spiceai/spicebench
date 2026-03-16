@@ -16,7 +16,7 @@ limitations under the License.
 
 use std::time::Duration;
 
-use crate::{args::CommonArgs, scenario::Scenario};
+use crate::{args::RunArgs, scenario::Scenario};
 use system_adapter_protocol::{Client as SystemAdapterClient, ClientBuilder};
 use test_framework::{
     anyhow,
@@ -27,14 +27,18 @@ use test_framework::{
 };
 
 pub(crate) mod adbc_executor;
+pub(crate) mod checkpoint;
+pub(crate) mod etl_cmd;
+pub(crate) mod generate;
 pub(crate) mod load;
+pub(crate) mod run;
 
 /// Create telemetry with resource attributes known upfront.
 ///
 /// This ensures the `SdkMeterProvider` is created with the correct resource,
 /// so metrics recorded after this call will have the proper resource attributes.
 #[must_use]
-pub(crate) fn create_telemetry_with_resource(common: &CommonArgs, resource: Resource) -> Telemetry {
+pub(crate) fn create_telemetry_with_resource(common: &RunArgs, resource: Resource) -> Telemetry {
     if let Some(endpoint) = &common.otlp_endpoint {
         return Telemetry::with_otlp_resource(
             OtlpExporterConfig {
@@ -99,7 +103,7 @@ pub(crate) async fn build_test_with_validation(
 /// - `conflicts_with` ensures stdio and http aren't both set
 /// - `requires` ensures params/args/env need a transport
 /// - `group` allows either stdio or http transport
-pub async fn connect_system_adapter(args: &CommonArgs) -> anyhow::Result<SystemAdapterClient> {
+pub async fn connect_system_adapter(args: &RunArgs) -> anyhow::Result<SystemAdapterClient> {
     if let Some(command) = &args.system_adapter_stdio_cmd {
         let args_vec = args
             .system_adapter_stdio_args

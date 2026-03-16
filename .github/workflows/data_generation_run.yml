@@ -103,41 +103,32 @@ jobs:
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
-      - name: Cache data-generation binary
-        id: cache-data-generation
+      - name: Cache spicebench binary
+        id: cache-spicebench
         uses: actions/cache@v4
         with:
-          path: ~/.spice/bin/data-generation
-          key: data-generation-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
+          path: ~/.spice/bin/spicebench
+          key: spicebench-duckdb-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
           restore-keys: |
-            data-generation-${{ runner.os }}-
-
-      - name: Cache checkpointer binary
-        id: cache-checkpointer
-        uses: actions/cache@v4
-        with:
-          path: ~/.spice/bin/checkpointer
-          key: checkpointer-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/*.rs') }}
-          restore-keys: |
-            checkpointer-${{ runner.os }}-
+            spicebench-duckdb-${{ runner.os }}-
 
       - name: Setup Rust toolchain
-        if: steps.cache-data-generation.outputs.cache-hit != 'true' || steps.cache-checkpointer.outputs.cache-hit != 'true'
+        if: steps.cache-spicebench.outputs.cache-hit != 'true'
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.91
           cache: false
 
       - name: Setup CC
-        if: steps.cache-data-generation.outputs.cache-hit != 'true' || steps.cache-checkpointer.outputs.cache-hit != 'true'
+        if: steps.cache-spicebench.outputs.cache-hit != 'true'
         uses: ./.github/actions/setup-cc
 
-      - name: Build data-generation
-        if: steps.cache-data-generation.outputs.cache-hit != 'true'
+      - name: Build spicebench
+        if: steps.cache-spicebench.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.spice/bin
-          cargo build --release -p data-generation
-          install -m 755 target/release/data-generation ~/.spice/bin/data-generation
+          cargo build --release --features duckdb -p spicebench
+          install -m 755 target/release/spicebench ~/.spice/bin/spicebench
 
       - name: Run data generation
         env:
@@ -170,15 +161,8 @@ jobs:
             ARGS="${ARGS} --delete-ratio ${DELETE_RATIO}"
           fi
 
-          echo "Running: data-generation run ${ARGS}"
-          ~/.spice/bin/data-generation run ${ARGS}
-
-      - name: Build checkpointer
-        if: steps.cache-checkpointer.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/.spice/bin
-          cargo build --release --features duckdb -p checkpointer
-          install -m 755 target/release/checkpointer ~/.spice/bin/checkpointer
+          echo "Running: spicebench generate ${ARGS}"
+          ~/.spice/bin/spicebench generate ${ARGS}
 
       - name: Run checkpointer
         env:
@@ -220,5 +204,5 @@ jobs:
           ARGS="${ARGS} --checkpoint-interval-steps ${CHECKPOINT_INTERVAL_STEPS}"
           ARGS="${ARGS} --endpoint ${MINIO_ENDPOINT}"
 
-          echo "Running: checkpointer ${ARGS}"
-          ~/.spice/bin/checkpointer ${ARGS}
+          echo "Running: spicebench checkpoint ${ARGS}"
+          ~/.spice/bin/spicebench checkpoint ${ARGS}

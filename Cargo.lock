@@ -710,19 +710,10 @@ name = "checkpointer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arrow",
- "clap",
- "data-generation",
- "etl",
  "object_store",
- "parquet",
  "serde",
  "serde_json",
- "tempfile",
- "test-framework",
- "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -992,7 +983,6 @@ dependencies = [
  "tpchgen",
  "tpchgen-arrow",
  "tracing",
- "tracing-subscriber",
  "zstd",
 ]
 
@@ -1117,7 +1107,6 @@ dependencies = [
  "arrow-cast",
  "async-trait",
  "chrono",
- "clap",
  "data-generation",
  "duckdb",
  "indexmap",
@@ -1129,7 +1118,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

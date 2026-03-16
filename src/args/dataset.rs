@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use test_framework::queries::{QueryOverrides, QuerySet};
 
-use super::CommonArgs;
+use super::RunArgs;
 
 #[derive(Parser, Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
@@ -63,7 +63,7 @@ pub struct QueryArgs {
 #[expect(clippy::struct_excessive_bools)]
 pub struct DatasetTestArgs {
     #[command(flatten)]
-    pub(crate) common: CommonArgs,
+    pub(crate) common: RunArgs,
 
     /// The query set to use for the test
     #[arg(long)]

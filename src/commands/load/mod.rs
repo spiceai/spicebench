@@ -15,7 +15,7 @@ limitations under the License.
 */
 #![allow(dead_code)]
 
-use crate::{args::CommonArgs, commands::adbc_executor, scenario::Scenario};
+use crate::{args::RunArgs, commands::adbc_executor, scenario::Scenario};
 use arrow::array::RecordBatch;
 use data_generation::version::VersionMetadata;
 use etl::{ETLPipeline, PipelineState, StopReason};
@@ -58,7 +58,7 @@ struct SutInstruments {
     ingestion_rows_per_sec: Gauge<f64>,
 }
 
-fn run_metric_attributes(common_args: &CommonArgs, run_id: uuid::Uuid) -> Vec<KeyValue> {
+fn run_metric_attributes(common_args: &RunArgs, run_id: uuid::Uuid) -> Vec<KeyValue> {
     vec![
         KeyValue::new(
             "executor_instance_type",
@@ -587,7 +587,7 @@ pub(crate) async fn run(
     system_adapter_client: Arc<Mutex<system_adapter_protocol::Client>>,
     run_id: uuid::Uuid,
     scenario: &Scenario,
-    common_args: &CommonArgs,
+    common_args: &RunArgs,
     version_metadata: &VersionMetadata,
     read_pool: adbc_client::AdbcConnectionPool,
     etl_pipeline: &mut ETLPipeline,
