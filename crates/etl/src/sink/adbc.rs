@@ -15,8 +15,9 @@ limitations under the License.
 */
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+use tokio::sync::RwLock;
 
 use adbc_client::{
     AdbcConnection, AdbcConnectionManager, AdbcConnectionPool, IngestMode, create_pool,
@@ -89,7 +90,7 @@ pub struct AdbcSink {
     pool: AdbcConnectionPool,
     target_db_catalog: Option<String>,
     target_db_schema: Option<String>,
-    row_counts: Mutex<HashMap<String, u64>>,
+    row_counts: RwLock<HashMap<String, AtomicU64>>,
     /// Character used to quote SQL identifiers (e.g. '"' for ANSI, '`' for Databricks).
     identifier_quote_char: char,
     /// Whether Int64/UInt64 literals need an `L` suffix (Databricks).
@@ -132,10 +133,34 @@ impl AdbcSink {
             pool,
             target_db_catalog,
             target_db_schema,
-            row_counts: Mutex::new(HashMap::new()),
+            row_counts: RwLock::new(HashMap::new()),
             identifier_quote_char,
             bigint_suffix,
         })
+    }
+
+    fn saturating_fetch_sub(counter: &AtomicU64, value: u64) -> u64 {
+        let mut current = counter.load(Ordering::Relaxed);
+        loop {
+            let updated = current.saturating_sub(value);
+            match counter.compare_exchange_weak(
+                current,
+                updated,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return updated,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    fn apply_row_count_delta(counter: &AtomicU64, op_label: &str, rows_current: u64) -> u64 {
+        match op_label {
+            "insert" => counter.fetch_add(rows_current, Ordering::Relaxed) + rows_current,
+            "delete" => Self::saturating_fetch_sub(counter, rows_current),
+            _ => counter.load(Ordering::Relaxed), // updates don't change row count
+        }
     }
 
     fn quote_identifier(&self, value: &str) -> String {
@@ -895,19 +920,25 @@ impl Sink for AdbcSink {
             }
         }
 
-        let rows_total = {
-            let mut counts = self.row_counts.lock().unwrap();
-            let total = counts.entry(table_name.to_string()).or_insert(0);
-            match op_label {
-                "insert" => *total += rows_current,
-                "delete" => *total = total.saturating_sub(rows_current),
-                _ => {} // updates don't change row count
-            }
-            *total
+        let existing_total = {
+            let counts = self.row_counts.read().await;
+            counts
+                .get(table_name)
+                .map(|counter| Self::apply_row_count_delta(counter, op_label, rows_current))
+        };
+
+        let rows_total = if let Some(total) = existing_total {
+            total
+        } else {
+            let mut counts = self.row_counts.write().await;
+            let counter = counts
+                .entry(table_name.to_string())
+                .or_insert_with(|| AtomicU64::new(0));
+            Self::apply_row_count_delta(counter, op_label, rows_current)
         };
 
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        tracing::info!(
+        tracing::debug!(
             "[adbc] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
         );
 

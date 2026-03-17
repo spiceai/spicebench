@@ -47,3 +47,5 @@ cluster_logs/
 *.duckdb
 *.duckdb.wal
 checkpoints/**/*.parquet
+
+.tar.zst
