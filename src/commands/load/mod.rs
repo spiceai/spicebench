@@ -333,12 +333,24 @@ struct ProbeFlight {
     result: tokio::task::JoinHandle<anyhow::Result<(bool, Vec<RecordBatch>)>>,
 }
 
-/// Dispatch sequential probe queries until one returns correct results,
-/// then return its send_time.
+/// Maximum number of probe queries that may be in-flight simultaneously.
 ///
-/// Every tick of `ticker`, a single probe query is dispatched. Waves overlap —
-/// a new probe is sent even if the previous one hasn't returned yet. The
-/// existing test workers already provide concurrent query load against the SUT.
+/// Probes run via `spawn_blocking` and each one holds a pool connection for
+/// the duration of its query.  Capping in-flight probes prevents them from
+/// saturating the connection pool and starving the test workers.  When the cap
+/// is reached, new dispatches are skipped until an existing probe completes —
+/// a natural form of backoff when the system is under load.
+const MAX_PROBE_IN_FLIGHT: usize = 5;
+
+/// Dispatch probe queries until one returns correct results, then return its
+/// send_time.
+///
+/// Every tick of `ticker`, a single probe query is dispatched **if** fewer than
+/// [`MAX_PROBE_IN_FLIGHT`] probes are currently outstanding.  When the system
+/// is responsive, probes are dispatched at the configured period; when the
+/// system is slow (probes take longer), the effective rate naturally decreases
+/// because we won't dispatch past the cap.
+///
 /// `probe_count` is carried across retries so log output is monotonic.
 async fn probe_until_pass(
     executor: &dyn QueryExecutor,
@@ -362,31 +374,35 @@ async fn probe_until_pass(
             _ = ticker.tick() => {}
         };
 
-        let send_time = std::time::Instant::now();
-        *probe_count += 1;
-        let exec = executor.clone_box();
-        let query = probe_query.clone();
-        let handle = tokio::spawn(async move {
-            match exec.execute(&query).await {
-                Ok(result) => Ok((true, result.batches.unwrap_or_default())),
-                Err(_) => Ok((false, Vec::new())),
-            }
-        });
-        in_flight.push(ProbeFlight {
-            send_time,
-            result: handle,
-        });
+        // Only dispatch a new probe if below the in-flight cap.
+        if in_flight.len() < MAX_PROBE_IN_FLIGHT {
+            let send_time = std::time::Instant::now();
+            *probe_count += 1;
+            let exec = executor.clone_box();
+            let query = probe_query.clone();
+            let handle = tokio::spawn(async move {
+                match exec.execute(&query).await {
+                    Ok(result) => Ok((true, result.batches.unwrap_or_default())),
+                    Err(_) => Ok((false, Vec::new())),
+                }
+            });
+            in_flight.push(ProbeFlight {
+                send_time,
+                result: handle,
+            });
 
-        println!(
-            "Checkpoint {checkpoint_idx}: probe #{} dispatched, {} in-flight",
-            *probe_count,
-            in_flight.len()
-        );
+            println!(
+                "Checkpoint {checkpoint_idx}: probe #{} dispatched, {} in-flight",
+                *probe_count,
+                in_flight.len()
+            );
+        }
 
-        // Drain completed probes
-        let mut still_in_flight: Vec<ProbeFlight> = Vec::new();
-        for flight in in_flight {
-            if flight.result.is_finished() {
+        // Drain completed probes.
+        let mut i = 0;
+        while i < in_flight.len() {
+            if in_flight[i].result.is_finished() {
+                let flight = in_flight.swap_remove(i);
                 if let Ok(Ok((executed, batches))) = flight.result.await
                     && executed
                 {
@@ -396,18 +412,20 @@ async fn probe_until_pass(
                         probe_expected,
                     );
                     if matches!(valid, Ok(QueryValidationResult::Pass)) {
-                        // Abort remaining in-flight probes — no longer needed.
-                        for remaining in still_in_flight {
-                            remaining.result.abort();
+                        // At most MAX_PROBE_IN_FLIGHT - 1 probes remain;
+                        // wait for them so their pool connections are returned
+                        // before the caller starts full query-set validation.
+                        for probe in in_flight {
+                            let _ = probe.result.await;
                         }
                         return ProbeOutcome::Passed(flight.send_time);
                     }
                 }
+                // Don't increment i — swap_remove moved the last element here
             } else {
-                still_in_flight.push(flight);
+                i += 1;
             }
         }
-        in_flight = still_in_flight;
     }
 }
 
@@ -487,11 +505,10 @@ async fn validate_full_query_set(
 /// Alternates between two phases until convergence or timeout:
 ///
 /// **Phase 1 (probe):** Every `probe_period`, dispatch a single probe of the
-/// first scenario query. Waves overlap — a new probe is sent even if the
-/// previous one hasn't returned, so E2E latency resolution is finer than
-/// individual query latency. The existing test workers already provide
-/// concurrent load. When a probe returns correct results, record its **send
-/// time**.
+/// first scenario query, up to [`MAX_PROBE_IN_FLIGHT`] concurrent probes.
+/// When the cap is reached, new dispatches are skipped until an existing probe
+/// completes — naturally backing off when the system is slow.  When a probe
+/// returns correct results, record its **send time**.
 ///
 /// **Phase 2 (validate):** Run the full query set concurrently. If every query
 /// passes, the checkpoint has converged and E2E latency =
