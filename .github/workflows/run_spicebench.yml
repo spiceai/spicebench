@@ -58,12 +58,6 @@ on:
         required: false
         default: true
         type: boolean
-      scheduler_state_location:
-        description: 'S3 URI for shared scheduler state (e.g. s3://bucket/scheduler-state/). If empty, scheduler state is not configured.'
-        required: false
-        default: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state/'
-        type: string
-
 jobs:
   run-spicebench:
     name: Run spicebench
@@ -246,7 +240,7 @@ jobs:
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1.0' }}
           ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
           ETL_SINK: 'adbc'
-          SCHEDULER_STATE_LOCATION: ${{ github.event.inputs.scheduler_state_location || '' }}
+          SCHEDULER_STATE_LOCATION: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/'
           VALIDATE_CHECKPOINT_RESULTS: ${{ github.event.inputs.validate_checkpoint_results || 'false' }}
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SCRAPE_SUT_METRICS: ${{ github.event.inputs.scrape_sut_metrics || 'true' }}
@@ -297,10 +291,7 @@ jobs:
             VALIDATION_ARGS="--validate-results"
           fi
 
-          SCHEDULER_ARGS=""
-          if [ -n "${SCHEDULER_STATE_LOCATION}" ]; then
-            SCHEDULER_ARGS="--scheduler-state-location ${SCHEDULER_STATE_LOCATION}"
-          fi
+          SCHEDULER_STATE_ADAPTER_ENV="--system-adapter-env SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}"
 
           SUT_METRICS_ARGS=""
           if [ "${SCRAPE_SUT_METRICS}" = "true" ]; then
@@ -331,7 +322,7 @@ jobs:
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
+            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
           fi
 
@@ -351,8 +342,8 @@ jobs:
             ${ETL_ARGS} \
             ${ETL_SINK_ARGS} \
             ${VALIDATION_ARGS} \
-            ${SCHEDULER_ARGS} \
             ${SUT_METRICS_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
+            ${SCHEDULER_STATE_ADAPTER_ENV} \
