@@ -77,12 +77,12 @@ on:
       num_steps:
         description: 'Number of data generation steps (partitions for TPC-H dbgen)'
         required: false
-        default: '5'
+        default: '20'
         type: string
       checkpoint_interval_steps:
         description: 'Every N steps to take a checkpoint'
         required: false
-        default: '3'
+        default: '10'
         type: string
       update_ratio:
         description: 'Ratio of rows to update per step (0.0 to 1.0)'
