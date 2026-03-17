@@ -1923,7 +1923,17 @@ impl Handler for DatabricksAdapter {
             .map_err(|e| format!("Failed to initialize schema: {e}"))?;
 
         // Create managed UC tables (sources for synced tables) via SQL Warehouse.
+        // Drop any stale tables from a previous failed run first to ensure idempotent setup.
         for (table_name, dataset_cfg) in &datasets {
+            let drop_sql = format!(
+                "DROP TABLE IF EXISTS {}",
+                self.table_full_name(table_name)
+            );
+            eprintln!("[databricks-adapter] dropping stale managed table (if exists) '{table_name}': {drop_sql}");
+            self.execute_sql_statement(&drop_sql)
+                .await
+                .map_err(|e| format!("Failed to drop stale managed table '{table_name}': {e}"))?;
+
             let ddl = self
                 .create_table_ddl(table_name, dataset_cfg, TableFormat::Delta)
                 .map_err(|e| {
@@ -1962,6 +1972,15 @@ impl Handler for DatabricksAdapter {
                 self.execute_sql_statement(&create_schema_sql)
                     .await
                     .map_err(|e| format!("Failed to initialize schema': {e}"))?;
+
+                // Clean up stale synced tables from a previous failed run (best-effort).
+                for (table_name, _) in &datasets {
+                    if let Err(e) = self.delete_synced_table(table_name).await {
+                        eprintln!(
+                            "[databricks-adapter] note: could not delete stale synced table '{table_name}' (may not exist): {e}"
+                        );
+                    }
+                }
 
                 // Parallel synced table creation + wait for ONLINE
                 let this = &*self;
