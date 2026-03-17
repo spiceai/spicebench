@@ -192,18 +192,26 @@ async fn run_benchmark(
         Some((read_driver, read_db_kwargs)) => (read_driver.to_string(), read_db_kwargs.clone()),
     };
 
-    let read_pool = match adbc_client::create_pool(&read_driver_name, read_db_kwargs, None) {
-        Ok(pool) => pool,
-        Err(e) => {
-            pipeline.cancel();
-            return Err(anyhow::anyhow!(
-                "Failed to create ADBC connection pool for driver {read_driver_name}: {e}"
-            ));
-        }
-    };
+    // Size the read pool to accommodate both the test workers and the
+    // checkpoint validation executor running concurrently.  Each test worker
+    // holds one connection for the duration of a query, and during checkpoint
+    // validation `validate_full_query_set` runs up to `concurrency` queries
+    // in parallel via a *separate* executor backed by the same pool.  Without
+    // enough headroom the excess `pool.get()` calls block and eventually hit
+    // r2d2's 30-second connection timeout ("timed out waiting for connection").
+    let read_pool_size: u32 = (common.concurrency * 2 + 1).try_into().unwrap_or(u32::MAX);
+    let read_pool =
+        match adbc_client::create_pool(&read_driver_name, read_db_kwargs, Some(read_pool_size)) {
+            Ok(pool) => pool,
+            Err(e) => {
+                pipeline.cancel();
+                return Err(anyhow::anyhow!(
+                    "Failed to create ADBC connection pool for driver {read_driver_name}: {e}"
+                ));
+            }
+        };
     tracing::info!(
-        "ADBC connection pool created (driver: {read_driver_name}, size: {})",
-        common.concurrency + 1
+        "ADBC connection pool created (driver: {read_driver_name}, size: {read_pool_size})",
     );
 
     super::load::run(
@@ -343,13 +351,6 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
             serde_json::Value::String("adbc".to_string()),
         ),
     ]);
-
-    if let Some(ref state_loc) = args.scheduler_state_location {
-        setup_metadata.insert(
-            "scheduler_state_location".to_string(),
-            serde_json::Value::String(state_loc.clone()),
-        );
-    }
 
     if let Ok(system_under_test) = std::env::var("SYSTEM_UNDER_TEST") {
         setup_metadata.insert(

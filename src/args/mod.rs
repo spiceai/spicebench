@@ -161,11 +161,6 @@ pub struct RunArgs {
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
 
-    /// S3 URI for shared scheduler state (e.g. `s3://bucket/scheduler-state/`).
-    /// Passed to the system adapter as `scheduler_state_location` metadata.
-    #[arg(long)]
-    pub(crate) scheduler_state_location: Option<String>,
-
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]
     pub(crate) table_format: TableFormat,

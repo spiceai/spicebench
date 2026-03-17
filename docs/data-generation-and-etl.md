@@ -105,6 +105,29 @@ spicebench generate \
 
 To write a local archive instead of uploading to S3, use `--output-archive ./tpch-sf1.tar.zst`.
 
+### Production Datasets
+
+Pre-generated TPC-H datasets are maintained on MinIO (`spicebench` bucket, `us-east-1`) for benchmark runs. Two dataset families are available, both generated via the [`data_generation_run.yml`](../.github/workflows/data_generation_run.yml) GitHub Actions workflow.
+
+#### Insert-Only (`data-gen` prefix)
+
+Standard TPC-H data with inserts only — no updates or deletes. Currently used as the default for benchmark runs.
+
+| S3 Path | Scale Factor | Steps | Checkpoint Interval |
+| --- | --- | --- | --- |
+| `data-gen/tpch/0.01` | 0.01 | 20 | 10 |
+| `data-gen/tpch/0.1` | 0.1 | 20 | 10 |
+| `data-gen/tpch/1.0` | 1.0 | 20 | 10 |
+| `data-gen/tpch/10.0` | 10.0 | 20 | 10 |
+
+#### With Mutations (`data-gen-mut-v6` prefix)
+
+TPC-H data with insert, update, and delete operations mixed into each step. This dataset will become the default once mutation support is fully validated, replacing the insert-only dataset above.
+
+| S3 Path | Scale Factor | Steps | Checkpoint Interval | Update Ratio | Delete Ratio |
+| --- | --- | --- | --- | --- | --- |
+| `data-gen-mut-v6/tpch/1.0` | 1.0 | 20 | 5 | 0.1 | 0.05 |
+
 ---
 
 ## ETL Pipeline
