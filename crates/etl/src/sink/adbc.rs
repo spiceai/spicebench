@@ -810,7 +810,7 @@ impl Sink for AdbcSink {
         _batch_id: u64,
         batch: RecordBatch,
         op: InsertOp,
-        partition_columns: Vec<String>,
+        _partition_columns: Vec<String>,
     ) -> anyhow::Result<()> {
         if batch.num_rows() == 0 {
             return Ok(());
