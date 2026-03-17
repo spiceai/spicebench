@@ -949,8 +949,11 @@ impl DatabricksAdapter {
             self.config.endpoint
         );
 
-        let mut total_read: u64 = 0;
-        let mut total_write: u64 = 0;
+        let mut total_read_bytes: u64 = 0;
+        let mut total_read_remote_bytes: u64 = 0;
+        let mut total_read_cache_bytes: u64 = 0;
+        let mut total_write_remote_bytes: u64 = 0;
+        let mut total_spill_to_disk_bytes: u64 = 0;
         let mut page_token: Option<String> = None;
 
         loop {
@@ -988,9 +991,11 @@ impl DatabricksAdapter {
 
             for entry in &body.res {
                 if let Some(ref m) = entry.metrics {
-                    total_read += m.read_bytes.unwrap_or(0);
-                    total_write +=
-                        m.write_remote_bytes.unwrap_or(0) + m.spill_to_disk_bytes.unwrap_or(0);
+                    total_read_bytes += m.read_bytes.unwrap_or(0);
+                    total_read_remote_bytes += m.read_remote_bytes.unwrap_or(0);
+                    total_read_cache_bytes += m.read_cache_bytes.unwrap_or(0);
+                    total_write_remote_bytes += m.write_remote_bytes.unwrap_or(0);
+                    total_spill_to_disk_bytes += m.spill_to_disk_bytes.unwrap_or(0);
                 }
             }
 
@@ -1001,7 +1006,15 @@ impl DatabricksAdapter {
             }
         }
 
-        Ok((total_read, total_write))
+        let total_write_bytes = total_write_remote_bytes + total_spill_to_disk_bytes;
+
+        eprintln!(
+            "[databricks-adapter] query history I/O breakdown: \
+             total_read_bytes={total_read_bytes} (total_read_remote_bytes={total_read_remote_bytes}, total_read_cache_bytes={total_read_cache_bytes}), \
+             total_write_bytes={total_write_bytes} (total_write_remote_bytes={total_write_remote_bytes}, total_spill_to_disk_bytes={total_spill_to_disk_bytes})"
+        );
+
+        Ok((total_read_bytes, total_write_bytes))
     }
 
     async fn ensure_cluster_ready(&self) -> Result<(String, bool)> {
@@ -1797,6 +1810,12 @@ struct QueryHistoryMetrics {
     /// and local SSD/disk cache (`read_cache_bytes`). Maps to `disk_read_bytes`.
     #[serde(default)]
     read_bytes: Option<u64>,
+    /// Bytes read from remote cloud storage (S3/ADLS/GCS).
+    #[serde(default)]
+    read_remote_bytes: Option<u64>,
+    /// Bytes read from the local SSD/disk cache.
+    #[serde(default)]
+    read_cache_bytes: Option<u64>,
     /// Bytes written to remote cloud storage (S3/ADLS/GCS). Non-zero for DDL/DML that
     /// materializes data (e.g. CTAS). Summed with `spill_to_disk_bytes` for `disk_write_bytes`.
     #[serde(default)]
@@ -1929,11 +1948,10 @@ impl Handler for DatabricksAdapter {
         // Create managed UC tables (sources for synced tables) via SQL Warehouse.
         // Drop any stale tables from a previous failed run first to ensure idempotent setup.
         for (table_name, dataset_cfg) in &datasets {
-            let drop_sql = format!(
-                "DROP TABLE IF EXISTS {}",
-                self.table_full_name(table_name)
+            let drop_sql = format!("DROP TABLE IF EXISTS {}", self.table_full_name(table_name));
+            eprintln!(
+                "[databricks-adapter] dropping stale managed table (if exists) '{table_name}': {drop_sql}"
             );
-            eprintln!("[databricks-adapter] dropping stale managed table (if exists) '{table_name}': {drop_sql}");
             self.execute_sql_statement(&drop_sql)
                 .await
                 .map_err(|e| format!("Failed to drop stale managed table '{table_name}': {e}"))?;
@@ -2268,7 +2286,7 @@ impl Handler for DatabricksAdapter {
                 match self.sum_query_history_io(started_at_ms).await {
                     Ok((total_read, total_write)) => {
                         eprintln!(
-                            "[databricks-adapter] query history totals: read_bytes={total_read} write_bytes={total_write} (write_remote_bytes+spill_to_disk_bytes)"
+                            "[databricks-adapter] query history totals: read_bytes={total_read} write_bytes={total_write}"
                         );
                         resource.disk_read_bytes = Some(total_read);
                         resource.disk_write_bytes = Some(total_write);
