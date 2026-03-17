@@ -48,4 +48,4 @@ cluster_logs/
 *.duckdb.wal
 checkpoints/**/*.parquet
 
-.tar.zst
+*.tar.zst
