@@ -35,7 +35,7 @@ cargo run --manifest-path system-adapters/templates/rust/Cargo.toml -- --transpo
 ### Stdio transport
 
 ```bash
-spicebench \
+spicebench run \
   --scenario tpch \
   --system-adapter-name rust-template \
   --system-adapter-stdio-cmd cargo \
@@ -45,7 +45,7 @@ spicebench \
 ### HTTP transport
 
 ```bash
-spicebench \
+spicebench run \
   --scenario tpch \
   --system-adapter-name rust-template \
   --system-adapter-http-url http://127.0.0.1:8080/jsonrpc

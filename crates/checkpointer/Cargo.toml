@@ -10,20 +10,7 @@ version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-arrow.workspace = true
-clap = { workspace = true, features = ["derive"] }
-data-generation = { path = "../data-generation" }
-etl = { path = "../etl" }
-test-framework = { path = "../test-framework" }
 object_store = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-parquet.workspace = true
-tempfile.workspace = true
-tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
-
-[features]
-default = []
-duckdb = ["etl/duckdb"]

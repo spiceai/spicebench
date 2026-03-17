@@ -72,7 +72,7 @@ dbc install databricks
 ### 3. Run the benchmark
 
 ```bash
-spicebench \
+spicebench run \
     --scenario tpch \
     --system-adapter-name databricks \
     --system-adapter-stdio-cmd system-adapters/databricks/target/debug/databricks-system-adapter \
@@ -109,7 +109,7 @@ The `Dockerfile` uses `debian:trixie-slim` and copies the pre-built binary to `/
 To generate fresh TPC-H datasets:
 
 ```bash
-cargo run -p data-generation -- run \
+spicebench generate \
     --scale-factor 1 \
     --bucket my-bucket \
     --region us-west-2 \
@@ -124,20 +124,19 @@ See [Data Generation & ETL](data-generation-and-etl.md) for full details.
 To run the ETL pipeline independently:
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
     --bucket spiceai-public-datasets \
     --prefix data-gen \
-    --target-prefix rehydrated \
-    --partition-by __created_at
+    --sink null
 ```
 
 See [Data Generation & ETL](data-generation-and-etl.md) for all sink options.
 
 ## Next Steps
 
-- [CLI Reference](cli-reference.md) - all flags and options for `spicebench`, `data-generation`, `etl`, and `checkpointer`
+- [CLI Reference](cli-reference.md) - all flags and options for `spicebench run`, `spicebench generate`, `spicebench etl`, and `spicebench checkpoint`
 - [System Adapters](system-adapters.md) - how to build an adapter for your platform
 - [Configuration](configuration.md) - scenario, table format, and run metadata
 - [Metrics & Telemetry](metrics-and-telemetry.md) - all collected metrics and how to visualize them

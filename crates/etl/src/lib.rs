@@ -17,7 +17,7 @@ limitations under the License.
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use arrow::array::{Array, RecordBatch, StringArray, TimestampMicrosecondArray};
+use arrow::array::{Array, AsArray, RecordBatch, StringArray, TimestampMicrosecondArray};
 use arrow::compute;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use data_generation::config::{DatasetConfig as GenerationDatasetConfig, TargetConfig};
@@ -165,6 +165,59 @@ fn take_median_sample_ms(samples: &StdArc<StdMutex<Vec<u64>>>) -> Option<(f64, u
     Some((median_ms, count))
 }
 
+/// Compacts any `Utf8View` / `BinaryView` columns in a [`RecordBatch`] by
+/// calling [`GenericByteViewArray::gc()`] to coalesce their scattered data
+/// buffers into a single contiguous buffer.
+///
+/// When multiple small batches (e.g. from a Parquet reader) are concatenated
+/// via [`arrow::compute::concat_batches`], each `Utf8View` column accumulates
+/// every source batch's data buffers without compacting them.  A subsequent
+/// `slice()` of the concatenated batch retains **all** backing buffers
+/// (because `StringViewArray` cannot determine which buffers are still
+/// referenced), causing even a single-row slice to serialize at nearly the
+/// full batch size in Arrow IPC.  This leads to spurious "single-row batch
+/// exceeds max ingest payload" errors in downstream sinks.
+///
+/// This function is a no-op for batches that contain no view-typed columns.
+fn gc_byte_view_columns(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
+    let schema = batch.schema();
+    let mut needs_gc = false;
+
+    for field in schema.fields() {
+        if matches!(field.data_type(), DataType::Utf8View | DataType::BinaryView) {
+            needs_gc = true;
+            break;
+        }
+    }
+
+    if !needs_gc {
+        return Ok(batch.clone());
+    }
+
+    let columns: Vec<Arc<dyn Array>> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, field)| -> Arc<dyn Array> {
+            let col = batch.column(i);
+            match field.data_type() {
+                DataType::Utf8View => {
+                    let view_array = col.as_string_view();
+                    Arc::new(view_array.gc())
+                }
+                DataType::BinaryView => {
+                    let view_array = col.as_binary_view();
+                    Arc::new(view_array.gc())
+                }
+                _ => Arc::clone(col),
+            }
+        })
+        .collect();
+
+    RecordBatch::try_new(schema, columns)
+        .map_err(|e| anyhow::anyhow!("Failed to rebuild batch after gc: {e}"))
+}
+
 /// Concatenates small input batches and splits large input batches so each
 /// resulting batch has at most [`target_batch_rows()`] rows.
 ///
@@ -196,8 +249,9 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
                 let merged = if pending.len() == 1 {
                     pending.remove(0)
                 } else {
-                    arrow::compute::concat_batches(&schema, &pending)
-                        .map_err(|e| anyhow::anyhow!("Failed to concat input batches: {e}"))?
+                    let concatenated = arrow::compute::concat_batches(&schema, &pending)
+                        .map_err(|e| anyhow::anyhow!("Failed to concat input batches: {e}"))?;
+                    gc_byte_view_columns(&concatenated)?
                 };
                 result.push(merged);
                 pending.clear();
@@ -216,9 +270,11 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
                 let merged = if pending.len() == 1 {
                     pending.remove(0)
                 } else {
-                    arrow::compute::concat_batches(&schema, &pending).map_err(|e| {
-                        anyhow::anyhow!("Failed to concat input batches at threshold: {e}")
-                    })?
+                    let concatenated =
+                        arrow::compute::concat_batches(&schema, &pending).map_err(|e| {
+                            anyhow::anyhow!("Failed to concat input batches at threshold: {e}")
+                        })?;
+                    gc_byte_view_columns(&concatenated)?
                 };
                 result.push(merged);
                 pending.clear();
@@ -232,8 +288,9 @@ fn coalesce_batches(batches: &[RecordBatch]) -> anyhow::Result<Vec<RecordBatch>>
         let merged = if pending.len() == 1 {
             pending.remove(0)
         } else {
-            arrow::compute::concat_batches(&schema, &pending)
-                .map_err(|e| anyhow::anyhow!("Failed to concat trailing input batches: {e}"))?
+            let concatenated = arrow::compute::concat_batches(&schema, &pending)
+                .map_err(|e| anyhow::anyhow!("Failed to concat trailing input batches: {e}"))?;
+            gc_byte_view_columns(&concatenated)?
         };
         result.push(merged);
     }
@@ -1944,4 +2001,93 @@ async fn run_pipeline(
         "ETL pipeline completed successfully"
     );
     PipelineState::Stopped(StopReason::Completed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{RecordBatch, StringViewArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::writer::StreamWriter;
+    use std::sync::Arc;
+
+    /// Measures the IPC-serialized size of a [`RecordBatch`].
+    fn ipc_size(batch: &RecordBatch) -> usize {
+        let mut buf = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut buf, &batch.schema()).unwrap();
+        writer.write(batch).unwrap();
+        writer.finish().unwrap();
+        buf.len()
+    }
+
+    /// Regression test: `coalesce_batches` must compact `Utf8View` data buffers.
+    ///
+    /// When the Parquet reader decodes a `Utf8View` column, each output batch
+    /// is a slice of a larger decoded array that shares the same backing data
+    /// buffer(s).  `concat_batches` collects a separate reference to those
+    /// buffers for each input batch, so the merged array accumulates N copies
+    /// of the same buffer reference.  The IPC writer writes each buffer
+    /// independently, ballooning the wire size to N × actual data.  A
+    /// single-row `slice()` retains all N buffer references, causing even a
+    /// tiny slice to serialize at ~N × data size.
+    ///
+    /// This test simulates that pattern and verifies that `coalesce_batches`
+    /// applies `gc()` to compact the duplicate buffer references.
+    #[test]
+    fn coalesce_batches_compacts_utf8view_buffers() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "comment",
+            DataType::Utf8View,
+            false,
+        )]));
+
+        // Build one large array (simulates what the parquet reader decodes
+        // for a row group) then slice it into 30 batches of 1024 rows.
+        let total_rows = 30 * 1024;
+        let values: Vec<String> = (0..total_rows)
+            .map(|j| format!("row-{j}-padding-to-make-string-longer-than-12-bytes-for-view"))
+            .collect();
+        let big_array = StringViewArray::from_iter_values(values);
+        let big_batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(big_array)]).unwrap();
+
+        let mut small_batches = Vec::new();
+        for i in 0..30 {
+            small_batches.push(big_batch.slice(i * 1024, 1024));
+        }
+
+        // Sanity: raw concat (without gc) produces a bloated single-row slice
+        // because StringViewArray retains duplicate buffer references from
+        // each sliced input.
+        let raw_concat = arrow::compute::concat_batches(&schema, &small_batches).unwrap();
+        let raw_full_size = ipc_size(&raw_concat);
+        let raw_single = raw_concat.slice(0, 1);
+        let raw_single_size = ipc_size(&raw_single);
+
+        // The raw single-row slice should be close to the full batch size
+        // (30 duplicate buffer references all get serialized).
+        assert!(
+            raw_single_size as f64 > raw_full_size as f64 * 0.8,
+            "raw concat single-row slice ({raw_single_size}) should be >80% of \
+             full batch size ({raw_full_size}); test premise is invalid"
+        );
+
+        let coalesced = coalesce_batches(&small_batches).unwrap();
+        assert!(!coalesced.is_empty(), "coalesced must produce batches");
+
+        // After gc, the single-row slice should be much smaller than the raw
+        // single-row slice because the N duplicate buffer references have been
+        // compacted into a single buffer.
+        for (idx, batch) in coalesced.iter().enumerate() {
+            let single = batch.slice(0, 1);
+            let size = ipc_size(&single);
+            assert!(
+                (size as f64) < raw_single_size as f64 * 0.15,
+                "coalesced batch {idx}: single-row slice IPC ({size} bytes, {:.2} MB) \
+                 should be < 15% of raw single-row size ({raw_single_size} bytes, {:.2} MB)",
+                size as f64 / 1_048_576.0,
+                raw_single_size as f64 / 1_048_576.0,
+            );
+        }
+    }
 }

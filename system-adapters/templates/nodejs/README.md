@@ -35,7 +35,7 @@ node adapter.js --transport http --host 127.0.0.1 --port 8080 --path /jsonrpc
 ### Stdio transport
 
 ```bash
-spicebench \
+spicebench run \
   --scenario tpch \
   --system-adapter-name node-template \
   --system-adapter-stdio-cmd node \
@@ -45,7 +45,7 @@ spicebench \
 ### HTTP transport
 
 ```bash
-spicebench \
+spicebench run \
   --scenario tpch \
   --system-adapter-name node-template \
   --system-adapter-http-url http://127.0.0.1:8080/jsonrpc

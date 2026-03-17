@@ -5,7 +5,9 @@
 - an ADBC target via bulk ingest (default)
 - a null sink that discards writes for throughput benchmarking
 
-Dataset configuration is read from the extracted `version.json` metadata written by `data-generation`.
+This crate provides the `etl` library used by the `spicebench etl` subcommand.
+
+Dataset configuration is read from the extracted `version.json` metadata written by `spicebench generate`.
 
 ## Required Inputs
 
@@ -32,10 +34,10 @@ When `--adbc-driver flightsql` is used, ETL defaults `adbc.flight.sql.client_opt
 ### Databricks Example
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
-    --bucket peasee-indexes \
+    --bucket my-data \
     --prefix raw \
     --adbc-driver databricks \
     --adbc-uri "databricks://token:${DATABRICKS_TOKEN}@${DATABRICKS_ENDPOINT}:443/${DATABRICKS_HTTP_PATH}" \
@@ -67,7 +69,7 @@ cargo run -p etl -- \
 Use `--sink null` to discard all ETL writes. This is useful for measuring source and ETL throughput without sink overhead.
 
 ```bash
-cargo run -p etl -- \
+spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
     --archive-file ./tpch-sf1.tar.zst \

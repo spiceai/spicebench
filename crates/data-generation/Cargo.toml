@@ -12,10 +12,6 @@ version.workspace = true
 name = "data_generation"
 path = "src/lib.rs"
 
-[[bin]]
-name = "data-generation"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
 arrow = { workspace = true }
@@ -33,6 +29,5 @@ tar = "0.4"
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zstd = "0.13"
 bytes.workspace = true

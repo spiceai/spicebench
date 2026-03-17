@@ -35,7 +35,7 @@ mvn -f system-adapters/templates/java/pom.xml -q compile exec:java -Dexec.mainCl
 ### Stdio transport
 
 ```bash
-spicebench \
+spicebench run \
   --scenario tpch \
   --system-adapter-name java-template \
   --system-adapter-stdio-cmd mvn \
@@ -45,7 +45,7 @@ spicebench \
 ### HTTP transport
 
 ```bash
-spicebench \
+spicebench run \
   --scenario tpch \
   --system-adapter-name java-template \
   --system-adapter-http-url http://127.0.0.1:8080/jsonrpc

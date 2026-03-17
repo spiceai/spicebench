@@ -14,10 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::{Parser, ValueEnum};
 use data_generation::config::{TargetConfig, build_version_prefix, format_scale_factor};
 use data_generation::storage::DataStorage;
 use data_generation::storage::file::FileStorage;
@@ -26,137 +24,19 @@ use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
 use etl::sink::null::NullSink;
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
-use tracing_subscriber::EnvFilter;
+use test_framework::anyhow;
+
+use crate::args::etl::{EtlArgs, EtlSinkType};
 
 const FLIGHTSQL_MAX_MSG_SIZE_OPTION: &str = "adbc.flight.sql.client_option.with_max_msg_size";
 const DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES: &str = "78643200";
 
-#[derive(Clone, Debug, Default, ValueEnum)]
-enum SinkType {
-    #[default]
-    #[value(name = "adbc")]
-    Adbc,
-    #[value(name = "null")]
-    Null,
-}
-
-#[derive(Parser)]
-#[command(
-    about = "Run an ETL pipeline that reads from a data archive, rehydrates data, and writes to ADBC or a null sink"
-)]
-struct Cli {
-    /// Scenario name (e.g. "tpch") — used in the storage path `{prefix}/{scenario}/{version}/`
-    #[arg(long, default_value = "tpch")]
-    scenario: String,
-
-    /// Scale factor for the dataset. The version is derived automatically as
-    /// `format_scale_factor(scale_factor)` (e.g. 1.0 → "1.0").
-    #[arg(long, default_value_t = 1.0)]
-    scale_factor: f64,
-
-    /// Path to a local archive file (`.tar.zst`). When specified, the archive
-    /// is extracted locally without downloading from S3.
-    #[arg(long)]
-    archive_file: Option<PathBuf>,
-
-    /// Directory to extract the archive into. Defaults to a temporary directory.
-    #[arg(long)]
-    extract_dir: Option<PathBuf>,
-
-    /// S3 bucket name (required unless --archive-file is specified)
-    #[arg(long)]
-    bucket: Option<String>,
-
-    /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
-    #[arg(long, default_value = "")]
-    prefix: String,
-
-    /// AWS region
-    #[arg(long)]
-    region: Option<String>,
-
-    /// S3 endpoint URL (for MinIO/LocalStack)
-    #[arg(long)]
-    endpoint: Option<String>,
-
-    /// ETL sink target.
-    ///
-    /// - adbc: write via ADBC bulk ingest
-    /// - null: discard all writes (throughput benchmark mode)
-    #[arg(long, value_enum, default_value_t = SinkType::Adbc)]
-    sink: SinkType,
-
-    /// ADBC driver name (for example: "databricks" or "flightsql").
-    /// Provide with `--adbc-uri` to write to an ADBC target.
-    #[arg(long)]
-    adbc_driver: Option<String>,
-
-    /// Connection URI passed as ADBC database option `uri`.
-    /// Provide with `--adbc-driver` to write to an ADBC target.
-    #[arg(long)]
-    adbc_uri: Option<String>,
-
-    /// Optional target database catalog for ADBC bulk ingest inserts
-    #[arg(long)]
-    adbc_catalog: Option<String>,
-
-    /// Optional target database schema for bulk ingest
-    #[arg(long)]
-    adbc_schema: Option<String>,
-
-    /// When writing to an ADBC target, send PostgreSQL-compatible CREATE TABLE
-    /// statements before ETL starts, based on dataset table schemas (including
-    /// `__created_at`).
-    #[arg(long, default_value_t = false)]
-    adbc_create_tables: bool,
-
-    /// Additional ADBC database options as `key=value`.
-    ///
-    /// May be specified multiple times.
-    /// Example: `--adbc-option username=token --adbc-option password=...`
-    #[arg(long = "adbc-option")]
-    adbc_options: Vec<String>,
-}
-
-impl Cli {
-    /// Derives the version string from the scale factor.
-    fn derived_version(&self) -> String {
-        format_scale_factor(self.scale_factor)
-    }
-
-    /// Builds the source config with the versioned prefix:
-    /// `{prefix}/{scenario}/{version}`
-    ///
-    /// Requires `--bucket` to be set.
-    fn source_config(&self) -> anyhow::Result<TargetConfig> {
-        let bucket = self
-            .bucket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("--bucket is required when not using --archive-file"))?;
-        let version = self.derived_version();
-        let version_prefix = build_version_prefix(&self.prefix, &self.scenario, &version);
-        Ok(TargetConfig {
-            bucket: bucket.clone(),
-            prefix: version_prefix,
-            region: self.region.clone(),
-            endpoint: self.endpoint.clone(),
-            partition_columns: vec![],
-        })
-    }
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
-    let cli = Cli::parse();
-    let version = cli.derived_version();
+pub async fn execute(args: &EtlArgs) -> anyhow::Result<()> {
+    let version = format_scale_factor(args.scale_factor);
 
     // Determine where to extract the archive data.
     let extract_temp_dir;
-    let extract_dir = if let Some(ref dir) = cli.extract_dir {
+    let extract_dir = if let Some(ref dir) = args.extract_dir {
         dir.clone()
     } else {
         extract_temp_dir = tempfile::tempdir()?;
@@ -164,8 +44,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Step 1: Obtain the data archive and extract it.
-    if let Some(ref archive_file) = cli.archive_file {
-        // Local archive mode - extract directly, no S3 required.
+    if let Some(ref archive_file) = args.archive_file {
+        // Local archive mode — extract directly, no S3 required.
         tracing::info!(
             archive_file = %archive_file.display(),
             extract_dir = %extract_dir.display(),
@@ -174,7 +54,18 @@ async fn main() -> anyhow::Result<()> {
         data_generation::archive::extract_archive(archive_file, &extract_dir)?;
     } else {
         // Download from S3.
-        let source_config = cli.source_config()?;
+        let bucket = args
+            .bucket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--bucket is required when not using --archive-file"))?;
+        let version_prefix = build_version_prefix(&args.prefix, &args.scenario, &version);
+        let source_config = TargetConfig {
+            bucket: bucket.clone(),
+            prefix: version_prefix,
+            region: args.region.clone(),
+            endpoint: args.endpoint.clone(),
+            partition_columns: vec![],
+        };
         let s3_storage = Arc::new(S3Storage::new(&source_config)?);
         ETLPipeline::download(s3_storage as Arc<dyn DataStorage>, &extract_dir).await?;
     }
@@ -192,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let dataset_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
 
-    if cli.adbc_create_tables && !matches!(cli.sink, SinkType::Adbc) {
+    if args.adbc_create_tables && !matches!(args.sink, EtlSinkType::Adbc) {
         anyhow::bail!("--adbc-create-tables requires --sink adbc");
     }
 
@@ -201,13 +92,13 @@ async fn main() -> anyhow::Result<()> {
         Option<TargetConfig>,
         String,
         Option<Arc<AdbcSink>>,
-    ) = match cli.sink {
-        SinkType::Adbc => {
-            let driver = cli
+    ) = match args.sink {
+        EtlSinkType::Adbc => {
+            let driver = args
                 .adbc_driver
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("--sink adbc requires --adbc-driver"))?;
-            let uri = cli
+            let uri = args
                 .adbc_uri
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("--sink adbc requires --adbc-uri"))?;
@@ -218,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
                 serde_json::Value::String(uri.to_string()),
             );
 
-            for option in &cli.adbc_options {
+            for option in &args.adbc_options {
                 let (key, value) = option.split_once('=').ok_or_else(|| {
                     anyhow::anyhow!("Invalid --adbc-option '{option}'. Expected key=value")
                 })?;
@@ -245,8 +136,8 @@ async fn main() -> anyhow::Result<()> {
             let adbc_sink = Arc::new(AdbcSink::new(
                 driver,
                 db_kwargs,
-                cli.adbc_catalog.clone(),
-                cli.adbc_schema.clone(),
+                args.adbc_catalog.clone(),
+                args.adbc_schema.clone(),
             )?);
 
             (
@@ -256,13 +147,13 @@ async fn main() -> anyhow::Result<()> {
                 Some(adbc_sink),
             )
         }
-        SinkType::Null => {
-            if cli.adbc_driver.is_some()
-                || cli.adbc_uri.is_some()
-                || !cli.adbc_options.is_empty()
-                || cli.adbc_catalog.is_some()
-                || cli.adbc_schema.is_some()
-                || cli.adbc_create_tables
+        EtlSinkType::Null => {
+            if args.adbc_driver.is_some()
+                || args.adbc_uri.is_some()
+                || !args.adbc_options.is_empty()
+                || args.adbc_catalog.is_some()
+                || args.adbc_schema.is_some()
+                || args.adbc_create_tables
             {
                 anyhow::bail!(
                     "ADBC options are only valid with --sink adbc. Remove ADBC flags when using --sink null."
@@ -273,17 +164,17 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    if cli.adbc_create_tables {
-        if let Some(adbc_sink) = &adbc_sink {
-            let datasets = ETLPipeline::create_tables_request_datasets(
-                dataset_source.clone(),
-                &dataset_config,
-                file_storage.clone(),
-                &mutations,
-                target_config.clone(),
-            )?;
-            adbc_sink.create_tables_from_dataset_configs(&datasets)?;
-        }
+    if args.adbc_create_tables
+        && let Some(adbc_sink) = &adbc_sink
+    {
+        let datasets = ETLPipeline::create_tables_request_datasets(
+            dataset_source.clone(),
+            &dataset_config,
+            file_storage.clone(),
+            &mutations,
+            target_config.clone(),
+        )?;
+        adbc_sink.create_tables_from_dataset_configs(&datasets)?;
     }
 
     let mut pipeline = ETLPipeline::new(
@@ -298,17 +189,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing::info!(
-        scenario = %cli.scenario,
+        scenario = %args.scenario,
         version = %version,
         dataset = %version_metadata.dataset_type,
-        bucket = ?cli.bucket,
-        prefix = %cli.prefix,
+        bucket = ?args.bucket,
+        prefix = %args.prefix,
         extract_dir = %extract_dir.display(),
         target = %target_kind,
-        adbc_driver = ?cli.adbc_driver,
-        adbc_catalog = ?cli.adbc_catalog,
-        adbc_schema = ?cli.adbc_schema,
-        adbc_create_tables = cli.adbc_create_tables,
+        adbc_driver = ?args.adbc_driver,
+        adbc_catalog = ?args.adbc_catalog,
+        adbc_schema = ?args.adbc_schema,
+        adbc_create_tables = args.adbc_create_tables,
         scale_factor = version_metadata.scale_factor,
         num_steps = version_metadata.num_steps,
         "Starting ETL pipeline"
