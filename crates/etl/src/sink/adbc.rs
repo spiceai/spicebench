@@ -355,8 +355,8 @@ impl AdbcSink {
         let ingest_result = if target_db_catalog.is_some() || target_db_schema.is_some() {
             match conn.bulk_ingest(
                 &ingest_table_name,
-                None,
-                None,
+                target_db_catalog,
+                target_db_schema,
                 IngestMode::CreateAppend,
                 batch.clone(),
             ) {
