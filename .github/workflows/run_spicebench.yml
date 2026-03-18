@@ -285,6 +285,7 @@ jobs:
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
             export SPICEBENCH_TARGET_BATCH_ROWS=500000
             export SPICEBENCH_ADBC_MAX_INGEST_BATCH_BYTES=1268435456
+            export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
             ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
