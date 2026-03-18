@@ -62,6 +62,12 @@ const ADBC_REUSE_BULK_INGEST_STREAMS_ENV: &str = "SPICEBENCH_ADBC_REUSE_BULK_ING
 const DEFAULT_ADBC_BULK_INGEST_STREAM_BUFFER: usize = 1;
 const ADBC_BULK_INGEST_STREAM_BUFFER_ENV: &str = "SPICEBENCH_ADBC_BULK_INGEST_STREAM_BUFFER";
 
+/// When `true`, the ADBC bulk ingest target table name is fully qualified as
+/// `catalog.schema.table` (for backends like Spice Cloud that expect dotted names
+/// in the `TargetTable` ADBC option). When `false` (default), the bare table name
+/// is used and catalog/schema are passed via separate ADBC options.
+const ADBC_QUALIFY_TABLE_NAME_ENV: &str = "SPICEBENCH_ADBC_QUALIFY_TABLE_NAME";
+
 /// Controls how UPDATE operations are executed.
 ///
 /// - `statement`          — row-by-row `UPDATE … SET … WHERE …` statements (default)
@@ -269,6 +275,8 @@ impl AdbcSink {
         let ingest_table_name = self.target_table_ingest_name(table_name);
         let source_table_name = table_name.to_string();
         let worker_schema = schema.clone();
+        let target_db_catalog = self.target_db_catalog.clone();
+        let target_db_schema = self.target_db_schema.clone();
 
         let worker = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             let mut conn = pool
@@ -277,8 +285,8 @@ impl AdbcSink {
 
             conn.bulk_ingest_stream(
                 &ingest_table_name,
-                None,
-                None,
+                target_db_catalog.as_deref(),
+                target_db_schema.as_deref(),
                 IngestMode::CreateAppend,
                 Box::new(ChannelRecordBatchReader::new(worker_schema, receiver)),
             )
@@ -457,8 +465,26 @@ impl AdbcSink {
         parts.join(".")
     }
 
+    fn qualify_table_name() -> bool {
+        std::env::var(ADBC_QUALIFY_TABLE_NAME_ENV)
+            .ok()
+            .and_then(|raw| {
+                let val = raw.trim().to_ascii_lowercase();
+                match val.as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => None,
+                }
+            })
+            .unwrap_or(false)
+    }
+
     fn target_table_ingest_name(&self, table_name: &str) -> String {
-        self.target_table_identifier_unquoted(table_name)
+        if Self::qualify_table_name() {
+            self.target_table_identifier_unquoted(table_name)
+        } else {
+            table_name.to_string()
+        }
     }
 
     fn target_table_identifier_unquoted(&self, table_name: &str) -> String {
