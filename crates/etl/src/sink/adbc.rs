@@ -262,7 +262,12 @@ impl AdbcSink {
         parts.join(".")
     }
 
-    fn create_table_sql(&self, table_name: &str, schema: &Schema) -> anyhow::Result<String> {
+    fn create_table_sql(
+        &self,
+        table_name: &str,
+        schema: &Schema,
+        primary_keys: &[String],
+    ) -> anyhow::Result<String> {
         let columns = schema
             .fields()
             .iter()
@@ -275,8 +280,18 @@ impl AdbcSink {
             .collect::<anyhow::Result<Vec<_>>>()?
             .join(", ");
 
+        let primary_key_statement = if !primary_keys.is_empty() {
+            let key_idents: Vec<String> = primary_keys
+                .iter()
+                .map(|k| self.quote_identifier(k))
+                .collect();
+            format!(", PRIMARY KEY ({})", key_idents.join(", "))
+        } else {
+            String::new()
+        };
+
         Ok(format!(
-            "CREATE TABLE IF NOT EXISTS {} ({columns})",
+            "CREATE TABLE IF NOT EXISTS {} ({columns}{primary_key_statement})",
             self.target_table_identifier(table_name)
         ))
     }
@@ -293,7 +308,11 @@ impl AdbcSink {
             let config = datasets.get(&table_name).ok_or_else(|| {
                 anyhow::anyhow!("Missing dataset config for table '{table_name}'")
             })?;
-            statements.push(self.create_table_sql(&table_name, config.schema.as_ref())?);
+            statements.push(self.create_table_sql(
+                &table_name,
+                config.schema.as_ref(),
+                &config.primary_key_columns,
+            )?);
         }
 
         let mut conn = self
