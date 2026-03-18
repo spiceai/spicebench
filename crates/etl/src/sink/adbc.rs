@@ -14,18 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Instant;
-use tokio::sync::{RwLock, mpsc};
-use tokio::task::JoinHandle;
 
 use adbc_client::{
     AdbcConnection, AdbcConnectionManager, AdbcConnectionPool, IngestMode, create_pool,
 };
 use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::{DataType, Schema};
-use arrow::record_batch::RecordBatchIterator;
 use arrow_cast::display::array_value_to_string;
 use async_trait::async_trait;
 use system_adapter_protocol::DatasetConfig;
@@ -37,13 +34,6 @@ use super::{InsertOp, Sink};
 const MAX_ADBC_INGEST_BATCH_BYTES: usize = 75 * 1024 * 1024;
 const MAX_ADBC_INGEST_BATCH_BYTES_ENV: &str = "SPICEBENCH_ADBC_MAX_INGEST_BATCH_BYTES";
 
-/// Approximate-size thresholds used to avoid expensive exact Arrow IPC serialization
-/// for every split decision.
-const APPROX_SAFE_FRACTION_NUM: usize = 8;
-const APPROX_SAFE_FRACTION_DEN: usize = 10;
-const APPROX_LARGE_FRACTION_NUM: usize = 12;
-const APPROX_LARGE_FRACTION_DEN: usize = 10;
-
 /// Default number of connections in the ADBC sink pool.
 const DEFAULT_ADBC_SINK_POOL_SIZE: u32 = 8;
 const ADBC_SINK_POOL_SIZE_ENV: &str = "SPICEBENCH_ADBC_SINK_POOL_SIZE";
@@ -52,15 +42,6 @@ const ADBC_SINK_POOL_SIZE_ENV: &str = "SPICEBENCH_ADBC_SINK_POOL_SIZE";
 /// `DELETE … WHERE key IN (…)` statements of at most this many rows.
 /// When unset or empty, deletes use the original row-by-row approach.
 const ADBC_DELETE_BATCH_SIZE_ENV: &str = "SPICEBENCH_ADBC_DELETE_BATCH_SIZE";
-
-/// Enables reuse of a single long-lived ADBC DoPut stream per table for
-/// insert operations. When disabled, insert writes use the existing per-batch
-/// ingest behavior.
-const ADBC_REUSE_DOPUT_STREAMS_ENV: &str = "SPICEBENCH_ADBC_REUSE_DOPUT_STREAMS";
-
-/// Bounded channel capacity per table for queued insert batches.
-const DEFAULT_ADBC_DOPUT_STREAM_BUFFER: usize = 1;
-const ADBC_DOPUT_STREAM_BUFFER_ENV: &str = "SPICEBENCH_ADBC_DOPUT_STREAM_BUFFER";
 
 /// Controls how UPDATE operations are executed.
 ///
@@ -80,48 +61,6 @@ enum UpdateStrategy {
     /// Bulk ingest directly into the target table, relying on the target system
     /// to handle upsert semantics (e.g. Spice Cloud `on_conflict: upsert`).
     BulkIngestUpsert,
-}
-
-/// Reader backed by a tokio mpsc channel so a background worker can keep a
-/// single DoPut stream open and receive batches over time.
-struct ChannelRecordBatchReader {
-    schema: std::sync::Arc<Schema>,
-    receiver: mpsc::Receiver<RecordBatch>,
-}
-
-impl ChannelRecordBatchReader {
-    fn new(schema: std::sync::Arc<Schema>, receiver: mpsc::Receiver<RecordBatch>) -> Self {
-        Self { schema, receiver }
-    }
-}
-
-impl Iterator for ChannelRecordBatchReader {
-    type Item = arrow::error::Result<RecordBatch>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.receiver.blocking_recv().map(Ok)
-    }
-}
-
-impl arrow::record_batch::RecordBatchReader for ChannelRecordBatchReader {
-    fn schema(&self) -> std::sync::Arc<Schema> {
-        self.schema.clone()
-    }
-}
-
-struct TableDoPutStream {
-    schema: std::sync::Arc<Schema>,
-    sender: mpsc::Sender<RecordBatch>,
-    worker: JoinHandle<anyhow::Result<()>>,
-}
-
-impl TableDoPutStream {
-    async fn close_and_wait(self, table_name: &str) -> anyhow::Result<()> {
-        drop(self.sender);
-        self.worker.await.map_err(|e| {
-            anyhow::anyhow!("DoPut worker task join failed for table '{table_name}': {e}")
-        })?
-    }
 }
 
 impl UpdateStrategy {
@@ -150,15 +89,11 @@ pub struct AdbcSink {
     pool: AdbcConnectionPool,
     target_db_catalog: Option<String>,
     target_db_schema: Option<String>,
-    row_counts: RwLock<HashMap<String, AtomicU64>>,
-    insert_streams: RwLock<HashMap<String, TableDoPutStream>>,
+    row_counts: Mutex<HashMap<String, u64>>,
     /// Character used to quote SQL identifiers (e.g. '"' for ANSI, '`' for Databricks).
     identifier_quote_char: char,
     /// Whether Int64/UInt64 literals need an `L` suffix (Databricks).
     bigint_suffix: bool,
-    update_strategy: UpdateStrategy,
-    reuse_doput_streams: bool,
-    doput_stream_buffer: usize,
 }
 
 impl AdbcSink {
@@ -178,28 +113,6 @@ impl AdbcSink {
             .unwrap_or(DEFAULT_ADBC_SINK_POOL_SIZE)
     }
 
-    fn reuse_doput_streams() -> bool {
-        std::env::var(ADBC_REUSE_DOPUT_STREAMS_ENV)
-            .ok()
-            .and_then(|raw| {
-                let val = raw.trim().to_ascii_lowercase();
-                match val.as_str() {
-                    "1" | "true" | "yes" | "on" => Some(true),
-                    "0" | "false" | "no" | "off" => Some(false),
-                    _ => None,
-                }
-            })
-            .unwrap_or(true)
-    }
-
-    fn doput_stream_buffer() -> usize {
-        std::env::var(ADBC_DOPUT_STREAM_BUFFER_ENV)
-            .ok()
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_ADBC_DOPUT_STREAM_BUFFER)
-    }
-
     /// Creates a new [`AdbcSink`] backed by a connection pool.
     pub fn new(
         driver_name: &str,
@@ -207,7 +120,6 @@ impl AdbcSink {
         target_db_catalog: Option<String>,
         target_db_schema: Option<String>,
     ) -> anyhow::Result<Self> {
-        let update_strategy = UpdateStrategy::from_env()?;
         let pool_size = Self::pool_size();
         let pool = create_pool(driver_name, db_kwargs, Some(pool_size))
             .map_err(|e| anyhow::anyhow!("Failed to create ADBC connection pool: {e}"))?;
@@ -215,179 +127,15 @@ impl AdbcSink {
 
         let identifier_quote_char = AdbcConnectionManager::identifier_quote_style(driver_name);
         let bigint_suffix = AdbcConnectionManager::bigint_suffix(driver_name);
-        let reuse_doput_streams = Self::reuse_doput_streams();
-        let doput_stream_buffer = Self::doput_stream_buffer();
-
-        if reuse_doput_streams {
-            eprintln!("[adbc] Reusable DoPut streams enabled (buffer size: {doput_stream_buffer})");
-        }
 
         Ok(Self {
             pool,
             target_db_catalog,
             target_db_schema,
-            row_counts: RwLock::new(HashMap::new()),
-            insert_streams: RwLock::new(HashMap::new()),
+            row_counts: Mutex::new(HashMap::new()),
             identifier_quote_char,
             bigint_suffix,
-            update_strategy,
-            reuse_doput_streams,
-            doput_stream_buffer,
         })
-    }
-
-    fn split_insert_batch_for_ingest(
-        &self,
-        batch: RecordBatch,
-    ) -> anyhow::Result<Vec<RecordBatch>> {
-        let max_ingest_bytes = Self::max_ingest_batch_bytes();
-        let approx_size = Self::approx_serialized_batch_size(&batch);
-
-        if Self::approx_likely_safe(approx_size, max_ingest_bytes) {
-            return Ok(vec![batch]);
-        }
-
-        if !Self::approx_likely_too_large(approx_size, max_ingest_bytes) {
-            let exact_size = Self::serialized_batch_size(&batch)?;
-            if exact_size <= max_ingest_bytes {
-                return Ok(vec![batch]);
-            }
-        }
-
-        Self::split_for_size(&batch, max_ingest_bytes)
-    }
-
-    fn spawn_table_doput_stream(
-        &self,
-        table_name: &str,
-        schema: std::sync::Arc<Schema>,
-    ) -> TableDoPutStream {
-        let (sender, receiver) = mpsc::channel(self.doput_stream_buffer);
-        let pool = self.pool.clone();
-        let ingest_table_name = self.target_table_ingest_name(table_name);
-        let source_table_name = table_name.to_string();
-        let worker_schema = schema.clone();
-
-        let worker = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            let mut conn = pool
-                .get()
-                .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
-
-            conn.bulk_ingest_stream(
-                &ingest_table_name,
-                None,
-                None,
-                IngestMode::CreateAppend,
-                Box::new(ChannelRecordBatchReader::new(worker_schema, receiver)),
-            )
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "ADBC stream bulk ingest failed for source table '{source_table_name}' (ingest target '{ingest_table_name}'): {e}"
-                )
-            })?;
-
-            Ok(())
-        });
-
-        TableDoPutStream {
-            schema,
-            sender,
-            worker,
-        }
-    }
-
-    async fn send_insert_via_reused_stream(
-        &self,
-        table_name: &str,
-        batch: RecordBatch,
-    ) -> anyhow::Result<()> {
-        let sub_batches = self.split_insert_batch_for_ingest(batch)?;
-        let schema = sub_batches
-            .first()
-            .map(|b| b.schema())
-            .ok_or_else(|| anyhow::anyhow!("Expected at least one insert batch"))?;
-
-        let sender = {
-            let streams = self.insert_streams.read().await;
-            streams.get(table_name).and_then(|stream| {
-                if stream.schema.as_ref() == schema.as_ref() && !stream.worker.is_finished() {
-                    Some(stream.sender.clone())
-                } else {
-                    None
-                }
-            })
-        };
-
-        let sender = if let Some(sender) = sender {
-            sender
-        } else {
-            self.flush_insert_stream_for_table(table_name).await?;
-            let mut streams = self.insert_streams.write().await;
-            let stream = self.spawn_table_doput_stream(table_name, schema.clone());
-            let sender = stream.sender.clone();
-            streams.insert(table_name.to_string(), stream);
-            sender
-        };
-
-        for sub_batch in sub_batches {
-            sender.send(sub_batch).await.map_err(|_| {
-                anyhow::anyhow!(
-                    "Insert DoPut stream for table '{table_name}' is no longer available"
-                )
-            })?;
-        }
-
-        Ok(())
-    }
-
-    async fn flush_insert_stream_for_table(&self, table_name: &str) -> anyhow::Result<()> {
-        let stream = {
-            let mut streams = self.insert_streams.write().await;
-            streams.remove(table_name)
-        };
-
-        if let Some(stream) = stream {
-            stream.close_and_wait(table_name).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn flush_all_insert_streams(&self) -> anyhow::Result<()> {
-        let streams: Vec<(String, TableDoPutStream)> = {
-            let mut guard = self.insert_streams.write().await;
-            guard.drain().collect()
-        };
-
-        for (table_name, stream) in streams {
-            stream.close_and_wait(&table_name).await?;
-        }
-
-        Ok(())
-    }
-
-    fn saturating_fetch_sub(counter: &AtomicU64, value: u64) -> u64 {
-        let mut current = counter.load(Ordering::Relaxed);
-        loop {
-            let updated = current.saturating_sub(value);
-            match counter.compare_exchange_weak(
-                current,
-                updated,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return updated,
-                Err(observed) => current = observed,
-            }
-        }
-    }
-
-    fn apply_row_count_delta(counter: &AtomicU64, op_label: &str, rows_current: u64) -> u64 {
-        match op_label {
-            "insert" => counter.fetch_add(rows_current, Ordering::Relaxed) + rows_current,
-            "delete" => Self::saturating_fetch_sub(counter, rows_current),
-            _ => counter.load(Ordering::Relaxed), // updates don't change row count
-        }
     }
 
     fn quote_identifier(&self, value: &str) -> String {
@@ -478,12 +226,7 @@ impl AdbcSink {
         parts.join(".")
     }
 
-    fn create_table_sql(
-        &self,
-        table_name: &str,
-        schema: &Schema,
-        primary_keys: &[String],
-    ) -> anyhow::Result<String> {
+    fn create_table_sql(&self, table_name: &str, schema: &Schema) -> anyhow::Result<String> {
         let columns = schema
             .fields()
             .iter()
@@ -496,18 +239,8 @@ impl AdbcSink {
             .collect::<anyhow::Result<Vec<_>>>()?
             .join(", ");
 
-        let primary_key_statement = if !primary_keys.is_empty() {
-            let key_idents: Vec<String> = primary_keys
-                .iter()
-                .map(|k| self.quote_identifier(k))
-                .collect();
-            format!(", PRIMARY KEY ({})", key_idents.join(", "))
-        } else {
-            String::new()
-        };
-
         Ok(format!(
-            "CREATE TABLE IF NOT EXISTS {} ({columns}{primary_key_statement})",
+            "CREATE TABLE IF NOT EXISTS {} ({columns})",
             self.target_table_identifier(table_name)
         ))
     }
@@ -524,11 +257,7 @@ impl AdbcSink {
             let config = datasets.get(&table_name).ok_or_else(|| {
                 anyhow::anyhow!("Missing dataset config for table '{table_name}'")
             })?;
-            statements.push(self.create_table_sql(
-                &table_name,
-                config.schema.as_ref(),
-                &config.primary_key_columns,
-            )?);
+            statements.push(self.create_table_sql(&table_name, config.schema.as_ref())?);
         }
 
         let mut conn = self
@@ -560,59 +289,24 @@ impl AdbcSink {
         Ok(buf.len())
     }
 
-    fn approx_serialized_batch_size(batch: &RecordBatch) -> usize {
-        batch
-            .columns()
-            .iter()
-            .map(|col| col.get_array_memory_size())
-            .sum()
-    }
-
-    fn approx_likely_safe(approx_bytes: usize, max_bytes: usize) -> bool {
-        approx_bytes
-            <= max_bytes.saturating_mul(APPROX_SAFE_FRACTION_NUM) / APPROX_SAFE_FRACTION_DEN
-    }
-
-    fn approx_likely_too_large(approx_bytes: usize, max_bytes: usize) -> bool {
-        approx_bytes
-            >= max_bytes.saturating_mul(APPROX_LARGE_FRACTION_NUM) / APPROX_LARGE_FRACTION_DEN
-    }
-
     fn split_for_size(batch: &RecordBatch, max_bytes: usize) -> anyhow::Result<Vec<RecordBatch>> {
         let mut out = Vec::new();
         let mut start = 0usize;
         let total_rows = batch.num_rows();
-        let total_approx_bytes = Self::approx_serialized_batch_size(batch);
-
-        if total_rows == 0 {
-            return Ok(out);
-        }
 
         while start < total_rows {
             let mut end = total_rows;
             let mut accepted: Option<RecordBatch> = None;
 
             while end > start {
+                let candidate = batch.slice(start, end - start);
+                let size = Self::serialized_batch_size(&candidate)?;
+                if size <= max_bytes {
+                    accepted = Some(candidate);
+                    break;
+                }
+
                 let span = end - start;
-                let candidate_approx_bytes = total_approx_bytes.saturating_mul(span) / total_rows;
-
-                if Self::approx_likely_too_large(candidate_approx_bytes, max_bytes) {
-                    end = start + (span / 2);
-                    continue;
-                }
-
-                let candidate = batch.slice(start, span);
-                if Self::approx_likely_safe(candidate_approx_bytes, max_bytes) {
-                    accepted = Some(candidate);
-                    break;
-                }
-
-                let exact_size = Self::serialized_batch_size(&candidate)?;
-                if exact_size <= max_bytes {
-                    accepted = Some(candidate);
-                    break;
-                }
-
                 end = start + (span / 2);
             }
 
@@ -627,86 +321,6 @@ impl AdbcSink {
         }
 
         Ok(out)
-    }
-
-    fn bulk_ingest_stream_for_batches(
-        &self,
-        conn: &mut AdbcConnection,
-        table_name: &str,
-        batches: Vec<RecordBatch>,
-    ) -> anyhow::Result<()> {
-        let Some(first_batch) = batches.first() else {
-            return Ok(());
-        };
-
-        let schema = first_batch.schema();
-        let make_reader = |batches: Vec<RecordBatch>| {
-            Box::new(RecordBatchIterator::new(
-                batches.into_iter().map(Ok),
-                schema.clone(),
-            ))
-        };
-
-        let ingest_table_name = self.target_table_ingest_name(table_name);
-        let target_db_catalog = self
-            .target_db_catalog
-            .as_deref()
-            .and_then(|catalog| (!catalog.is_empty()).then_some(catalog));
-        let target_db_schema = self
-            .target_db_schema
-            .as_deref()
-            .and_then(|schema| (!schema.is_empty()).then_some(schema));
-
-        let ingest_result = if target_db_catalog.is_some() || target_db_schema.is_some() {
-            match conn.bulk_ingest_stream(
-                &ingest_table_name,
-                None,
-                None,
-                IngestMode::CreateAppend,
-                make_reader(batches.clone()),
-            ) {
-                Ok(result) => Ok(result),
-                Err(qualified_err) => {
-                    let qualified_message = qualified_err.to_string();
-                    if Self::is_message_too_large_error(&qualified_message) {
-                        Err(qualified_err)
-                    } else {
-                        conn.bulk_ingest_stream(
-                            table_name,
-                            target_db_catalog,
-                            target_db_schema,
-                            IngestMode::CreateAppend,
-                            make_reader(batches.clone()),
-                        )
-                    }
-                }
-            }
-        } else {
-            conn.bulk_ingest_stream(
-                table_name,
-                target_db_catalog,
-                target_db_schema,
-                IngestMode::CreateAppend,
-                make_reader(batches.clone()),
-            )
-        };
-
-        match ingest_result {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                let message = e.to_string();
-                if Self::is_message_too_large_error(&message) {
-                    for sub_batch in batches {
-                        self.bulk_ingest_with_retry(conn, table_name, sub_batch)?;
-                    }
-                    Ok(())
-                } else {
-                    anyhow::bail!(
-                        "ADBC stream bulk ingest failed for source table '{table_name}' (ingest target '{ingest_table_name}'): {message}"
-                    )
-                }
-            }
-        }
     }
 
     fn is_message_too_large_error(message: &str) -> bool {
@@ -796,63 +410,19 @@ impl AdbcSink {
         batch: RecordBatch,
     ) -> anyhow::Result<()> {
         let max_ingest_bytes = Self::max_ingest_batch_bytes();
-        let approx_size = Self::approx_serialized_batch_size(&batch);
-
-        if Self::approx_likely_safe(approx_size, max_ingest_bytes) {
+        let size = Self::serialized_batch_size(&batch)?;
+        if size <= max_ingest_bytes {
             self.bulk_ingest_with_retry(conn, table_name, batch)?;
+
             return Ok(());
         }
 
-        if !Self::approx_likely_too_large(approx_size, max_ingest_bytes) {
-            let exact_size = Self::serialized_batch_size(&batch)?;
-            if exact_size <= max_ingest_bytes {
-                self.bulk_ingest_with_retry(conn, table_name, batch)?;
-                return Ok(());
-            }
+        let split_batches = Self::split_for_size(&batch, max_ingest_bytes)?;
+        for sub_batch in split_batches {
+            self.bulk_ingest_with_retry(conn, table_name, sub_batch)?;
         }
 
-        let split_batches = Self::split_for_size(&batch, max_ingest_bytes)?;
-        self.bulk_ingest_stream_for_batches(conn, table_name, split_batches)?;
-
         Ok(())
-    }
-
-    fn resolve_key_columns(
-        &self,
-        schema: &Schema,
-        key_columns: &[String],
-        context: &str,
-    ) -> anyhow::Result<(Vec<usize>, Vec<String>)> {
-        let key_indices = key_columns
-            .iter()
-            .map(|key| {
-                schema.index_of(key).map_err(|_| {
-                    anyhow::anyhow!("Key column '{key}' not found in {context} batch schema")
-                })
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-
-        let key_idents = key_columns
-            .iter()
-            .map(|key| self.quote_identifier(key))
-            .collect();
-
-        Ok((key_indices, key_idents))
-    }
-
-    fn non_key_update_columns(
-        &self,
-        schema: &Schema,
-        key_columns: &[String],
-    ) -> Vec<(usize, String)> {
-        let key_set: HashSet<&str> = key_columns.iter().map(String::as_str).collect();
-        schema
-            .fields()
-            .iter()
-            .enumerate()
-            .filter(|(_, field)| !key_set.contains(field.name().as_str()))
-            .map(|(idx, field)| (idx, self.quote_identifier(field.name())))
-            .collect()
     }
 
     /// Render a cell value as a SQL literal.
@@ -918,21 +488,26 @@ impl AdbcSink {
 
     fn delete_sql_for_row(
         &self,
-        table_ident: &str,
+        table_name: &str,
         batch: &RecordBatch,
         row: usize,
-        key_indices: &[usize],
-        key_idents: &[String],
+        key_columns: &[String],
     ) -> anyhow::Result<String> {
-        let mut predicates = Vec::with_capacity(key_indices.len());
-        for (&idx, key_ident) in key_indices.iter().zip(key_idents.iter()) {
+        let mut predicates = Vec::with_capacity(key_columns.len());
+        let schema = batch.schema();
+        for key in key_columns {
+            let idx = schema.index_of(key).map_err(|_| {
+                anyhow::anyhow!("Key column '{key}' not found in delete batch schema")
+            })?;
             let column = batch.column(idx);
+            let key_ident = self.quote_identifier(key);
             let literal = Self::sql_literal(column.as_ref(), row, false)?;
-            predicates.push(Self::null_safe_predicate_for_literal(key_ident, &literal));
+            predicates.push(Self::null_safe_predicate_for_literal(&key_ident, &literal));
         }
 
         Ok(format!(
-            "DELETE FROM {table_ident} WHERE {}",
+            "DELETE FROM {} WHERE {}",
+            self.target_table_identifier(table_name),
             predicates.join(" AND ")
         ))
     }
@@ -940,26 +515,34 @@ impl AdbcSink {
     fn update_sql_for_row(
         &self,
         table_name: &str,
-        table_ident: &str,
         batch: &RecordBatch,
         row: usize,
-        key_indices: &[usize],
-        key_idents: &[String],
-        non_key_columns: &[(usize, String)],
+        key_columns: &[String],
     ) -> anyhow::Result<String> {
-        let mut predicates = Vec::with_capacity(key_indices.len());
-        for (&key_idx, key_ident) in key_indices.iter().zip(key_idents.iter()) {
+        let schema = batch.schema();
+
+        let mut predicates = Vec::with_capacity(key_columns.len());
+        for key in key_columns {
+            let key_idx = schema.index_of(key).map_err(|_| {
+                anyhow::anyhow!("Key column '{key}' not found in update batch schema")
+            })?;
             let key_col = batch.column(key_idx);
+            let key_ident = self.quote_identifier(key);
             let key_literal = Self::sql_literal(key_col.as_ref(), row, false)?;
             predicates.push(Self::null_safe_predicate_for_literal(
-                key_ident,
+                &key_ident,
                 &key_literal,
             ));
         }
 
-        let mut set_clauses = Vec::with_capacity(non_key_columns.len());
-        for (column_idx, col_ident) in non_key_columns {
-            let literal = Self::sql_literal(batch.column(*column_idx).as_ref(), row, false)?;
+        let mut set_clauses = Vec::new();
+        for (column_idx, field) in schema.fields().iter().enumerate() {
+            if key_columns.iter().any(|key| key == field.name()) {
+                continue;
+            }
+
+            let col_ident = self.quote_identifier(field.name());
+            let literal = Self::sql_literal(batch.column(column_idx).as_ref(), row, false)?;
             set_clauses.push(format!("{col_ident} = {literal}"));
         }
 
@@ -970,7 +553,8 @@ impl AdbcSink {
         }
 
         Ok(format!(
-            "UPDATE {table_ident} SET {} WHERE {}",
+            "UPDATE {} SET {} WHERE {}",
+            self.target_table_identifier(table_name),
             set_clauses.join(", "),
             predicates.join(" AND ")
         ))
@@ -995,25 +579,28 @@ impl AdbcSink {
             anyhow::bail!("Delete requires at least one key column");
         }
 
-        let table_ident = self.target_table_identifier(table_name);
-        let schema = batch.schema();
-        let (key_indices, key_idents) =
-            self.resolve_key_columns(schema.as_ref(), key_columns, "delete")?;
-
         let batch_size = match Self::delete_batch_size() {
             Some(size) => size,
             None => {
                 // Original row-by-row approach.
                 return (0..batch.num_rows())
-                    .map(|row| {
-                        self.delete_sql_for_row(&table_ident, batch, row, &key_indices, &key_idents)
-                    })
+                    .map(|row| self.delete_sql_for_row(table_name, batch, row, key_columns))
                     .collect();
             }
         };
 
+        let schema = batch.schema();
+        let key_indices: Vec<usize> = key_columns
+            .iter()
+            .map(|key| {
+                schema.index_of(key).map_err(|_| {
+                    anyhow::anyhow!("Key column '{key}' not found in delete batch schema")
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
         Self::batched_delete_sql(
-            &table_ident,
+            &self.target_table_identifier(table_name),
             batch,
             batch_size,
             key_columns,
@@ -1039,20 +626,15 @@ impl AdbcSink {
         identifier_quote_char: char,
         bigint_suffix: bool,
     ) -> anyhow::Result<Vec<String>> {
-        let fn_start = Instant::now();
         let num_rows = batch.num_rows();
         let mut statements = Vec::new();
         let mut start = 0;
-        let key_idents: Vec<String> = key_columns
-            .iter()
-            .map(|k| Self::quote_ident(k, identifier_quote_char))
-            .collect();
 
         while start < num_rows {
             let end = (start + batch_size).min(num_rows);
 
             let sql = if key_columns.len() == 1 {
-                let key_ident = &key_idents[0];
+                let key_ident = Self::quote_ident(&key_columns[0], identifier_quote_char);
                 let values: Vec<String> = (start..end)
                     .map(|row| Self::sql_literal(batch.column(key_indices[0]).as_ref(), row, false))
                     .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1061,6 +643,10 @@ impl AdbcSink {
                     values.join(", ")
                 )
             } else {
+                let key_idents: Vec<String> = key_columns
+                    .iter()
+                    .map(|k| Self::quote_ident(k, identifier_quote_char))
+                    .collect();
                 let tuples: Vec<String> = (start..end)
                     .map(|row| {
                         let vals: Vec<String> = key_indices
@@ -1083,15 +669,6 @@ impl AdbcSink {
             start = end;
         }
 
-        tracing::debug!(
-            table = table_ident,
-            rows = num_rows,
-            statements = statements.len(),
-            batch_size,
-            elapsed_ms = fn_start.elapsed().as_millis(),
-            "batched_delete_sql completed"
-        );
-
         Ok(statements)
     }
 
@@ -1107,8 +684,6 @@ impl AdbcSink {
         batch: RecordBatch,
         key_columns: &[String],
     ) -> anyhow::Result<()> {
-        let fn_start = Instant::now();
-        let rows = batch.num_rows();
         if key_columns.is_empty() {
             anyhow::bail!("Update requires at least one key column");
         }
@@ -1155,12 +730,6 @@ impl AdbcSink {
         self.drop_staging_table(conn, &staging_table);
 
         merge_result?;
-        tracing::debug!(
-            table = %table_name,
-            rows,
-            elapsed_ms = fn_start.elapsed().as_millis(),
-            "staging_merge_update completed"
-        );
         Ok(())
     }
 
@@ -1234,16 +803,14 @@ impl Sink for AdbcSink {
         op: InsertOp,
         _partition_columns: Vec<String>,
     ) -> anyhow::Result<()> {
-        let write_start = Instant::now();
         if batch.num_rows() == 0 {
-            tracing::debug!(
-                table = %table_name,
-                op = "empty",
-                elapsed_ms = write_start.elapsed().as_millis(),
-                "Sink::write completed"
-            );
             return Ok(());
         }
+
+        let mut conn = self
+            .pool
+            .get()
+            .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
 
         let rows_current = batch.num_rows() as u64;
         let op_label = match &op {
@@ -1253,28 +820,13 @@ impl Sink for AdbcSink {
         };
 
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        tracing::debug!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
+        tracing::info!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
 
         match op {
             InsertOp::Insert => {
-                if self.reuse_doput_streams {
-                    self.send_insert_via_reused_stream(table_name, batch)
-                        .await?;
-                } else {
-                    let mut conn = self.pool.get().map_err(|e| {
-                        anyhow::anyhow!("Failed to get ADBC connection from pool: {e}")
-                    })?;
-                    self.ingest_insert_batch(&mut conn, table_name, batch)?;
-                }
+                self.ingest_insert_batch(&mut conn, table_name, batch)?;
             }
             InsertOp::Delete { key_columns } => {
-                if self.reuse_doput_streams {
-                    self.flush_insert_stream_for_table(table_name).await?;
-                }
-                let mut conn = self
-                    .pool
-                    .get()
-                    .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
                 let statements = self.delete_sql_statements(table_name, &batch, &key_columns)?;
                 let num_statements = statements.len();
                 let start = Instant::now();
@@ -1299,17 +851,11 @@ impl Sink for AdbcSink {
                 );
             }
             InsertOp::Update { key_columns } => {
-                if self.reuse_doput_streams {
-                    self.flush_insert_stream_for_table(table_name).await?;
-                }
-                let mut conn = self
-                    .pool
-                    .get()
-                    .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
+                let strategy = UpdateStrategy::from_env()?;
                 let num_rows = batch.num_rows();
                 let start = Instant::now();
 
-                match self.update_strategy {
+                match strategy {
                     UpdateStrategy::StagingTable => {
                         self.staging_merge_update(&mut conn, table_name, batch, &key_columns)?;
                     }
@@ -1317,30 +863,9 @@ impl Sink for AdbcSink {
                         self.ingest_insert_batch(&mut conn, table_name, batch)?;
                     }
                     UpdateStrategy::Statement => {
-                        let table_ident = self.target_table_identifier(table_name);
-                        let schema = batch.schema();
-                        let (key_indices, key_idents) =
-                            self.resolve_key_columns(schema.as_ref(), &key_columns, "update")?;
-                        let non_key_columns =
-                            self.non_key_update_columns(schema.as_ref(), &key_columns);
-
-                        if non_key_columns.is_empty() {
-                            anyhow::bail!(
-                                "Update requires at least one non-key column in batch schema for table '{table_name}'"
-                            );
-                        }
-
                         let statements: Vec<String> = (0..num_rows)
                             .map(|row| {
-                                self.update_sql_for_row(
-                                    table_name,
-                                    &table_ident,
-                                    &batch,
-                                    row,
-                                    &key_indices,
-                                    &key_idents,
-                                    &non_key_columns,
-                                )
+                                self.update_sql_for_row(table_name, &batch, row, &key_columns)
                             })
                             .collect::<anyhow::Result<Vec<_>>>()?;
                         for sql in &statements {
@@ -1362,7 +887,7 @@ impl Sink for AdbcSink {
                 tracing::debug!(
                     table = %table_name,
                     rows = num_rows,
-                    strategy = ?self.update_strategy,
+                    strategy = ?strategy,
                     elapsed_ms = elapsed.as_millis(),
                     rows_per_sec = format!("{rows_per_sec:.1}"),
                     "UPDATE executed"
@@ -1370,43 +895,21 @@ impl Sink for AdbcSink {
             }
         }
 
-        let existing_total = {
-            let counts = self.row_counts.read().await;
-            counts
-                .get(table_name)
-                .map(|counter| Self::apply_row_count_delta(counter, op_label, rows_current))
-        };
-
-        let rows_total = if let Some(total) = existing_total {
-            total
-        } else {
-            let mut counts = self.row_counts.write().await;
-            let counter = counts
-                .entry(table_name.to_string())
-                .or_insert_with(|| AtomicU64::new(0));
-            Self::apply_row_count_delta(counter, op_label, rows_current)
+        let rows_total = {
+            let mut counts = self.row_counts.lock().unwrap();
+            let total = counts.entry(table_name.to_string()).or_insert(0);
+            match op_label {
+                "insert" => *total += rows_current,
+                "delete" => *total = total.saturating_sub(rows_current),
+                _ => {} // updates don't change row count
+            }
+            *total
         };
 
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        tracing::debug!(
+        tracing::info!(
             "[adbc] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
         );
-
-        tracing::debug!(
-            table = %table_name,
-            op = op_label,
-            rows = rows_current,
-            elapsed_ms = write_start.elapsed().as_millis(),
-            "Sink::write completed"
-        );
-
-        Ok(())
-    }
-
-    async fn flush(&self) -> anyhow::Result<()> {
-        if self.reuse_doput_streams {
-            self.flush_all_insert_streams().await?;
-        }
 
         Ok(())
     }
