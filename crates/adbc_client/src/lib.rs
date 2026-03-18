@@ -216,6 +216,12 @@ impl AdbcConnection {
         mode: options::IngestMode,
         reader: Box<dyn arrow_array::RecordBatchReader + Send>,
     ) -> Result<Option<i64>> {
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = if self.downcast_utf8view {
+            Box::new(DowncastUtf8ViewReader::new(reader))
+        } else {
+            reader
+        };
+
         let mut stmt = self.conn.new_statement().map_err(|e| Error::ExecuteQuery {
             reason: e.to_string(),
         })?;
@@ -290,6 +296,48 @@ fn downcast_utf8view(batch: &RecordBatch) -> RecordBatch {
     }
 
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+/// Wraps a [`RecordBatchReader`] and casts any `Utf8View` columns to `Utf8`
+/// on each yielded batch.
+struct DowncastUtf8ViewReader {
+    inner: Box<dyn arrow_array::RecordBatchReader + Send>,
+    schema: Arc<Schema>,
+}
+
+impl DowncastUtf8ViewReader {
+    fn new(inner: Box<dyn arrow_array::RecordBatchReader + Send>) -> Self {
+        let original_schema = inner.schema();
+        let fields: Vec<Arc<Field>> = original_schema
+            .fields()
+            .iter()
+            .map(|f| {
+                if matches!(f.data_type(), DataType::Utf8View) {
+                    Arc::new(Field::new(f.name(), DataType::Utf8, f.is_nullable()))
+                } else {
+                    f.clone()
+                }
+            })
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        Self { inner, schema }
+    }
+}
+
+impl Iterator for DowncastUtf8ViewReader {
+    type Item = std::result::Result<RecordBatch, arrow::error::ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|result| result.map(|batch| downcast_utf8view(&batch)))
+    }
+}
+
+impl arrow_array::RecordBatchReader for DowncastUtf8ViewReader {
+    fn schema(&self) -> Arc<Schema> {
+        self.schema.clone()
+    }
 }
 
 /// Returns `true` if the field is a `Utf8` column that represents a
