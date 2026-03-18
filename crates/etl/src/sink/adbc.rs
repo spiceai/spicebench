@@ -53,14 +53,14 @@ const ADBC_SINK_POOL_SIZE_ENV: &str = "SPICEBENCH_ADBC_SINK_POOL_SIZE";
 /// When unset or empty, deletes use the original row-by-row approach.
 const ADBC_DELETE_BATCH_SIZE_ENV: &str = "SPICEBENCH_ADBC_DELETE_BATCH_SIZE";
 
-/// Enables reuse of a single long-lived ADBC DoPut stream per table for
-/// insert operations. When disabled, insert writes use the existing per-batch
-/// ingest behavior.
-const ADBC_REUSE_DOPUT_STREAMS_ENV: &str = "SPICEBENCH_ADBC_REUSE_DOPUT_STREAMS";
+/// Enables reuse of a single long-lived ADBC bulk ingest stream per table for
+/// insert/update operations that use bulk ingest. When disabled, writes use the
+/// existing per-batch ingest behavior.
+const ADBC_REUSE_BULK_INGEST_STREAMS_ENV: &str = "SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS";
 
-/// Bounded channel capacity per table for queued insert batches.
-const DEFAULT_ADBC_DOPUT_STREAM_BUFFER: usize = 1;
-const ADBC_DOPUT_STREAM_BUFFER_ENV: &str = "SPICEBENCH_ADBC_DOPUT_STREAM_BUFFER";
+/// Bounded channel capacity per table for queued bulk ingest batches.
+const DEFAULT_ADBC_BULK_INGEST_STREAM_BUFFER: usize = 1;
+const ADBC_BULK_INGEST_STREAM_BUFFER_ENV: &str = "SPICEBENCH_ADBC_BULK_INGEST_STREAM_BUFFER";
 
 /// Controls how UPDATE operations are executed.
 ///
@@ -83,7 +83,7 @@ enum UpdateStrategy {
 }
 
 /// Reader backed by a tokio mpsc channel so a background worker can keep a
-/// single DoPut stream open and receive batches over time.
+/// single bulk ingest stream open and receive batches over time.
 struct ChannelRecordBatchReader {
     schema: std::sync::Arc<Schema>,
     receiver: mpsc::Receiver<RecordBatch>,
@@ -109,17 +109,17 @@ impl arrow::record_batch::RecordBatchReader for ChannelRecordBatchReader {
     }
 }
 
-struct TableDoPutStream {
+struct TableBulkIngestStream {
     schema: std::sync::Arc<Schema>,
     sender: mpsc::Sender<RecordBatch>,
     worker: JoinHandle<anyhow::Result<()>>,
 }
 
-impl TableDoPutStream {
+impl TableBulkIngestStream {
     async fn close_and_wait(self, table_name: &str) -> anyhow::Result<()> {
         drop(self.sender);
         self.worker.await.map_err(|e| {
-            anyhow::anyhow!("DoPut worker task join failed for table '{table_name}': {e}")
+            anyhow::anyhow!("Bulk ingest worker task join failed for table '{table_name}': {e}")
         })?
     }
 }
@@ -151,14 +151,14 @@ pub struct AdbcSink {
     target_db_catalog: Option<String>,
     target_db_schema: Option<String>,
     row_counts: RwLock<HashMap<String, AtomicU64>>,
-    insert_streams: RwLock<HashMap<String, TableDoPutStream>>,
+    bulk_ingest_streams: RwLock<HashMap<String, TableBulkIngestStream>>,
     /// Character used to quote SQL identifiers (e.g. '"' for ANSI, '`' for Databricks).
     identifier_quote_char: char,
     /// Whether Int64/UInt64 literals need an `L` suffix (Databricks).
     bigint_suffix: bool,
     update_strategy: UpdateStrategy,
-    reuse_doput_streams: bool,
-    doput_stream_buffer: usize,
+    reuse_bulk_ingest_streams: bool,
+    bulk_ingest_stream_buffer: usize,
 }
 
 impl AdbcSink {
@@ -178,8 +178,8 @@ impl AdbcSink {
             .unwrap_or(DEFAULT_ADBC_SINK_POOL_SIZE)
     }
 
-    fn reuse_doput_streams() -> bool {
-        std::env::var(ADBC_REUSE_DOPUT_STREAMS_ENV)
+    fn reuse_bulk_ingest_streams() -> bool {
+        std::env::var(ADBC_REUSE_BULK_INGEST_STREAMS_ENV)
             .ok()
             .and_then(|raw| {
                 let val = raw.trim().to_ascii_lowercase();
@@ -192,12 +192,12 @@ impl AdbcSink {
             .unwrap_or(true)
     }
 
-    fn doput_stream_buffer() -> usize {
-        std::env::var(ADBC_DOPUT_STREAM_BUFFER_ENV)
+    fn bulk_ingest_stream_buffer() -> usize {
+        std::env::var(ADBC_BULK_INGEST_STREAM_BUFFER_ENV)
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
             .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_ADBC_DOPUT_STREAM_BUFFER)
+            .unwrap_or(DEFAULT_ADBC_BULK_INGEST_STREAM_BUFFER)
     }
 
     /// Creates a new [`AdbcSink`] backed by a connection pool.
@@ -215,11 +215,13 @@ impl AdbcSink {
 
         let identifier_quote_char = AdbcConnectionManager::identifier_quote_style(driver_name);
         let bigint_suffix = AdbcConnectionManager::bigint_suffix(driver_name);
-        let reuse_doput_streams = Self::reuse_doput_streams();
-        let doput_stream_buffer = Self::doput_stream_buffer();
+        let reuse_bulk_ingest_streams = Self::reuse_bulk_ingest_streams();
+        let bulk_ingest_stream_buffer = Self::bulk_ingest_stream_buffer();
 
-        if reuse_doput_streams {
-            eprintln!("[adbc] Reusable DoPut streams enabled (buffer size: {doput_stream_buffer})");
+        if reuse_bulk_ingest_streams {
+            eprintln!(
+                "[adbc] Reusable bulk ingest streams enabled (buffer size: {bulk_ingest_stream_buffer})"
+            );
         }
 
         Ok(Self {
@@ -227,12 +229,12 @@ impl AdbcSink {
             target_db_catalog,
             target_db_schema,
             row_counts: RwLock::new(HashMap::new()),
-            insert_streams: RwLock::new(HashMap::new()),
+            bulk_ingest_streams: RwLock::new(HashMap::new()),
             identifier_quote_char,
             bigint_suffix,
             update_strategy,
-            reuse_doput_streams,
-            doput_stream_buffer,
+            reuse_bulk_ingest_streams,
+            bulk_ingest_stream_buffer,
         })
     }
 
@@ -257,12 +259,12 @@ impl AdbcSink {
         Self::split_for_size(&batch, max_ingest_bytes)
     }
 
-    fn spawn_table_doput_stream(
+    fn spawn_table_bulk_ingest_stream(
         &self,
         table_name: &str,
         schema: std::sync::Arc<Schema>,
-    ) -> TableDoPutStream {
-        let (sender, receiver) = mpsc::channel(self.doput_stream_buffer);
+    ) -> TableBulkIngestStream {
+        let (sender, receiver) = mpsc::channel(self.bulk_ingest_stream_buffer);
         let pool = self.pool.clone();
         let ingest_table_name = self.target_table_ingest_name(table_name);
         let source_table_name = table_name.to_string();
@@ -289,14 +291,14 @@ impl AdbcSink {
             Ok(())
         });
 
-        TableDoPutStream {
+        TableBulkIngestStream {
             schema,
             sender,
             worker,
         }
     }
 
-    async fn send_insert_via_reused_stream(
+    async fn send_batch_via_reused_bulk_ingest_stream(
         &self,
         table_name: &str,
         batch: RecordBatch,
@@ -308,7 +310,7 @@ impl AdbcSink {
             .ok_or_else(|| anyhow::anyhow!("Expected at least one insert batch"))?;
 
         let sender = {
-            let streams = self.insert_streams.read().await;
+            let streams = self.bulk_ingest_streams.read().await;
             streams.get(table_name).and_then(|stream| {
                 if stream.schema.as_ref() == schema.as_ref() && !stream.worker.is_finished() {
                     Some(stream.sender.clone())
@@ -321,9 +323,9 @@ impl AdbcSink {
         let sender = if let Some(sender) = sender {
             sender
         } else {
-            self.flush_insert_stream_for_table(table_name).await?;
-            let mut streams = self.insert_streams.write().await;
-            let stream = self.spawn_table_doput_stream(table_name, schema.clone());
+            self.end_bulk_ingest_stream_for_table(table_name).await?;
+            let mut streams = self.bulk_ingest_streams.write().await;
+            let stream = self.spawn_table_bulk_ingest_stream(table_name, schema.clone());
             let sender = stream.sender.clone();
             streams.insert(table_name.to_string(), stream);
             sender
@@ -332,7 +334,7 @@ impl AdbcSink {
         for sub_batch in sub_batches {
             sender.send(sub_batch).await.map_err(|_| {
                 anyhow::anyhow!(
-                    "Insert DoPut stream for table '{table_name}' is no longer available"
+                    "Bulk ingest stream for table '{table_name}' is no longer available"
                 )
             })?;
         }
@@ -340,9 +342,9 @@ impl AdbcSink {
         Ok(())
     }
 
-    async fn flush_insert_stream_for_table(&self, table_name: &str) -> anyhow::Result<()> {
+    async fn end_bulk_ingest_stream_for_table(&self, table_name: &str) -> anyhow::Result<()> {
         let stream = {
-            let mut streams = self.insert_streams.write().await;
+            let mut streams = self.bulk_ingest_streams.write().await;
             streams.remove(table_name)
         };
 
@@ -353,9 +355,9 @@ impl AdbcSink {
         Ok(())
     }
 
-    async fn flush_all_insert_streams(&self) -> anyhow::Result<()> {
-        let streams: Vec<(String, TableDoPutStream)> = {
-            let mut guard = self.insert_streams.write().await;
+    async fn end_all_bulk_ingest_streams(&self) -> anyhow::Result<()> {
+        let streams: Vec<(String, TableBulkIngestStream)> = {
+            let mut guard = self.bulk_ingest_streams.write().await;
             guard.drain().collect()
         };
 
@@ -1255,10 +1257,17 @@ impl Sink for AdbcSink {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
         tracing::debug!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
 
+        if self.reuse_bulk_ingest_streams
+            && matches!(&op, InsertOp::Delete { .. } | InsertOp::Update { .. })
+        {
+            // Ensure all queued bulk ingest data is flushed before mutation SQL/update flows.
+            self.end_all_bulk_ingest_streams().await?;
+        }
+
         match op {
             InsertOp::Insert => {
-                if self.reuse_doput_streams {
-                    self.send_insert_via_reused_stream(table_name, batch)
+                if self.reuse_bulk_ingest_streams {
+                    self.send_batch_via_reused_bulk_ingest_stream(table_name, batch)
                         .await?;
                 } else {
                     let mut conn = self.pool.get().map_err(|e| {
@@ -1268,9 +1277,6 @@ impl Sink for AdbcSink {
                 }
             }
             InsertOp::Delete { key_columns } => {
-                if self.reuse_doput_streams {
-                    self.flush_insert_stream_for_table(table_name).await?;
-                }
                 let mut conn = self
                     .pool
                     .get()
@@ -1299,24 +1305,31 @@ impl Sink for AdbcSink {
                 );
             }
             InsertOp::Update { key_columns } => {
-                if self.reuse_doput_streams {
-                    self.flush_insert_stream_for_table(table_name).await?;
-                }
-                let mut conn = self
-                    .pool
-                    .get()
-                    .map_err(|e| anyhow::anyhow!("Failed to get ADBC connection from pool: {e}"))?;
                 let num_rows = batch.num_rows();
                 let start = Instant::now();
 
                 match self.update_strategy {
                     UpdateStrategy::StagingTable => {
+                        let mut conn = self.pool.get().map_err(|e| {
+                            anyhow::anyhow!("Failed to get ADBC connection from pool: {e}")
+                        })?;
                         self.staging_merge_update(&mut conn, table_name, batch, &key_columns)?;
                     }
                     UpdateStrategy::BulkIngestUpsert => {
-                        self.ingest_insert_batch(&mut conn, table_name, batch)?;
+                        if self.reuse_bulk_ingest_streams {
+                            self.send_batch_via_reused_bulk_ingest_stream(table_name, batch)
+                                .await?;
+                        } else {
+                            let mut conn = self.pool.get().map_err(|e| {
+                                anyhow::anyhow!("Failed to get ADBC connection from pool: {e}")
+                            })?;
+                            self.ingest_insert_batch(&mut conn, table_name, batch)?;
+                        }
                     }
                     UpdateStrategy::Statement => {
+                        let mut conn = self.pool.get().map_err(|e| {
+                            anyhow::anyhow!("Failed to get ADBC connection from pool: {e}")
+                        })?;
                         let table_ident = self.target_table_identifier(table_name);
                         let schema = batch.schema();
                         let (key_indices, key_idents) =
@@ -1404,8 +1417,8 @@ impl Sink for AdbcSink {
     }
 
     async fn flush(&self) -> anyhow::Result<()> {
-        if self.reuse_doput_streams {
-            self.flush_all_insert_streams().await?;
+        if self.reuse_bulk_ingest_streams {
+            self.end_all_bulk_ingest_streams().await?;
         }
 
         Ok(())
