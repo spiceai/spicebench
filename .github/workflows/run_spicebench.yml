@@ -18,45 +18,27 @@ on:
           - spice_cloud
           - databricks-sql
           - databricks-lakebase
-      etl_bucket:
-        description: 'S3 bucket for ETL source and target data'
+      etl_type:
+        description: 'ETL type'
         required: true
-        default: 'spicebench'
-        type: string
-      etl_prefix:
-        description: 'S3 key prefix (the {prefix} portion of {prefix}/{scenario}/{version}/)'
-        required: false
-        default: 'data-gen'
-        type: string
+        default: 'append-only'
+        type: choice
+        options:
+          - append-only
+          - mutations
       scale_factor:
-        description: 'TPC-H scale factor used to derive the ETL version path segment automatically'
+        description: 'Scale Factor'
         required: true
-        type: string
-        default: '1.0'
-      etl_region:
-        description: 'AWS region for the ETL S3 bucket'
-        required: false
-        default: 'us-east-1'
-        type: string
-      num_query_clients:
-        description: 'Number of query clients to run (maps to spicebench --concurrency)'
-        required: false
-        default: '8'
-        type: string
-      validate_checkpoint_results:
-        description: 'Enable checkpoint-based result validation (maps to spicebench --validate-results)'
-        required: false
-        default: true
-        type: boolean
+        default: '1'
+        type: choice
+        options:
+          - '0.1'
+          - '1'
+          - '10'
       enable_module_debug_logging:
-        description: 'Enable debug logs only for SpiceBench modules (etl, spicebench, data_generation)'
+        description: 'Enable debug logs'
         required: false
         default: false
-        type: boolean
-      scrape_sut_metrics:
-        description: 'Enable periodic SUT metrics collection via the system adapter (maps to spicebench --scrape-sut-metrics)'
-        required: false
-        default: true
         type: boolean
 jobs:
   run-spicebench:
@@ -234,16 +216,16 @@ jobs:
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '8' }}
-          ETL_BUCKET: ${{ github.event.inputs.etl_bucket }}
-          ETL_PREFIX: ${{ github.event.inputs.etl_prefix || 'data-gen' }}
-          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1.0' }}
-          ETL_REGION: ${{ github.event.inputs.etl_region || 'us-east-1' }}
+          NUM_QUERY_CLIENTS: '8'
+          ETL_BUCKET: 'spicebench'
+          ETL_PREFIX: ${{ github.event.inputs.etl_type == 'mutations' && 'data-gen-mutable' || 'data-gen' }}
+          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
+          ETL_REGION: 'us-east-1'
           ETL_SINK: 'adbc'
           SCHEDULER_STATE_LOCATION: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/'
-          VALIDATE_CHECKPOINT_RESULTS: ${{ github.event.inputs.validate_checkpoint_results || 'false' }}
+          VALIDATE_CHECKPOINT_RESULTS: 'true'
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
-          SCRAPE_SUT_METRICS: ${{ github.event.inputs.scrape_sut_metrics || 'true' }}
+          SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
@@ -303,6 +285,7 @@ jobs:
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
             export SPICEBENCH_TARGET_BATCH_ROWS=500000
             export SPICEBENCH_ADBC_MAX_INGEST_BATCH_BYTES=1268435456
+            export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
             ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
