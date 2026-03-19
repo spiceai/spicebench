@@ -58,13 +58,18 @@ struct SutInstruments {
     ingestion_rows_per_sec: Gauge<f64>,
 }
 
-fn run_metric_attributes(common_args: &RunArgs, run_id: uuid::Uuid) -> Vec<KeyValue> {
+fn run_metric_attributes(
+    common_args: &RunArgs,
+    run_id: uuid::Uuid,
+    etl_type: &str,
+) -> Vec<KeyValue> {
     vec![
         KeyValue::new(
             "executor_instance_type",
             common_args.executor_instance_type.clone(),
         ),
         KeyValue::new("run_id", run_id.to_string()),
+        KeyValue::new("etl_type", etl_type.to_string()),
     ]
 }
 
@@ -612,7 +617,7 @@ pub(crate) async fn run(
     checkpoint_dir: Option<&Path>,
     query_catalog_namespace: Option<String>,
 ) -> anyhow::Result<()> {
-    let metric_attributes = run_metric_attributes(common_args, run_id);
+    let metric_attributes = run_metric_attributes(common_args, run_id, version_metadata.etl_type());
 
     scenario.load_query_set()?;
 
@@ -627,6 +632,7 @@ pub(crate) async fn run(
                 data_generation::config::format_scale_factor(common_args.scale_factor),
             ),
             KeyValue::new("scale_factor", version_metadata.scale_factor.to_string()),
+            KeyValue::new("etl_type", version_metadata.etl_type()),
         ])
         .build();
 

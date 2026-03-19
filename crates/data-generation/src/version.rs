@@ -103,6 +103,19 @@ impl VersionMetadata {
     pub fn mutation_config(&self) -> MutationConfig {
         MutationConfig::new(self.mutations.update_ratio, self.mutations.delete_ratio)
     }
+
+    /// Returns the ETL type based on the mutation configuration.
+    ///
+    /// - `"events"` — append-only data (no updates or deletes).
+    /// - `"changes"` — data with mutations (updates and/or deletes).
+    #[must_use]
+    pub fn etl_type(&self) -> &'static str {
+        if self.mutations.update_ratio == 0.0 && self.mutations.delete_ratio == 0.0 {
+            "events"
+        } else {
+            "changes"
+        }
+    }
 }
 
 /// Mutation configuration stored in version metadata.

@@ -21,11 +21,11 @@ on:
       etl_type:
         description: 'ETL type'
         required: true
-        default: 'append-only'
+        default: 'events'
         type: choice
         options:
-          - append-only
-          - mutations
+          - events
+          - changes
       scale_factor:
         description: 'Scale Factor'
         required: true
@@ -223,7 +223,7 @@ jobs:
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           NUM_QUERY_CLIENTS: '8'
           ETL_BUCKET: 'spicebench'
-          ETL_PREFIX: ${{ github.event.inputs.etl_type == 'mutations' && 'data-gen-mutable' || 'data-gen' }}
+          ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
           ETL_REGION: 'us-east-1'
           ETL_SINK: 'adbc'

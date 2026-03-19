@@ -67,7 +67,7 @@ const ADBC_BULK_INGEST_STREAM_BUFFER_ENV: &str = "SPICEBENCH_ADBC_BULK_INGEST_ST
 /// - `statement`          — row-by-row `UPDATE … SET … WHERE …` statements (default)
 /// - `staging_table`      — bulk ingest into temp staging table + single `MERGE INTO`
 /// - `bulk_ingest_upsert` — bulk ingest directly into the target table (relies on the
-///                          target system's `on_conflict: upsert` or equivalent to merge)
+///   target system's `on_conflict: upsert` or equivalent to merge)
 const ADBC_UPDATE_STRATEGY_ENV: &str = "SPICEBENCH_ADBC_UPDATE_STRATEGY";
 
 /// Strategy for executing UPDATE operations.
@@ -482,9 +482,11 @@ impl AdbcSink {
             .collect::<anyhow::Result<Vec<_>>>()?
             .join(", ");
 
-        let partition_clause = (!partition_by.is_empty())
-            .then(|| format!("PARTITION BY ({})", partition_by.join(", ")))
-            .unwrap_or_default();
+        let partition_clause = if !partition_by.is_empty() {
+            format!("PARTITION BY ({})", partition_by.join(", "))
+        } else {
+            String::new()
+        };
 
         let primary_key_statement = if !primary_keys.is_empty() {
             let key_idents: Vec<String> = primary_keys
@@ -510,7 +512,7 @@ impl AdbcSink {
             .iter()
             .map(|(table_name, config)| {
                 self.create_table_sql(
-                    &table_name,
+                    table_name,
                     config.schema.as_ref(),
                     config.partition_columns.clone(),
                     &config.primary_key_columns,
@@ -924,6 +926,7 @@ impl AdbcSink {
         ))
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn update_sql_for_row(
         &self,
         table_name: &str,
