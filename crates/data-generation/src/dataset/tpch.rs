@@ -437,8 +437,12 @@ impl Dataset for TpchDataset {
         }
     }
 
-    fn partition_columns(&self, _table: &str) -> Vec<String> {
-        vec![]
+    fn partition_columns(&self, table: &str) -> Vec<String> {
+        match table {
+            "lineitem" => vec!["l_shipdate".to_string()],
+            "orders" => vec!["o_orderdate".to_string()],
+            _ => vec![],
+        }
     }
 
     fn num_batches(&self, table: &str) -> u64 {

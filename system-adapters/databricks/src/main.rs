@@ -581,10 +581,17 @@ impl DatabricksAdapter {
         dataset_cfg: &DatasetConfig,
         table_format: TableFormat,
     ) -> Result<String> {
+        let partition_set: std::collections::HashSet<&str> = dataset_cfg
+            .partition_columns
+            .iter()
+            .map(String::as_str)
+            .collect();
+
         let columns = dataset_cfg
             .schema
             .fields()
             .iter()
+            .filter(|field| !partition_set.contains(field.name().as_str()))
             .map(|field| {
                 let col_type = Self::sql_type_for_arrow(field.data_type())?;
                 Ok::<_, anyhow::Error>(format!(
@@ -596,11 +603,34 @@ impl DatabricksAdapter {
             .collect::<Result<Vec<_>>>()?
             .join(", ");
 
-        Ok(format!(
+        let mut ddl = format!(
             "CREATE TABLE {} ({columns}) USING {}",
             self.table_full_name(table_name),
             table_format.as_sql_using()
-        ))
+        );
+
+        if !dataset_cfg.partition_columns.is_empty() {
+            let partition_cols = dataset_cfg
+                .partition_columns
+                .iter()
+                .map(|col_name| {
+                    let field =
+                        dataset_cfg.schema.field_with_name(col_name).map_err(|_| {
+                            anyhow!("Partition column '{col_name}' not found in schema for table '{table_name}'")
+                        })?;
+                    let col_type = Self::sql_type_for_arrow(field.data_type())?;
+                    Ok::<_, anyhow::Error>(format!(
+                        "{} {col_type}",
+                        Self::quoted_identifier(col_name)
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join(", ");
+            use std::fmt::Write;
+            write!(&mut ddl, " PARTITIONED BY ({partition_cols})").unwrap();
+        }
+
+        Ok(ddl)
     }
 
     fn table_format_from_setup_metadata(
@@ -1869,6 +1899,8 @@ impl Handler for DatabricksAdapter {
         let _ = etl_sink_type;
         eprintln!("[databricks-adapter] setup: run_id={run_id}");
         eprintln!("[databricks-adapter] endpoint={}", self.config.endpoint);
+        eprintln!("[databricks-adapter] metadata={:#?}", metadata);
+        eprintln!("[databricks-adapter] datasets={:#?}", datasets);
 
         let scenario_slug = Self::scenario_slug(&metadata);
         let variant = Self::variant_from_setup_metadata(&metadata)
