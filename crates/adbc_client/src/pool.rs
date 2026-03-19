@@ -72,10 +72,7 @@ impl AdbcConnectionManager {
     /// comparisons against BIGINT columns fail with `DATATYPE_MISMATCH`
     /// unless Int64 literals are explicitly suffixed with `L`.
     pub fn bigint_suffix(driver_name: &str) -> bool {
-        match driver_name {
-            d if d.eq_ignore_ascii_case("databricks") => true,
-            _ => false,
-        }
+        matches!(driver_name, d if d.eq_ignore_ascii_case("databricks"))
     }
 }
 
