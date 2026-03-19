@@ -1007,11 +1007,11 @@ impl DatabricksAdapter {
             self.config.endpoint
         );
 
-        let mut _total_read_bytes: u64 = 0;
-        let mut _total_read_remote_bytes: u64 = 0;
-        let mut _total_read_cache_bytes: u64 = 0;
-        let mut _total_write_remote_bytes: u64 = 0;
-        let mut _total_spill_to_disk_bytes: u64 = 0;
+        let mut total_read_bytes: u64 = 0;
+        let mut total_read_remote_bytes: u64 = 0;
+        let mut total_read_cache_bytes: u64 = 0;
+        let mut total_write_remote_bytes: u64 = 0;
+        let mut total_spill_to_disk_bytes: u64 = 0;
         let mut page_token: Option<String> = None;
 
         loop {
@@ -1049,11 +1049,11 @@ impl DatabricksAdapter {
 
             for entry in &body.res {
                 if let Some(ref m) = entry.metrics {
-                    _total_read_bytes += m.read_bytes.unwrap_or(0);
-                    _total_read_remote_bytes += m.read_remote_bytes.unwrap_or(0);
-                    _total_read_cache_bytes += m.read_cache_bytes.unwrap_or(0);
-                    _total_write_remote_bytes += m.write_remote_bytes.unwrap_or(0);
-                    _total_spill_to_disk_bytes += m.spill_to_disk_bytes.unwrap_or(0);
+                    total_read_bytes += m.read_bytes.unwrap_or(0);
+                    total_read_remote_bytes += m.read_remote_bytes.unwrap_or(0);
+                    total_read_cache_bytes += m.read_cache_bytes.unwrap_or(0);
+                    total_write_remote_bytes += m.write_remote_bytes.unwrap_or(0);
+                    total_spill_to_disk_bytes += m.spill_to_disk_bytes.unwrap_or(0);
                 }
             }
 
@@ -1064,15 +1064,15 @@ impl DatabricksAdapter {
             }
         }
 
-        let total_write_bytes = _total_write_remote_bytes + _total_spill_to_disk_bytes;
+        let total_write_bytes = total_write_remote_bytes + total_spill_to_disk_bytes;
 
-        // eprintln!(
-        //     "[databricks-adapter] query history I/O breakdown: \
-        //      total_read_bytes={total_read_bytes} (total_read_remote_bytes={total_read_remote_bytes}, total_read_cache_bytes={total_read_cache_bytes}), \
-        //      total_write_bytes={total_write_bytes} (total_write_remote_bytes={total_write_remote_bytes}, total_spill_to_disk_bytes={total_spill_to_disk_bytes})"
-        // );
+        eprintln!(
+            "[databricks-adapter] query history I/O breakdown: \
+             total_read_bytes={total_read_bytes} (total_read_remote_bytes={total_read_remote_bytes}, total_read_cache_bytes={total_read_cache_bytes}), \
+             total_write_bytes={total_write_bytes} (total_write_remote_bytes={total_write_remote_bytes}, total_spill_to_disk_bytes={total_spill_to_disk_bytes})"
+        );
 
-        Ok((_total_read_bytes, total_write_bytes))
+        Ok((total_read_bytes, total_write_bytes))
     }
 
     async fn ensure_cluster_ready(&self) -> Result<(String, bool)> {
@@ -1927,8 +1927,6 @@ impl Handler for DatabricksAdapter {
         let _ = etl_sink_type;
         eprintln!("[databricks-adapter] setup: run_id={run_id}");
         eprintln!("[databricks-adapter] endpoint={}", self.config.endpoint);
-        eprintln!("[databricks-adapter] metadata={:#?}", metadata);
-        eprintln!("[databricks-adapter] datasets={:#?}", datasets);
 
         let scenario_slug = Self::scenario_slug(&metadata);
         let variant = Self::variant_from_setup_metadata(&metadata)
@@ -2310,7 +2308,7 @@ impl Handler for DatabricksAdapter {
                     .await
                     .map_err(|e| format!("Failed to get warehouse info: {e}"))?;
 
-                // eprintln!("[databricks-adapter] SUT metrics: warehouse_info={info:?}");
+                eprintln!("[databricks-adapter] SUT metrics: warehouse_info={info:?}");
 
                 let mut resource = ResourceMetrics {
                     num_compute_nodes: info.num_clusters,
