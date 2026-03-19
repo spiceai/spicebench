@@ -575,17 +575,37 @@ impl DatabricksAdapter {
         }
     }
 
+    /// Parse a `bucket(N, col_name)` expression and return the column name.
+    fn parse_bucket_column(spec: &str) -> Option<String> {
+        let trimmed = spec.trim();
+        if !trimmed.starts_with("bucket(") || !trimmed.ends_with(')') {
+            return None;
+        }
+        let inner = &trimmed["bucket(".len()..trimmed.len() - 1];
+        let (_n, col) = inner.split_once(',')?;
+        Some(col.trim().to_string())
+    }
+
     fn create_table_ddl(
         &self,
         table_name: &str,
         dataset_cfg: &DatasetConfig,
         table_format: TableFormat,
     ) -> Result<String> {
-        let partition_set: std::collections::HashSet<&str> = dataset_cfg
-            .partition_columns
-            .iter()
-            .map(String::as_str)
-            .collect();
+        // Separate partition columns into plain (Hive) and bucket (clustering).
+        let mut plain_partition_cols: Vec<&str> = Vec::new();
+        let mut cluster_cols: Vec<String> = Vec::new();
+
+        for spec in &dataset_cfg.partition_columns {
+            if let Some(col_name) = Self::parse_bucket_column(spec) {
+                cluster_cols.push(col_name);
+            } else {
+                plain_partition_cols.push(spec.as_str());
+            }
+        }
+
+        let partition_set: std::collections::HashSet<&str> =
+            plain_partition_cols.iter().copied().collect();
 
         let columns = dataset_cfg
             .schema
@@ -609,9 +629,10 @@ impl DatabricksAdapter {
             table_format.as_sql_using()
         );
 
-        if !dataset_cfg.partition_columns.is_empty() {
-            let partition_cols = dataset_cfg
-                .partition_columns
+        use std::fmt::Write;
+
+        if !plain_partition_cols.is_empty() {
+            let partition_defs = plain_partition_cols
                 .iter()
                 .map(|col_name| {
                     let field =
@@ -626,8 +647,15 @@ impl DatabricksAdapter {
                 })
                 .collect::<Result<Vec<_>>>()?
                 .join(", ");
-            use std::fmt::Write;
-            write!(&mut ddl, " PARTITIONED BY ({partition_cols})").unwrap();
+            write!(&mut ddl, " PARTITIONED BY ({partition_defs})").unwrap();
+        }
+
+        if !cluster_cols.is_empty() {
+            let cluster_idents: Vec<String> = cluster_cols
+                .iter()
+                .map(|c| Self::quoted_identifier(c))
+                .collect();
+            write!(&mut ddl, " CLUSTER BY ({})", cluster_idents.join(", ")).unwrap();
         }
 
         Ok(ddl)
