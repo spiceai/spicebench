@@ -467,6 +467,7 @@ impl AdbcSink {
         &self,
         table_name: &str,
         schema: &Schema,
+        partition_by: Vec<String>,
         primary_keys: &[String],
     ) -> anyhow::Result<String> {
         let columns = schema
@@ -481,6 +482,10 @@ impl AdbcSink {
             .collect::<anyhow::Result<Vec<_>>>()?
             .join(", ");
 
+        let partition_clause = (!partition_by.is_empty())
+            .then(|| format!("PARTITION BY ({})", partition_by.join(", ")))
+            .unwrap_or_default();
+
         let primary_key_statement = if !primary_keys.is_empty() {
             let key_idents: Vec<String> = primary_keys
                 .iter()
@@ -492,7 +497,7 @@ impl AdbcSink {
         };
 
         Ok(format!(
-            "CREATE TABLE IF NOT EXISTS {} ({columns}{primary_key_statement})",
+            "CREATE TABLE IF NOT EXISTS {} ({columns}{primary_key_statement}) {partition_clause}",
             self.target_table_identifier(table_name)
         ))
     }
@@ -501,20 +506,17 @@ impl AdbcSink {
         &self,
         datasets: &HashMap<String, DatasetConfig>,
     ) -> anyhow::Result<()> {
-        let mut statements = Vec::with_capacity(datasets.len());
-        let mut table_names: Vec<_> = datasets.keys().cloned().collect();
-        table_names.sort();
-
-        for table_name in table_names {
-            let config = datasets.get(&table_name).ok_or_else(|| {
-                anyhow::anyhow!("Missing dataset config for table '{table_name}'")
-            })?;
-            statements.push(self.create_table_sql(
-                &table_name,
-                config.schema.as_ref(),
-                &config.primary_key_columns,
-            )?);
-        }
+        let statements = datasets
+            .iter()
+            .map(|(table_name, config)| {
+                self.create_table_sql(
+                    &table_name,
+                    config.schema.as_ref(),
+                    config.partition_columns.clone(),
+                    &config.primary_key_columns,
+                )
+            })
+            .collect::<Result<Vec<String>, anyhow::Error>>()?;
 
         let mut conn = self
             .pool
@@ -717,8 +719,8 @@ impl AdbcSink {
         let ingest_result = if target_db_catalog.is_some() || target_db_schema.is_some() {
             match conn.bulk_ingest(
                 &ingest_table_name,
-                None,
-                None,
+                target_db_catalog,
+                target_db_schema,
                 IngestMode::CreateAppend,
                 batch.clone(),
             ) {
