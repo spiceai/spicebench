@@ -45,6 +45,16 @@ on:
         required: false
         default: false
         type: boolean
+      executor_replicas:
+        description: 'Number of executor replicas for the Spice Cloud app (maps to SPIDAPTER_EXECUTOR_REPLICAS)'
+        required: false
+        default: '1'
+        type: string
+      disable_teardown:
+        description: 'Skip the teardown RPC call to the system adapter after the benchmark completes (useful for inspecting spice_cloud state after a run)'
+        required: false
+        default: false
+        type: boolean
 jobs:
   run-spicebench:
     name: Run spicebench
@@ -231,6 +241,7 @@ jobs:
           VALIDATE_CHECKPOINT_RESULTS: 'true'
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SCRAPE_SUT_METRICS: 'true'
+          SPIDAPTER_EXECUTOR_REPLICAS: ${{ github.event.inputs.executor_replicas || '1' }}
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
@@ -244,6 +255,7 @@ jobs:
           LAKEBASE_DATABASE_INSTANCE: ${{ secrets.LAKEBASE_DATABASE_INSTANCE }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
+          DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -310,7 +322,7 @@ jobs:
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel nightly"
+            ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SPIDAPTER_EXECUTOR_REPLICAS=${SPIDAPTER_EXECUTOR_REPLICAS} -e SCHEDULER_STATE_LOCATION ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
           fi
 
@@ -321,6 +333,11 @@ jobs:
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_DB_NAME=${LAKEBASE_PG_DB_NAME}"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_DATABASE_INSTANCE=${LAKEBASE_DATABASE_INSTANCE}"
+          fi
+
+          NO_TEARDOWN_ARG=""
+          if [ "${DISABLE_TEARDOWN}" = "true" ]; then
+            NO_TEARDOWN_ARG="--no-teardown"
           fi
 
           ~/.spice/bin/spicebench run \
@@ -335,3 +352,4 @@ jobs:
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
             ${SCHEDULER_STATE_ADAPTER_ENV} \
+            ${NO_TEARDOWN_ARG}

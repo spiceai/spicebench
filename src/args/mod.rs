@@ -181,6 +181,13 @@ pub struct RunArgs {
     /// when individual query latency is high.
     #[arg(long, default_value_t = 5)]
     pub(crate) checkpoint_validation_period: u64,
+
+    /// Skip the teardown RPC call to the system adapter after the benchmark completes.
+    ///
+    /// Useful when you want to inspect the system state after a run without
+    /// triggering adapter-side cleanup (e.g. for debugging spice_cloud deployments).
+    #[arg(long, default_value_t = false)]
+    pub(crate) no_teardown: bool,
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
