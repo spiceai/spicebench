@@ -67,7 +67,7 @@ const ADBC_BULK_INGEST_STREAM_BUFFER_ENV: &str = "SPICEBENCH_ADBC_BULK_INGEST_ST
 /// - `statement`          — row-by-row `UPDATE … SET … WHERE …` statements (default)
 /// - `staging_table`      — bulk ingest into temp staging table + single `MERGE INTO`
 /// - `bulk_ingest_upsert` — bulk ingest directly into the target table (relies on the
-///                          target system's `on_conflict: upsert` or equivalent to merge)
+///   target system's `on_conflict: upsert` or equivalent to merge)
 const ADBC_UPDATE_STRATEGY_ENV: &str = "SPICEBENCH_ADBC_UPDATE_STRATEGY";
 
 /// Strategy for executing UPDATE operations.
@@ -467,6 +467,7 @@ impl AdbcSink {
         &self,
         table_name: &str,
         schema: &Schema,
+        partition_by: Vec<String>,
         primary_keys: &[String],
     ) -> anyhow::Result<String> {
         let columns = schema
@@ -481,6 +482,12 @@ impl AdbcSink {
             .collect::<anyhow::Result<Vec<_>>>()?
             .join(", ");
 
+        let partition_clause = if !partition_by.is_empty() {
+            format!("PARTITION BY ({})", partition_by.join(", "))
+        } else {
+            String::new()
+        };
+
         let primary_key_statement = if !primary_keys.is_empty() {
             let key_idents: Vec<String> = primary_keys
                 .iter()
@@ -492,7 +499,7 @@ impl AdbcSink {
         };
 
         Ok(format!(
-            "CREATE TABLE IF NOT EXISTS {} ({columns}{primary_key_statement})",
+            "CREATE TABLE IF NOT EXISTS {} ({columns}{primary_key_statement}) {partition_clause}",
             self.target_table_identifier(table_name)
         ))
     }
@@ -501,20 +508,17 @@ impl AdbcSink {
         &self,
         datasets: &HashMap<String, DatasetConfig>,
     ) -> anyhow::Result<()> {
-        let mut statements = Vec::with_capacity(datasets.len());
-        let mut table_names: Vec<_> = datasets.keys().cloned().collect();
-        table_names.sort();
-
-        for table_name in table_names {
-            let config = datasets.get(&table_name).ok_or_else(|| {
-                anyhow::anyhow!("Missing dataset config for table '{table_name}'")
-            })?;
-            statements.push(self.create_table_sql(
-                &table_name,
-                config.schema.as_ref(),
-                &config.primary_key_columns,
-            )?);
-        }
+        let statements = datasets
+            .iter()
+            .map(|(table_name, config)| {
+                self.create_table_sql(
+                    table_name,
+                    config.schema.as_ref(),
+                    config.partition_columns.clone(),
+                    &config.primary_key_columns,
+                )
+            })
+            .collect::<Result<Vec<String>, anyhow::Error>>()?;
 
         let mut conn = self
             .pool
@@ -717,8 +721,8 @@ impl AdbcSink {
         let ingest_result = if target_db_catalog.is_some() || target_db_schema.is_some() {
             match conn.bulk_ingest(
                 &ingest_table_name,
-                None,
-                None,
+                target_db_catalog,
+                target_db_schema,
                 IngestMode::CreateAppend,
                 batch.clone(),
             ) {
@@ -922,6 +926,7 @@ impl AdbcSink {
         ))
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn update_sql_for_row(
         &self,
         table_name: &str,

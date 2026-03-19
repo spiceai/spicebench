@@ -350,6 +350,10 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
             "etl_sink".to_string(),
             serde_json::Value::String("adbc".to_string()),
         ),
+        (
+            "etl_type".to_string(),
+            serde_json::Value::String(version_metadata.etl_type().to_string()),
+        ),
     ]);
 
     if let Ok(system_under_test) = std::env::var("SYSTEM_UNDER_TEST") {

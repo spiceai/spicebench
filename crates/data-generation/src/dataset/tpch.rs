@@ -439,7 +439,14 @@ impl Dataset for TpchDataset {
 
     fn partition_columns(&self, table: &str) -> Vec<String> {
         match table {
-            "lineitem" => vec!["l_shipdate".to_string()],
+            "lineitem" => vec!["bucket(10, l_linenumber)".to_string()],
+            "orders" => vec!["bucket(10, o_orderkey)".to_string()],
+            "partsupp" => vec!["bucket(10, ps_partkey)".to_string()],
+            "part" => vec!["bucket(10, p_partkey)".to_string()],
+            "supplier" => vec!["s_nationkey".to_string()],
+            "customer" => vec!["bucket(5, c_nationkey)".to_string()],
+            "nation" => vec!["n_regionkey".to_string()],
+            "region" => vec!["r_regionkey".to_string()],
             _ => vec![],
         }
     }

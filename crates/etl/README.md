@@ -48,18 +48,21 @@ spicebench etl \
 
 ### FlightSQL Example
 
+Requires `data-generation` to run (to make `--archive-file`).
 ```bash
-spicebench etl \
-    --scenario tpch \
-    --scale-factor 1 \
-    --bucket my-data \
-    --prefix raw \
-    --adbc-driver flightsql \
-    --adbc-uri "grpcs://${SPICE_CLOUD_FLIGHTSQL_HOST}:443" \
-    --adbc-create-tables \
-    --adbc-option username="" \
-    --adbc-option password="${SPICE_CLOUD_API_KEY}"
-```
+cargo run -p etl -- \
+   --scenario tpch \
+   --prefix raw \
+   --adbc-driver flightsql \
+   --adbc-uri "grpc://localhost:50051" \
+   --adbc-option adbc.flight.sql.authorization_header="Bearer <api-key>" \
+   --adbc-create-tables \
+   --archive-file ./my-tpch.tar.zst \
+   --adbc-option adbc.flight.sql.client_option.tls_skip_verify=true 
+   # Schema and catalog as defined in `spicepod.yaml`.
+   --adbc-schema foo
+   --adbc-catalog foo
+  ```
 
 ## Null Sink
 

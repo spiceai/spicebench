@@ -15,4 +15,11 @@ spicebench generate \
     --num-steps 10
 ```
 
-To write a local archive instead of uploading to S3, add `--output-archive ./tpch-sf1.tar.zst`.
+To write a local archive instead of uploading to S3, add `--output-archive`:
+```bash
+cargo run -p data-generation -- run 
+  --scenario tpch 
+  --scale-factor 1 
+  --num-steps 20 
+  --output-archive ./my-tpch.tar.zst
+```
