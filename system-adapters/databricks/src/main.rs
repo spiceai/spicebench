@@ -1066,11 +1066,11 @@ impl DatabricksAdapter {
 
         let total_write_bytes = total_write_remote_bytes + total_spill_to_disk_bytes;
 
-        eprintln!(
-            "[databricks-adapter] query history I/O breakdown: \
-             total_read_bytes={total_read_bytes} (total_read_remote_bytes={total_read_remote_bytes}, total_read_cache_bytes={total_read_cache_bytes}), \
-             total_write_bytes={total_write_bytes} (total_write_remote_bytes={total_write_remote_bytes}, total_spill_to_disk_bytes={total_spill_to_disk_bytes})"
-        );
+        // eprintln!(
+        //     "[databricks-adapter] query history I/O breakdown: \
+        //      total_read_bytes={total_read_bytes} (total_read_remote_bytes={total_read_remote_bytes}, total_read_cache_bytes={total_read_cache_bytes}), \
+        //      total_write_bytes={total_write_bytes} (total_write_remote_bytes={total_write_remote_bytes}, total_spill_to_disk_bytes={total_spill_to_disk_bytes})"
+        // );
 
         Ok((total_read_bytes, total_write_bytes))
     }
@@ -2310,7 +2310,7 @@ impl Handler for DatabricksAdapter {
                     .await
                     .map_err(|e| format!("Failed to get warehouse info: {e}"))?;
 
-                eprintln!("[databricks-adapter] SUT metrics: warehouse_info={info:?}");
+                // eprintln!("[databricks-adapter] SUT metrics: warehouse_info={info:?}");
 
                 let mut resource = ResourceMetrics {
                     num_compute_nodes: info.num_clusters,
