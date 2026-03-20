@@ -424,11 +424,13 @@ impl Dataset for TpchDataset {
     }
 
     fn primary_key(&self, table: &str) -> Vec<String> {
+        // Partition columns must be included in the primary key for correct
+        // on-conflict behavior in distributed (scheduler+executor) mode.
         match table {
             "region" => vec!["r_regionkey".to_string()],
-            "nation" => vec!["n_nationkey".to_string()],
-            "supplier" => vec!["s_suppkey".to_string()],
-            "customer" => vec!["c_custkey".to_string()],
+            "nation" => vec!["n_nationkey".to_string(), "n_regionkey".to_string()],
+            "supplier" => vec!["s_suppkey".to_string(), "s_nationkey".to_string()],
+            "customer" => vec!["c_custkey".to_string(), "c_nationkey".to_string()],
             "part" => vec!["p_partkey".to_string()],
             "partsupp" => vec!["ps_partkey".to_string(), "ps_suppkey".to_string()],
             "orders" => vec!["o_orderkey".to_string()],
