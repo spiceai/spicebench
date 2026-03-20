@@ -1,0 +1,208 @@
+name: Run (Debug - Spice Cloud)
+run-name: Run (Debug) - ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      system_under_test:
+        description: 'System under test'
+        required: true
+        default: spice_cloud
+        type: choice
+        options:
+          - spice_cloud
+      environment:
+        description: 'Target Spice Cloud Environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+      scenario:
+        description: 'Scenario/query set to run (e.g. tpch)'
+        required: true
+        default: 'tpch'
+        type: string
+      etl_type:
+        description: 'ETL type'
+        required: true
+        default: 'events'
+        type: choice
+        options:
+          - events
+          - changes
+      scale_factor:
+        description: 'Scale Factor'
+        required: true
+        default: '1'
+        type: choice
+        options:
+          - '0.1'
+          - '1'
+          - '10'
+      spidapter_version:
+        description: 'Spidapter image version tag (e.g. latest, v1.0.0)'
+        required: false
+        default: 'latest'
+        type: string
+      enable_module_debug_logging:
+        description: 'Enable debug logs'
+        required: false
+        default: false
+        type: boolean
+      disable_teardown:
+        description: 'Skip the teardown RPC call to the system adapter'
+        required: false
+        default: false
+        type: boolean
+jobs:
+  run-spicebench:
+    name: Run spicebench
+    runs-on: spiceai-dev-runners
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-cc
+
+      - uses: ./.github/actions/management-login
+        with:
+          token-url: ${{ github.event.inputs.environment == 'prod' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
+          client-id: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: pull spidapter image
+        run: docker pull ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }}
+
+      - uses: ./.github/actions/build-spicebench
+
+      - name: Validate adapter configuration
+        env:
+          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
+          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SCENARIO}" ]; then
+            echo "SCENARIO must not be empty"
+            exit 1
+          fi
+
+          if [ -z "${SPICEAI_API_KEY:-}" ]; then
+            echo "SPICEAI_API_KEY must be set for spice_cloud"
+            exit 1
+          fi
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "docker is required for spice_cloud mode"
+            exit 1
+          fi
+
+          docker image inspect ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} >/dev/null 2>&1 || {
+            echo "spidapter docker image not found locally; pull step may have failed"
+            exit 1
+          }
+
+      - name: Install ADBC FlightSQL driver
+        uses: columnar-tech/setup-dbc@v1
+        with:
+          drivers: flightsql
+
+      - name: Run spicebench
+        env:
+          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
+          SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+          NUM_QUERY_CLIENTS: '8'
+          ETL_BUCKET: 'spicebench'
+          ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
+          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
+          ETL_REGION: 'us-east-1'
+          ETL_SINK: 'adbc'
+          SCHEDULER_STATE_LOCATION: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/'
+          VALIDATE_CHECKPOINT_RESULTS: 'true'
+          ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
+          SCRAPE_SUT_METRICS: 'true'
+          SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
+          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
+          S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SPIDAPTER_ICEBERG_REGION: us-west-1
+          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
+          DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
+        run: |
+          set -euo pipefail
+          if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
+            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug'
+          else
+            export RUST_LOG='info'
+          fi
+
+          TABLE_FORMAT="parquet"
+          EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
+          ETL_ENDPOINT="${MINIO_ENDPOINT}"
+          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"
+          if [ -n "${ETL_PREFIX}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-prefix ${ETL_PREFIX}"
+          fi
+          if [ -n "${ETL_REGION}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"
+          fi
+          if [ -n "${ETL_ENDPOINT:-}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
+          fi
+
+          ETL_SINK_ARGS="--etl-sink ${ETL_SINK} --table-format ${TABLE_FORMAT}"
+          if [ "${ETL_SINK}" = "adbc" ]; then
+            :
+          fi
+
+          VALIDATION_ARGS=""
+          if [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ]; then
+            VALIDATION_ARGS="--validate-results"
+          fi
+
+          SCHEDULER_STATE_ADAPTER_ENV="--system-adapter-env SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}"
+
+          SUT_METRICS_ARGS=""
+          if [ "${SCRAPE_SUT_METRICS}" = "true" ]; then
+            SUT_METRICS_ARGS="--scrape-sut-metrics"
+          fi
+
+          export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
+          export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
+          ADAPTER_CMD="docker"
+          ADAPTER_ARGS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel nightly"
+          ADAPTER_ENVS=""
+
+          NO_TEARDOWN_ARG=""
+          if [ "${DISABLE_TEARDOWN}" = "true" ]; then
+            NO_TEARDOWN_ARG="--no-teardown"
+          fi
+
+          ~/.spice/bin/spicebench run \
+            --concurrency "${NUM_QUERY_CLIENTS}"  \
+            --scenario "${SCENARIO}" \
+            --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
+            ${ETL_ARGS} \
+            ${ETL_SINK_ARGS} \
+            ${VALIDATION_ARGS} \
+            ${SUT_METRICS_ARGS} \
+            --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
+            --system-adapter-stdio-args "${ADAPTER_ARGS}" \
+            ${ADAPTER_ENVS} \
+            ${SCHEDULER_STATE_ADAPTER_ENV} \
+            ${NO_TEARDOWN_ARG} \
