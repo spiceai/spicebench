@@ -390,8 +390,11 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     )
     .await;
 
-    // After successful setup, always teardown even if there are errors in between.
-    if let Err(e) = system_adapter_client.lock().await.teardown(run_id).await {
+    // After successful setup, always teardown even if there are errors in between,
+    // unless --no-teardown was requested (e.g. to inspect cloud state after a run).
+    if args.no_teardown {
+        tracing::info!("Skipping teardown (--no-teardown flag is set).");
+    } else if let Err(e) = system_adapter_client.lock().await.teardown(run_id).await {
         tracing::error!("Failed to teardown system adapter: {e}");
     }
 
