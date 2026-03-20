@@ -125,7 +125,6 @@ async fn run_benchmark(
         &mutations,
         target_config.clone(),
     )?;
-
     let (setup_response, mut pipeline) = {
         let setup_response = system_adapter_client
             .lock()
