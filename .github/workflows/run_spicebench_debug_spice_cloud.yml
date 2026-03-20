@@ -43,6 +43,11 @@ on:
         required: false
         default: false
         type: boolean
+      disable_teardown:
+        description: 'Skip the teardown RPC call to the system adapter'
+        required: false
+        default: false
+        type: boolean
 jobs:
   run-spicebench:
     name: Run spicebench
@@ -128,6 +133,7 @@ jobs:
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
+          DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -173,6 +179,11 @@ jobs:
           ADAPTER_ARGS="run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel nightly"
           ADAPTER_ENVS=""
 
+          NO_TEARDOWN_ARG=""
+          if [ "${DISABLE_TEARDOWN}" = "true" ]; then
+            NO_TEARDOWN_ARG="--no-teardown"
+          fi
+
           ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
@@ -185,3 +196,4 @@ jobs:
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
             ${SCHEDULER_STATE_ADAPTER_ENV} \
+            ${NO_TEARDOWN_ARG} \
