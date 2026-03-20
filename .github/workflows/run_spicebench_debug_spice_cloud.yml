@@ -68,7 +68,7 @@ jobs:
 
       - uses: ./.github/actions/management-login
         with:
-          token-url: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai/oauth/token' || 'https://dev-api.spice.ai/oauth/token' }}
+          token-url: ${{ github.event.inputs.environment == 'prod' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
           client-id: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
           client-secret: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
