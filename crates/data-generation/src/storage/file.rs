@@ -157,15 +157,6 @@ impl DataStorage for FileStorage {
         .await
         .map_err(|e| anyhow::anyhow!("spawn_blocking panicked reading parquet: {e}"))??;
 
-        if table_name == "lineitem"
-            && let Some(result) = result.as_ref()
-        {
-            eprintln!(
-                "[etl-read] table={table_name} batch_id={batch_id} rows={}",
-                result.rows_read,
-            );
-        }
-
         Ok(result)
     }
 

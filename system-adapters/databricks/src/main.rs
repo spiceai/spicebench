@@ -449,7 +449,7 @@ impl AdapterConfig {
 struct DatabaseCredentialResponse {
     token: String,
     #[serde(alias = "expiration_time", alias = "expire_time")]
-    expiration_time: Option<String>,
+    _expiration_time: Option<String>,
 }
 
 impl DatabricksAdapter {
@@ -1759,12 +1759,12 @@ impl DatabricksAdapter {
                 });
                 (url, payload)
             }
-            LakebaseSyncTarget::Project { name, branch } => {
+            LakebaseSyncTarget::Project { name: _, branch: _ } => {
                 // Autoscaling uses the postgres API path and endpoint-based credential generation
                 let endpoint_path =
-                    format!("projects/{}/branches/{}/endpoints/default", name, branch);
+                    format!("projects/spicebench/branches/production/endpoints/primary");
                 let url = format!(
-                    "https://{}/api/2.0/postgres/generate-database-credential",
+                    "https://{}/api/2.0/postgres/credentials",
                     self.config.endpoint
                 );
                 let payload = json!({
@@ -1774,8 +1774,6 @@ impl DatabricksAdapter {
                 (url, payload)
             }
         };
-
-        eprintln!("[databricks-adapter] generating fresh Lakebase PG OAuth token");
 
         let response = self
             .client
@@ -1794,10 +1792,6 @@ impl DatabricksAdapter {
         }
 
         let cred: DatabaseCredentialResponse = response.json().await?;
-        eprintln!(
-            "[databricks-adapter] Lakebase PG token generated, expires: {}",
-            cred.expiration_time.as_deref().unwrap_or("unknown")
-        );
 
         Ok(cred.token)
     }
@@ -2030,9 +2024,6 @@ impl Handler for DatabricksAdapter {
         match variant {
             DatabricksVariant::Databricks => {}
             DatabricksVariant::Lakebase => {
-                eprintln!("[databricks-adapter] Waiting 2 minutes for schema to initialize");
-                std::thread::sleep(Duration::from_secs(120));
-
                 let lakebase_config = match &self.config.compute_target {
                     ComputeTarget::Lakebase(cfg) => cfg,
                     _ => {
@@ -2387,7 +2378,10 @@ impl Handler for DatabricksAdapter {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().map_err(|e| {
+        eprintln!("[databricks-adapter] CLI parse error: {e}");
+        e.exit();
+    })?;
 
     match cli.command {
         Commands::Stdio(args) => {

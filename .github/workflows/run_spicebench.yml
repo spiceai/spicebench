@@ -214,7 +214,7 @@ jobs:
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          NUM_QUERY_CLIENTS: '8'
+          NUM_QUERY_CLIENTS: '2'
           ETL_BUCKET: 'spicebench'
           ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
@@ -232,9 +232,9 @@ jobs:
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           LAKEBASE_PG_HOST: ${{ secrets.LAKEBASE_PG_HOST }}
           LAKEBASE_PG_USER: ${{ secrets.LAKEBASE_PG_USER }}
-          LAKEBASE_PG_DB_NAME: ${{ secrets.LAKEBASE_PG_DB_NAME }}
           LAKEBASE_PG_SCHEMA: ${{ secrets.LAKEBASE_PG_SCHEMA }}
-          LAKEBASE_DATABASE_INSTANCE: ${{ secrets.LAKEBASE_DATABASE_INSTANCE }}
+          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
+          LAKEBASE_BRANCH: ${{ secrets.LAKEBASE_BRANCH }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
         run: |
@@ -309,11 +309,11 @@ jobs:
 
           if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=ep-sweet-morning-d1z2teqy.database.us-west-2.cloud.databricks.com"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_DB_NAME=${LAKEBASE_PG_DB_NAME}"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_DATABASE_INSTANCE=${LAKEBASE_DATABASE_INSTANCE}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PROJECT=${LAKEBASE_PROJECT}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
           fi
 
           ~/.spice/bin/spicebench run \
