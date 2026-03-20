@@ -214,7 +214,7 @@ jobs:
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          NUM_QUERY_CLIENTS: '2'
+          NUM_QUERY_CLIENTS: '8'
           ETL_BUCKET: 'spicebench'
           ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
