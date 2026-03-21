@@ -28,6 +28,8 @@ use checkpointer::CheckpointStore;
 #[cfg(feature = "duckdb")]
 use data_generation::config::{TargetConfig, build_version_prefix};
 #[cfg(feature = "duckdb")]
+use data_generation::dataset::Dataset;
+#[cfg(feature = "duckdb")]
 use data_generation::storage::DataStorage;
 #[cfg(feature = "duckdb")]
 use data_generation::storage::file::FileStorage;
@@ -103,6 +105,57 @@ fn write_batches_to_parquet(
     Ok(())
 }
 
+#[cfg(feature = "duckdb")]
+fn extract_row_count_value(batches: &[RecordBatch]) -> anyhow::Result<usize> {
+    let batch = batches
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("row count query returned no batches"))?;
+    if batch.num_rows() == 0 || batch.num_columns() == 0 {
+        anyhow::bail!("row count query returned an empty result set");
+    }
+
+    let value = test_framework::queries::validation::array_value_to_string(
+        batch.column(0).as_ref(),
+        0,
+    )?
+    .ok_or_else(|| anyhow::anyhow!("row count query returned NULL"))?;
+
+    value
+        .parse::<usize>()
+        .map_err(|e| anyhow::anyhow!("failed to parse row count '{value}': {e}"))
+}
+
+#[cfg(feature = "duckdb")]
+async fn write_checkpoint_row_counts(
+    sink: &DuckDBSink,
+    table_names: &[String],
+    checkpoint_dir: &Path,
+    checkpoint_idx: usize,
+) -> anyhow::Result<()> {
+    let resolved_checkpoint_dir = checkpoint_dir.join(checkpoint_idx.to_string());
+    fs::create_dir_all(&resolved_checkpoint_dir)?;
+
+    let mut row_counts = std::collections::BTreeMap::new();
+    for table_name in table_names {
+        let sql = format!("SELECT COUNT(*) AS row_count FROM \"{table_name}\"");
+        let batches = sink.query(&sql).await?;
+        let row_count = extract_row_count_value(&batches)?;
+        row_counts.insert(table_name.clone(), row_count);
+    }
+
+    let out_path = resolved_checkpoint_dir.join("row_counts.json");
+    fs::write(&out_path, serde_json::to_vec_pretty(&row_counts)?)?;
+
+    tracing::info!(
+        checkpoint = checkpoint_idx,
+        tables = row_counts.len(),
+        path = %out_path.display(),
+        "Checkpoint table row counts written"
+    );
+
+    Ok(())
+}
+
 pub async fn execute(args: &CheckpointArgs) -> anyhow::Result<()> {
     #[cfg(not(feature = "duckdb"))]
     {
@@ -153,6 +206,10 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
     let dataset_config = version_metadata.dataset_config();
     let mutations = version_metadata.mutation_config();
+    let dataset = dataset_source.create(&dataset_config, &mutations, Arc::clone(&source))?;
+    let mut table_names: Vec<String> = dataset.tables().keys().cloned().collect();
+    table_names.sort();
+
     let target = Arc::new(DuckDBSink::new(&args.duckdb_path)?);
     let target_sink: Arc<dyn etl::sink::Sink> = Arc::clone(&target) as Arc<dyn etl::sink::Sink>;
 
@@ -203,6 +260,13 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
                     checkpoint_idx,
                 )
                 .await?;
+                write_checkpoint_row_counts(
+                    &target,
+                    &table_names,
+                    &args.checkpoint_dir,
+                    checkpoint_idx,
+                )
+                .await?;
                 checkpoint_idx += 1;
 
                 pipeline.continue_pipeline()?;
@@ -215,6 +279,13 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
                 run_checkpoint_queries(
                     &target,
                     &checkpoint_queries,
+                    &args.checkpoint_dir,
+                    checkpoint_idx,
+                )
+                .await?;
+                write_checkpoint_row_counts(
+                    &target,
+                    &table_names,
                     &args.checkpoint_dir,
                     checkpoint_idx,
                 )

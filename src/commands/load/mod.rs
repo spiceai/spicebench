@@ -307,6 +307,109 @@ fn load_checkpoint_results(
     Ok(results)
 }
 
+fn load_checkpoint_row_counts(
+    checkpoint_dir: &Path,
+    checkpoint_idx: usize,
+) -> anyhow::Result<HashMap<String, usize>> {
+    let idx_dir = checkpoint_dir.join(checkpoint_idx.to_string());
+    let row_counts_path = idx_dir.join("row_counts.json");
+    if !row_counts_path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    Ok(serde_json::from_slice(&std::fs::read(row_counts_path)?)?)
+}
+
+fn checkpoint_count_query(
+    table_name: &str,
+    query_catalog_namespace: Option<&str>,
+) -> test_framework::queries::Query {
+    let qualified_table = match query_catalog_namespace.map(str::trim) {
+        Some(namespace) if !namespace.is_empty() => format!("{namespace}.\"{table_name}\""),
+        _ => format!("\"{table_name}\""),
+    };
+
+    test_framework::queries::Query::new(
+        format!("checkpoint_row_count_{table_name}").into(),
+        format!("SELECT COUNT(*) AS row_count FROM {qualified_table}").into(),
+        false,
+    )
+}
+
+fn extract_row_count_from_batches(batches: &[RecordBatch]) -> anyhow::Result<usize> {
+    let batch = batches
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("row count query returned no batches"))?;
+    if batch.num_rows() == 0 || batch.num_columns() == 0 {
+        anyhow::bail!("row count query returned an empty result set");
+    }
+
+    let value = validation::array_value_to_string(batch.column(0).as_ref(), 0)?
+        .ok_or_else(|| anyhow::anyhow!("row count query returned NULL"))?;
+    value
+        .parse::<usize>()
+        .map_err(|e| anyhow::anyhow!("failed to parse row count '{value}': {e}"))
+}
+
+async fn validate_checkpoint_table_row_counts(
+    executor: &dyn QueryExecutor,
+    expected_row_counts: &HashMap<String, usize>,
+    checkpoint_idx: usize,
+    query_catalog_namespace: Option<&str>,
+) -> bool {
+    if expected_row_counts.is_empty() {
+        println!(
+            "Checkpoint {checkpoint_idx}: no table row counts found, skipping row-count validation"
+        );
+        return true;
+    }
+
+    let mut tables: Vec<_> = expected_row_counts.iter().collect();
+    tables.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    for (table_name, expected_count) in tables {
+        let query = checkpoint_count_query(table_name, query_catalog_namespace);
+        let result = match executor.execute(&query).await {
+            Ok(result) => result,
+            Err(err) => {
+                eprintln!(
+                    "Checkpoint {checkpoint_idx}: row count query for table '{table_name}' failed: {err}"
+                );
+                return false;
+            }
+        };
+
+        let Some(batches) = result.batches.as_ref() else {
+            eprintln!(
+                "Checkpoint {checkpoint_idx}: row count query for table '{table_name}' did not return batches"
+            );
+            return false;
+        };
+
+        let actual_count = match extract_row_count_from_batches(batches) {
+            Ok(count) => count,
+            Err(err) => {
+                eprintln!(
+                    "Checkpoint {checkpoint_idx}: failed to read row count for table '{table_name}': {err}"
+                );
+                return false;
+            }
+        };
+
+        if actual_count != *expected_count {
+            eprintln!(
+                "Checkpoint {checkpoint_idx}: table '{table_name}' row count mismatch: expected {expected_count}, actual {actual_count}"
+            );
+            return false;
+        }
+    }
+
+    println!(
+        "Checkpoint {checkpoint_idx}: table row counts passed, validating full query set"
+    );
+    true
+}
+
 /// Result of a checkpoint validation window.
 enum CheckpointValidationResult {
     /// Validation converged — full query set passed.
@@ -524,11 +627,13 @@ async fn run_checkpoint_validation(
     executor: &dyn QueryExecutor,
     queries: &[test_framework::queries::Query],
     expected_results: &HashMap<Arc<str>, Vec<RecordBatch>>,
+    expected_row_counts: &HashMap<String, usize>,
     checkpoint_idx: usize,
     concurrency: usize,
     probe_period: Duration,
     max_wait: Duration,
     checkpoint_pause_time: std::time::Instant,
+    query_catalog_namespace: Option<&str>,
 ) -> CheckpointValidationResult {
     let deadline = tokio::time::Instant::now() + max_wait;
 
@@ -565,7 +670,7 @@ async fn run_checkpoint_validation(
         {
             ProbeOutcome::Passed(send_time) => {
                 println!(
-                    "Checkpoint {checkpoint_idx}: probe query '{}' passed, validating full query set",
+                    "Checkpoint {checkpoint_idx}: probe query '{}' passed, validating table row counts",
                     probe_query.name
                 );
                 send_time
@@ -577,6 +682,17 @@ async fn run_checkpoint_validation(
         // Phase 2: validate the full query set
         if tokio::time::Instant::now() >= deadline {
             return CheckpointValidationResult::TimedOut;
+        }
+
+        if !validate_checkpoint_table_row_counts(
+            executor,
+            expected_row_counts,
+            checkpoint_idx,
+            query_catalog_namespace,
+        )
+        .await
+        {
+            continue;
         }
 
         if validate_full_query_set(
@@ -791,9 +907,13 @@ pub(crate) async fn run(
                         {
                             match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
                                 Ok(expected_results) if !expected_results.is_empty() => {
+                                    let expected_row_counts =
+                                        load_checkpoint_row_counts(cp_dir, checkpoint_idx)
+                                            .unwrap_or_default();
                                     tracing::info!(
                                         checkpoint_idx,
                                         num_queries = expected_results.len(),
+                                        num_tables = expected_row_counts.len(),
                                         "Running checkpoint validation"
                                     );
 
@@ -803,11 +923,13 @@ pub(crate) async fn run(
                                         &validation_executor,
                                         &queries,
                                         &expected_results,
+                                        &expected_row_counts,
                                         checkpoint_idx,
                                         common_args.concurrency,
                                         Duration::from_secs(common_args.checkpoint_validation_period),
                                         Duration::from_secs(600),
                                         checkpoint_pause_time,
+                                        query_catalog_namespace.as_deref(),
                                     )
                                     .await;
 
@@ -868,9 +990,13 @@ pub(crate) async fn run(
                             let checkpoint_idx = etl_pipeline.checkpoint_idx();
                             match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
                                 Ok(expected_results) if !expected_results.is_empty() => {
+                                    let expected_row_counts =
+                                        load_checkpoint_row_counts(cp_dir, checkpoint_idx)
+                                            .unwrap_or_default();
                                     tracing::info!(
                                         checkpoint_idx,
                                         num_queries = expected_results.len(),
+                                        num_tables = expected_row_counts.len(),
                                         "Running final checkpoint validation"
                                     );
 
@@ -880,11 +1006,13 @@ pub(crate) async fn run(
                                         &validation_executor,
                                         &queries,
                                         &expected_results,
+                                        &expected_row_counts,
                                         checkpoint_idx,
                                         common_args.concurrency,
                                         Duration::from_secs(common_args.checkpoint_validation_period),
                                         Duration::from_secs(600),
                                         checkpoint_pause_time,
+                                        query_catalog_namespace.as_deref(),
                                     )
                                     .await;
 
