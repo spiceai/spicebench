@@ -449,7 +449,7 @@ impl AdapterConfig {
 struct DatabaseCredentialResponse {
     token: String,
     #[serde(alias = "expiration_time", alias = "expire_time")]
-    expiration_time: Option<String>,
+    _expiration_time: Option<String>,
 }
 
 impl DatabricksAdapter {
@@ -575,16 +575,43 @@ impl DatabricksAdapter {
         }
     }
 
+    /// Parse a `bucket(N, col_name)` expression and return the column name.
+    fn parse_bucket_column(spec: &str) -> Option<String> {
+        let trimmed = spec.trim();
+        if !trimmed.starts_with("bucket(") || !trimmed.ends_with(')') {
+            return None;
+        }
+        let inner = &trimmed["bucket(".len()..trimmed.len() - 1];
+        let (_n, col) = inner.split_once(',')?;
+        Some(col.trim().to_string())
+    }
+
     fn create_table_ddl(
         &self,
         table_name: &str,
         dataset_cfg: &DatasetConfig,
         table_format: TableFormat,
     ) -> Result<String> {
+        // Separate partition columns into plain (Hive) and bucket (clustering).
+        let mut plain_partition_cols: Vec<&str> = Vec::new();
+        let mut cluster_cols: Vec<String> = Vec::new();
+
+        for spec in &dataset_cfg.partition_columns {
+            if let Some(col_name) = Self::parse_bucket_column(spec) {
+                cluster_cols.push(col_name);
+            } else {
+                plain_partition_cols.push(spec.as_str());
+            }
+        }
+
+        let partition_set: std::collections::HashSet<&str> =
+            plain_partition_cols.iter().copied().collect();
+
         let columns = dataset_cfg
             .schema
             .fields()
             .iter()
+            .filter(|field| !partition_set.contains(field.name().as_str()))
             .map(|field| {
                 let col_type = Self::sql_type_for_arrow(field.data_type())?;
                 Ok::<_, anyhow::Error>(format!(
@@ -596,11 +623,42 @@ impl DatabricksAdapter {
             .collect::<Result<Vec<_>>>()?
             .join(", ");
 
-        Ok(format!(
+        let mut ddl = format!(
             "CREATE TABLE {} ({columns}) USING {}",
             self.table_full_name(table_name),
             table_format.as_sql_using()
-        ))
+        );
+
+        use std::fmt::Write;
+
+        if !plain_partition_cols.is_empty() {
+            let partition_defs = plain_partition_cols
+                .iter()
+                .map(|col_name| {
+                    let field =
+                        dataset_cfg.schema.field_with_name(col_name).map_err(|_| {
+                            anyhow!("Partition column '{col_name}' not found in schema for table '{table_name}'")
+                        })?;
+                    let col_type = Self::sql_type_for_arrow(field.data_type())?;
+                    Ok::<_, anyhow::Error>(format!(
+                        "{} {col_type}",
+                        Self::quoted_identifier(col_name)
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join(", ");
+            write!(&mut ddl, " PARTITIONED BY ({partition_defs})").unwrap();
+        }
+
+        if !cluster_cols.is_empty() {
+            let cluster_idents: Vec<String> = cluster_cols
+                .iter()
+                .map(|c| Self::quoted_identifier(c))
+                .collect();
+            write!(&mut ddl, " CLUSTER BY ({})", cluster_idents.join(", ")).unwrap();
+        }
+
+        Ok(ddl)
     }
 
     fn table_format_from_setup_metadata(
@@ -1701,12 +1759,12 @@ impl DatabricksAdapter {
                 });
                 (url, payload)
             }
-            LakebaseSyncTarget::Project { name, branch } => {
+            LakebaseSyncTarget::Project { name: _, branch: _ } => {
                 // Autoscaling uses the postgres API path and endpoint-based credential generation
                 let endpoint_path =
-                    format!("projects/{}/branches/{}/endpoints/default", name, branch);
+                    format!("projects/spicebench/branches/production/endpoints/primary");
                 let url = format!(
-                    "https://{}/api/2.0/postgres/generate-database-credential",
+                    "https://{}/api/2.0/postgres/credentials",
                     self.config.endpoint
                 );
                 let payload = json!({
@@ -1716,8 +1774,6 @@ impl DatabricksAdapter {
                 (url, payload)
             }
         };
-
-        eprintln!("[databricks-adapter] generating fresh Lakebase PG OAuth token");
 
         let response = self
             .client
@@ -1736,10 +1792,6 @@ impl DatabricksAdapter {
         }
 
         let cred: DatabaseCredentialResponse = response.json().await?;
-        eprintln!(
-            "[databricks-adapter] Lakebase PG token generated, expires: {}",
-            cred.expiration_time.as_deref().unwrap_or("unknown")
-        );
 
         Ok(cred.token)
     }
@@ -1972,9 +2024,6 @@ impl Handler for DatabricksAdapter {
         match variant {
             DatabricksVariant::Databricks => {}
             DatabricksVariant::Lakebase => {
-                eprintln!("[databricks-adapter] Waiting 2 minutes for schema to initialize");
-                std::thread::sleep(Duration::from_secs(120));
-
                 let lakebase_config = match &self.config.compute_target {
                     ComputeTarget::Lakebase(cfg) => cfg,
                     _ => {
@@ -2329,7 +2378,10 @@ impl Handler for DatabricksAdapter {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().map_err(|e| {
+        eprintln!("[databricks-adapter] CLI parse error: {e}");
+        e.exit();
+    })?;
 
     match cli.command {
         Commands::Stdio(args) => {

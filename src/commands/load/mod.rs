@@ -635,7 +635,8 @@ async fn run_checkpoint_validation(
 ) -> CheckpointValidationResult {
     let deadline = tokio::time::Instant::now() + max_wait;
 
-    let probe_query = &queries[0];
+    // Use query2 as the probe query.  Query1 is too slow.
+    let probe_query = &queries[1];
     let Some(probe_expected) = expected_results.get(&probe_query.name) else {
         eprintln!(
             "Checkpoint {checkpoint_idx}: no expected results for probe query '{}', skipping validation",

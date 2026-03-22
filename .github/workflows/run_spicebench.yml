@@ -208,13 +208,13 @@ jobs:
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
-          DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
-          DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-          DATABRICKS_STAGING_VOLUME_PATH: ${{ secrets.DATABRICKS_STAGING_VOLUME_PATH }}
+          DATABRICKS_CATALOG: ${{ vars.DATABRICKS_CATALOG }}
+          DATABRICKS_SCHEMA: ${{ vars.DATABRICKS_SCHEMA }}
+          DATABRICKS_STAGING_VOLUME_PATH: ${{ vars.DATABRICKS_STAGING_VOLUME_PATH }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          NUM_QUERY_CLIENTS: '8'
+          NUM_QUERY_CLIENTS: '2'
           ETL_BUCKET: 'spicebench'
           ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
@@ -230,11 +230,11 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          LAKEBASE_PG_HOST: ${{ secrets.LAKEBASE_PG_HOST }}
-          LAKEBASE_PG_USER: ${{ secrets.LAKEBASE_PG_USER }}
-          LAKEBASE_PG_DB_NAME: ${{ secrets.LAKEBASE_PG_DB_NAME }}
-          LAKEBASE_PG_SCHEMA: ${{ secrets.LAKEBASE_PG_SCHEMA }}
-          LAKEBASE_DATABASE_INSTANCE: ${{ secrets.LAKEBASE_DATABASE_INSTANCE }}
+          LAKEBASE_PG_HOST: ${{ vars.LAKEBASE_PG_HOST }}
+          LAKEBASE_PG_USER: ${{ vars.LAKEBASE_PG_USER }}
+          LAKEBASE_PG_SCHEMA: ${{ vars.LAKEBASE_PG_SCHEMA }}
+          LAKEBASE_PROJECT: ${{ vars.LAKEBASE_PROJECT }}
+          LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
         run: |
@@ -311,9 +311,9 @@ jobs:
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_DB_NAME=${LAKEBASE_PG_DB_NAME}"
             ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_DATABASE_INSTANCE=${LAKEBASE_DATABASE_INSTANCE}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PROJECT=${LAKEBASE_PROJECT}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
           fi
 
           ~/.spice/bin/spicebench run \
