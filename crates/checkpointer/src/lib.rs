@@ -22,6 +22,7 @@ limitations under the License.
 //!
 //! ```text
 //! s3://{bucket}/{prefix}/{scenario}/{version}/checkpoints/{checkpoint_idx}/{query_idx}.parquet
+//! s3://{bucket}/{prefix}/{scenario}/{version}/checkpoints/{checkpoint_idx}/row_counts.json
 //! s3://{bucket}/{prefix}/{scenario}/{version}/checkpoints.json          ← manifest
 //! ```
 //!
@@ -123,6 +124,10 @@ impl CheckpointStore {
         self.object_path(&format!("checkpoints/{checkpoint_idx}/{query_idx}.parquet"))
     }
 
+    fn checkpoint_row_counts_path(&self, checkpoint_idx: usize) -> ObjectPath {
+        self.object_path(&format!("checkpoints/{checkpoint_idx}/row_counts.json"))
+    }
+
     /// Upload all checkpoint parquet files from `local_checkpoint_dir` to S3,
     /// then update (merge into) the manifest at `{prefix}/checkpoints.json`.
     ///
@@ -198,6 +203,19 @@ impl CheckpointStore {
                 query_indexes_set.insert(q_idx);
             }
 
+            let row_counts_path = checkpoint_entry.path().join("row_counts.json");
+            if row_counts_path.exists() {
+                let bytes = std::fs::read(&row_counts_path)?;
+                let dest = self.checkpoint_row_counts_path(checkpoint_idx);
+                tracing::info!(
+                    scenario,
+                    checkpoint = checkpoint_idx,
+                    dest = %dest,
+                    "Uploading checkpoint row counts"
+                );
+                self.store.put(&dest, PutPayload::from(bytes)).await?;
+            }
+
             checkpoint_indexes.push(checkpoint_idx);
         }
 
@@ -269,6 +287,29 @@ impl CheckpointStore {
                     path = %local_path.display(),
                     "Downloaded checkpoint parquet"
                 );
+            }
+
+            let row_counts_remote = self.checkpoint_row_counts_path(checkpoint_idx);
+            match self.store.get(&row_counts_remote).await {
+                Ok(object) => {
+                    let data = object.bytes().await?;
+                    let local_path = checkpoint_dir.join("row_counts.json");
+                    std::fs::write(&local_path, &data)?;
+                    tracing::info!(
+                        scenario,
+                        checkpoint = checkpoint_idx,
+                        path = %local_path.display(),
+                        "Downloaded checkpoint row counts"
+                    );
+                }
+                Err(object_store::Error::NotFound { .. }) => {
+                    tracing::debug!(
+                        scenario,
+                        checkpoint = checkpoint_idx,
+                        "Checkpoint row counts not found, skipping"
+                    );
+                }
+                Err(err) => return Err(err.into()),
             }
         }
 
