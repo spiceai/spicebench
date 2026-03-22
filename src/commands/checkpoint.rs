@@ -114,11 +114,9 @@ fn extract_row_count_value(batches: &[RecordBatch]) -> anyhow::Result<usize> {
         anyhow::bail!("row count query returned an empty result set");
     }
 
-    let value = test_framework::queries::validation::array_value_to_string(
-        batch.column(0).as_ref(),
-        0,
-    )?
-    .ok_or_else(|| anyhow::anyhow!("row count query returned NULL"))?;
+    let value =
+        test_framework::queries::validation::array_value_to_string(batch.column(0).as_ref(), 0)?
+            .ok_or_else(|| anyhow::anyhow!("row count query returned NULL"))?;
 
     value
         .parse::<usize>()

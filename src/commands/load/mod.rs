@@ -404,9 +404,7 @@ async fn validate_checkpoint_table_row_counts(
         }
     }
 
-    println!(
-        "Checkpoint {checkpoint_idx}: table row counts passed, validating full query set"
-    );
+    println!("Checkpoint {checkpoint_idx}: table row counts passed, validating full query set");
     true
 }
 
