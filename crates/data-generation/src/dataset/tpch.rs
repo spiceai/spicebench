@@ -445,9 +445,9 @@ impl Dataset for TpchDataset {
             "orders" => vec!["bucket(10, o_orderkey)".to_string()],
             "partsupp" => vec!["bucket(10, ps_partkey)".to_string()],
             "part" => vec!["bucket(10, p_partkey)".to_string()],
-            "supplier" => vec!["s_nationkey".to_string()],
-            "customer" => vec!["bucket(5, c_nationkey)".to_string()],
-            "nation" => vec!["n_regionkey".to_string()],
+            "supplier" => vec!["bucket(10, s_suppkey)".to_string()],
+            "customer" => vec!["bucket(5, c_custkey)".to_string()],
+            "nation" => vec!["bucket(5, n_nationkey)".to_string()],
             "region" => vec!["r_regionkey".to_string()],
             _ => vec![],
         }
