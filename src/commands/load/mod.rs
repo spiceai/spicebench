@@ -323,17 +323,17 @@ fn load_checkpoint_row_counts(
 fn checkpoint_count_query(
     table_name: &str,
     query_catalog_namespace: Option<&str>,
-) -> test_framework::queries::Query {
-    let qualified_table = match query_catalog_namespace.map(str::trim) {
-        Some(namespace) if !namespace.is_empty() => format!("{namespace}.\"{table_name}\""),
-        _ => format!("\"{table_name}\""),
-    };
-
-    test_framework::queries::Query::new(
+) -> anyhow::Result<test_framework::queries::Query> {
+    let query = test_framework::queries::Query::new(
         format!("checkpoint_row_count_{table_name}").into(),
-        format!("SELECT COUNT(*) AS row_count FROM {qualified_table}").into(),
+        format!("SELECT COUNT(*) AS row_count FROM {table_name}").into(),
         false,
-    )
+    );
+
+    match query_catalog_namespace.map(str::trim) {
+        Some(namespace) if !namespace.is_empty() => query.rewrite_with_reference_schema(namespace),
+        _ => Ok(query),
+    }
 }
 
 fn extract_row_count_from_batches(batches: &[RecordBatch]) -> anyhow::Result<usize> {
@@ -368,7 +368,15 @@ async fn validate_checkpoint_table_row_counts(
     tables.sort_by(|(left, _), (right, _)| left.cmp(right));
 
     for (table_name, expected_count) in tables {
-        let query = checkpoint_count_query(table_name, query_catalog_namespace);
+        let query = match checkpoint_count_query(table_name, query_catalog_namespace) {
+            Ok(query) => query,
+            Err(err) => {
+                eprintln!(
+                    "Checkpoint {checkpoint_idx}: failed to build row count query for table '{table_name}': {err}"
+                );
+                return false;
+            }
+        };
         let result = match executor.execute(&query).await {
             Ok(result) => result,
             Err(err) => {
@@ -1228,4 +1236,32 @@ pub(crate) async fn run(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkpoint_count_query;
+
+    #[test]
+    fn checkpoint_count_query_rewrites_catalog_namespace_without_double_quotes() {
+        let query = checkpoint_count_query("customer", Some("spiceai_sandbox.spicebench"))
+            .expect("checkpoint row-count query should be built");
+
+        assert_eq!(
+            query.sql.as_ref(),
+            "SELECT COUNT(*) AS row_count FROM spiceai_sandbox.spicebench.customer"
+        );
+        assert!(!query.sql.contains('"'));
+    }
+
+    #[test]
+    fn checkpoint_count_query_without_namespace_uses_plain_table_identifier() {
+        let query = checkpoint_count_query("customer", None)
+            .expect("checkpoint row-count query should be built");
+
+        assert_eq!(
+            query.sql.as_ref(),
+            "SELECT COUNT(*) AS row_count FROM customer"
+        );
+    }
 }
