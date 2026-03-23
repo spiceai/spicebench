@@ -363,8 +363,25 @@ impl AdbcSink {
             guard.drain().collect()
         };
 
+        // Close every stream and wait for its ADBC worker to finish. Continue
+        // closing remaining streams even if one fails so we don't leave
+        // detached workers with open connections.
+        let mut first_err: Option<anyhow::Error> = None;
         for (table_name, stream) in streams {
-            stream.close_and_wait(&table_name).await?;
+            if let Err(e) = stream.close_and_wait(&table_name).await {
+                tracing::error!(
+                    table = %table_name,
+                    error = %e,
+                    "Failed to close bulk ingest stream during flush"
+                );
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+
+        if let Some(e) = first_err {
+            return Err(e);
         }
 
         Ok(())
@@ -1248,8 +1265,11 @@ impl Sink for AdbcSink {
         if self.reuse_bulk_ingest_streams
             && matches!(&op, InsertOp::Delete { .. } | InsertOp::Update { .. })
         {
-            // Ensure all queued bulk ingest data is flushed before mutation SQL/update flows.
-            self.end_all_bulk_ingest_streams().await?;
+            // Ensure this table's queued bulk ingest data is fully flushed and the
+            // underlying ADBC connection has finished writing before executing
+            // mutation SQL. Only the current table's stream needs to be closed;
+            // closing all streams would block on unrelated concurrent table writes.
+            self.end_bulk_ingest_stream_for_table(table_name).await?;
         }
 
         match op {
