@@ -1324,15 +1324,18 @@ impl Sink for AdbcSink {
                         self.staging_merge_update(&mut conn, table_name, batch, &key_columns)?;
                     }
                     UpdateStrategy::BulkIngestUpsert => {
-                        if self.reuse_bulk_ingest_streams {
-                            self.send_batch_via_reused_bulk_ingest_stream(table_name, batch)
-                                .await?;
-                        } else {
-                            let mut conn = self.pool.get().map_err(|e| {
-                                anyhow::anyhow!("Failed to get ADBC connection from pool: {e}")
-                            })?;
-                            self.ingest_insert_batch(&mut conn, table_name, batch)?;
-                        }
+                        // Always use a direct, independent ingest call for
+                        // upserts instead of the reused bulk ingest stream.
+                        // When stream reuse is enabled, the pre-check above
+                        // already flushed any pending INSERT data. Sending the
+                        // upsert batch through a reused stream would mix it
+                        // with subsequent INSERT batches in the same
+                        // bulk_ingest_stream call, which can cause the target
+                        // to miss the upsert and insert duplicate rows.
+                        let mut conn = self.pool.get().map_err(|e| {
+                            anyhow::anyhow!("Failed to get ADBC connection from pool: {e}")
+                        })?;
+                        self.ingest_insert_batch(&mut conn, table_name, batch)?;
                     }
                     UpdateStrategy::Statement => {
                         let mut conn = self.pool.get().map_err(|e| {
