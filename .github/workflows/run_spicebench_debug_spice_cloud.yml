@@ -183,6 +183,7 @@ jobs:
           fi
 
           export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
+          export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
           export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
           ADAPTER_CMD="docker"
           ADAPTER_ARGS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel nightly"
