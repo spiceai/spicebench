@@ -169,6 +169,21 @@ pub async fn execute(args: &CheckpointArgs) -> anyhow::Result<()> {
 
 #[cfg(feature = "duckdb")]
 async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
+    // The checkpoint command replays all ETL steps from scratch, so a pre-existing
+    // DuckDB file or checkpoint directory would silently accumulate stale data.
+    if args.duckdb_path.exists() {
+        tracing::info!(path = %args.duckdb_path.display(), "Removing existing DuckDB file");
+        std::fs::remove_file(&args.duckdb_path)?;
+    }
+    let wal_path = args.duckdb_path.with_extension("duckdb.wal");
+    if wal_path.exists() {
+        std::fs::remove_file(&wal_path)?;
+    }
+    if args.checkpoint_dir.exists() {
+        tracing::info!(path = %args.checkpoint_dir.display(), "Removing existing checkpoint directory");
+        std::fs::remove_dir_all(&args.checkpoint_dir)?;
+    }
+
     let scenario_name = args.scenario.to_string();
     let query_set = args.scenario.load_query_set()?;
     let checkpoint_queries: Vec<String> = query_set
