@@ -222,7 +222,7 @@ jobs:
           ETL_SINK: 'adbc'
           SCHEDULER_STATE_LOCATION: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/'
           VALIDATE_CHECKPOINT_RESULTS: 'true'
-          ENABLE_MODULE_DEBUG_LOGGING: 'false'
+          ENABLE_MODULE_DEBUG_LOGGING: 'true'
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
