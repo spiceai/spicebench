@@ -56,6 +56,11 @@ on:
         required: false
         default: false
         type: boolean
+      enable_pvc:
+        description: 'Enable PVC block storage for scheduler and executor pods (sizes are derived from scale_factor)'
+        required: false
+        default: false
+        type: boolean
 jobs:
   run-spicebench:
     name: Run spicebench
@@ -143,6 +148,7 @@ jobs:
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
+          ENABLE_PVC: ${{ github.event.inputs.enable_pvc || 'false' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -186,7 +192,14 @@ jobs:
           export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
           export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
           ADAPTER_CMD="docker"
-          ADAPTER_ARGS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel nightly"
+          ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
+
+          if [ "${ENABLE_PVC}" = "true" ]; then
+            echo "PVC enabled: app=3GB, executor=2GB"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3 -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2"
+          fi
+
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel nightly"
           ADAPTER_ENVS=""
 
           NO_TEARDOWN_ARG=""
