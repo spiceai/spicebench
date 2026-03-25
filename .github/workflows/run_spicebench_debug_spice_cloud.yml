@@ -149,6 +149,7 @@ jobs:
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
           ENABLE_PVC: ${{ github.event.inputs.enable_pvc || 'false' }}
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -193,6 +194,11 @@ jobs:
           export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
           ADAPTER_CMD="docker"
           ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
+
+          if [ "${ENVIRONMENT}" = "prod" ]; then
+            echo "Prod environment: bumping app memory limit to 20Gi"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=20Gi"
+          fi
 
           if [ "${ENABLE_PVC}" = "true" ]; then
             echo "PVC enabled: app=3GB, executor=2GB"
