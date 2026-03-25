@@ -51,8 +51,9 @@ jobs:
       - uses: ./.github/actions/management-login
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
         with:
-          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+          token-url: https://spice.ai/api/oauth/token
+          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
+          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
 
       - name: Log in to GHCR
         if: ${{ github.event.inputs.system_under_test == 'spice_cloud' }}
@@ -98,7 +99,7 @@ jobs:
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          SPICE_CLOUD_API_URL: https://api.spice.ai
           DATABRICKS_ENDPOINT: ${{ secrets.DATABRICKS_ENDPOINT }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
@@ -203,7 +204,7 @@ jobs:
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: https://dev-api.spice.ai
+          SPICE_CLOUD_API_URL: https://api.spice.ai
           DATABRICKS_ENDPOINT: ${{ secrets.DATABRICKS_ENDPOINT }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
@@ -237,6 +238,8 @@ jobs:
           LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
+          SPIDAPTER_APP_MEMORY_LIMIT: '16Gi'
+          ENABLE_PVC: 'true'
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -304,7 +307,16 @@ jobs:
             export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
+            ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
+
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
+
+            if [ "${ENABLE_PVC}" = "true" ]; then
+              echo "PVC enabled: app=3GB, executor=2GB"
+              ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3 -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2 -e SPIDAPTER_CAYENNE_DATA_DIR=/data/data -e SPIDAPTER_CAYENNE_METADATA_DIR=/data/metadata"
+            fi
+
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
           fi
 
