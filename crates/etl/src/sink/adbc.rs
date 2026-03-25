@@ -62,6 +62,13 @@ const ADBC_REUSE_BULK_INGEST_STREAMS_ENV: &str = "SPICEBENCH_ADBC_REUSE_BULK_ING
 const DEFAULT_ADBC_BULK_INGEST_STREAM_BUFFER: usize = 1;
 const ADBC_BULK_INGEST_STREAM_BUFFER_ENV: &str = "SPICEBENCH_ADBC_BULK_INGEST_STREAM_BUFFER";
 
+/// When enabled and using `bulk_ingest_upsert`, closes the reused bulk ingest
+/// stream for the table before sending upsert data, then writes the upsert via
+/// a direct (independent) ingest call. This avoids mixing upsert and subsequent
+/// insert rows in the same stream, which can cause duplicate rows on targets
+/// that apply upsert semantics per-call.
+const ADBC_FLUSH_STREAM_BEFORE_UPSERT_ENV: &str = "SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT";
+
 /// Controls how UPDATE operations are executed.
 ///
 /// - `statement`          — row-by-row `UPDATE … SET … WHERE …` statements (default)
@@ -113,10 +120,17 @@ struct TableBulkIngestStream {
     schema: std::sync::Arc<Schema>,
     sender: mpsc::Sender<RecordBatch>,
     worker: JoinHandle<anyhow::Result<()>>,
+    batches_sent: std::sync::Arc<AtomicU64>,
 }
 
 impl TableBulkIngestStream {
     async fn close_and_wait(self, table_name: &str) -> anyhow::Result<()> {
+        let batches = self.batches_sent.load(Ordering::Relaxed);
+        tracing::debug!(
+            table = %table_name,
+            batches_sent = batches,
+            "Flushing bulk ingest stream"
+        );
         drop(self.sender);
         self.worker.await.map_err(|e| {
             anyhow::anyhow!("Bulk ingest worker task join failed for table '{table_name}': {e}")
@@ -158,6 +172,7 @@ pub struct AdbcSink {
     bigint_suffix: bool,
     update_strategy: UpdateStrategy,
     reuse_bulk_ingest_streams: bool,
+    flush_stream_before_upsert: bool,
     bulk_ingest_stream_buffer: usize,
 }
 
@@ -192,6 +207,20 @@ impl AdbcSink {
             .unwrap_or(true)
     }
 
+    fn flush_stream_before_upsert() -> bool {
+        std::env::var(ADBC_FLUSH_STREAM_BEFORE_UPSERT_ENV)
+            .ok()
+            .and_then(|raw| {
+                let val = raw.trim().to_ascii_lowercase();
+                match val.as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => None,
+                }
+            })
+            .unwrap_or(false)
+    }
+
     fn bulk_ingest_stream_buffer() -> usize {
         std::env::var(ADBC_BULK_INGEST_STREAM_BUFFER_ENV)
             .ok()
@@ -216,12 +245,16 @@ impl AdbcSink {
         let identifier_quote_char = AdbcConnectionManager::identifier_quote_style(driver_name);
         let bigint_suffix = AdbcConnectionManager::bigint_suffix(driver_name);
         let reuse_bulk_ingest_streams = Self::reuse_bulk_ingest_streams();
+        let flush_stream_before_upsert = Self::flush_stream_before_upsert();
         let bulk_ingest_stream_buffer = Self::bulk_ingest_stream_buffer();
 
         if reuse_bulk_ingest_streams {
             eprintln!(
                 "[adbc] Reusable bulk ingest streams enabled (buffer size: {bulk_ingest_stream_buffer})"
             );
+            if update_strategy == UpdateStrategy::BulkIngestUpsert {
+                eprintln!("[adbc] Flush stream before upsert: {flush_stream_before_upsert}");
+            }
         }
 
         Ok(Self {
@@ -234,6 +267,7 @@ impl AdbcSink {
             bigint_suffix,
             update_strategy,
             reuse_bulk_ingest_streams,
+            flush_stream_before_upsert,
             bulk_ingest_stream_buffer,
         })
     }
@@ -297,6 +331,7 @@ impl AdbcSink {
             schema,
             sender,
             worker,
+            batches_sent: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -311,26 +346,34 @@ impl AdbcSink {
             .map(|b| b.schema())
             .ok_or_else(|| anyhow::anyhow!("Expected at least one insert batch"))?;
 
-        let sender = {
+        let (sender, batches_sent) = {
             let streams = self.bulk_ingest_streams.read().await;
             streams.get(table_name).and_then(|stream| {
                 if stream.schema.as_ref() == schema.as_ref() && !stream.worker.is_finished() {
-                    Some(stream.sender.clone())
+                    Some((
+                        stream.sender.clone(),
+                        std::sync::Arc::clone(&stream.batches_sent),
+                    ))
                 } else {
                     None
                 }
             })
-        };
+        }
+        .unzip();
 
-        let sender = if let Some(sender) = sender {
-            sender
+        let (sender, batches_sent) = if let Some(sender) = sender {
+            let counter = batches_sent.ok_or_else(|| {
+                anyhow::anyhow!("Bulk ingest stream state inconsistency: sender present but batches_sent counter missing for table '{table_name}'")
+            })?;
+            (sender, counter)
         } else {
             self.end_bulk_ingest_stream_for_table(table_name).await?;
             let mut streams = self.bulk_ingest_streams.write().await;
             let stream = self.spawn_table_bulk_ingest_stream(table_name, schema.clone());
             let sender = stream.sender.clone();
+            let counter = std::sync::Arc::clone(&stream.batches_sent);
             streams.insert(table_name.to_string(), stream);
-            sender
+            (sender, counter)
         };
 
         for sub_batch in sub_batches {
@@ -339,6 +382,7 @@ impl AdbcSink {
                     "Bulk ingest stream for table '{table_name}' is no longer available"
                 )
             })?;
+            batches_sent.fetch_add(1, Ordering::Relaxed);
         }
 
         Ok(())
@@ -363,8 +407,25 @@ impl AdbcSink {
             guard.drain().collect()
         };
 
+        // Close every stream and wait for its ADBC worker to finish. Continue
+        // closing remaining streams even if one fails so we don't leave
+        // detached workers with open connections.
+        let mut first_err: Option<anyhow::Error> = None;
         for (table_name, stream) in streams {
-            stream.close_and_wait(&table_name).await?;
+            if let Err(e) = stream.close_and_wait(&table_name).await {
+                tracing::error!(
+                    table = %table_name,
+                    error = %e,
+                    "Failed to close bulk ingest stream during flush"
+                );
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+
+        if let Some(e) = first_err {
+            return Err(e);
         }
 
         Ok(())
@@ -1245,11 +1306,21 @@ impl Sink for AdbcSink {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
         tracing::debug!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
 
-        if self.reuse_bulk_ingest_streams
-            && matches!(&op, InsertOp::Delete { .. } | InsertOp::Update { .. })
-        {
-            // Ensure all queued bulk ingest data is flushed before mutation SQL/update flows.
-            self.end_all_bulk_ingest_streams().await?;
+        if self.reuse_bulk_ingest_streams {
+            let should_flush = match &op {
+                InsertOp::Delete { .. } => true,
+                InsertOp::Update { .. } => {
+                    // BulkIngestUpsert sends upsert data through bulk ingest;
+                    // flush only when flush_stream_before_upsert is set to
+                    // avoid mixing upsert and later insert rows in one stream.
+                    self.update_strategy != UpdateStrategy::BulkIngestUpsert
+                        || self.flush_stream_before_upsert
+                }
+                _ => false,
+            };
+            if should_flush {
+                self.end_bulk_ingest_stream_for_table(table_name).await?;
+            }
         }
 
         match op {
@@ -1304,10 +1375,15 @@ impl Sink for AdbcSink {
                         self.staging_merge_update(&mut conn, table_name, batch, &key_columns)?;
                     }
                     UpdateStrategy::BulkIngestUpsert => {
-                        if self.reuse_bulk_ingest_streams {
+                        if self.reuse_bulk_ingest_streams && !self.flush_stream_before_upsert {
                             self.send_batch_via_reused_bulk_ingest_stream(table_name, batch)
                                 .await?;
                         } else {
+                            // Use a direct, independent ingest call so the
+                            // upsert batch is committed on its own and not
+                            // mixed with subsequent INSERT data in the same
+                            // bulk_ingest_stream call (which can cause the
+                            // target to insert duplicate rows).
                             let mut conn = self.pool.get().map_err(|e| {
                                 anyhow::anyhow!("Failed to get ADBC connection from pool: {e}")
                             })?;
