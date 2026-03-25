@@ -136,6 +136,7 @@ See [Data Generation & ETL](data-generation-and-etl.md) for all sink options.
 
 ## Next Steps
 
+- [Local Spice Runtime Run](local-spiced-run.md) - step-by-step local mutable run setup with `spiced`, `spidapter`, MinIO, local data generation, and checkpoints
 - [CLI Reference](cli-reference.md) - all flags and options for `spicebench run`, `spicebench generate`, `spicebench etl`, and `spicebench checkpoint`
 - [System Adapters](system-adapters.md) - how to build an adapter for your platform
 - [Configuration](configuration.md) - scenario, table format, and run metadata
