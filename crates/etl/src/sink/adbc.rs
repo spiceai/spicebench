@@ -120,10 +120,17 @@ struct TableBulkIngestStream {
     schema: std::sync::Arc<Schema>,
     sender: mpsc::Sender<RecordBatch>,
     worker: JoinHandle<anyhow::Result<()>>,
+    batches_sent: std::sync::Arc<AtomicU64>,
 }
 
 impl TableBulkIngestStream {
     async fn close_and_wait(self, table_name: &str) -> anyhow::Result<()> {
+        let batches = self.batches_sent.load(Ordering::Relaxed);
+        tracing::debug!(
+            table = %table_name,
+            batches_sent = batches,
+            "Flushing bulk ingest stream"
+        );
         drop(self.sender);
         self.worker.await.map_err(|e| {
             anyhow::anyhow!("Bulk ingest worker task join failed for table '{table_name}': {e}")
@@ -324,6 +331,7 @@ impl AdbcSink {
             schema,
             sender,
             worker,
+            batches_sent: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -338,26 +346,34 @@ impl AdbcSink {
             .map(|b| b.schema())
             .ok_or_else(|| anyhow::anyhow!("Expected at least one insert batch"))?;
 
-        let sender = {
+        let (sender, batches_sent) = {
             let streams = self.bulk_ingest_streams.read().await;
             streams.get(table_name).and_then(|stream| {
                 if stream.schema.as_ref() == schema.as_ref() && !stream.worker.is_finished() {
-                    Some(stream.sender.clone())
+                    Some((
+                        stream.sender.clone(),
+                        std::sync::Arc::clone(&stream.batches_sent),
+                    ))
                 } else {
                     None
                 }
             })
-        };
+        }
+        .unzip();
 
-        let sender = if let Some(sender) = sender {
-            sender
+        let (sender, batches_sent) = if let Some(sender) = sender {
+            let counter = batches_sent.ok_or_else(|| {
+                anyhow::anyhow!("Bulk ingest stream state inconsistency: sender present but batches_sent counter missing for table '{table_name}'")
+            })?;
+            (sender, counter)
         } else {
             self.end_bulk_ingest_stream_for_table(table_name).await?;
             let mut streams = self.bulk_ingest_streams.write().await;
             let stream = self.spawn_table_bulk_ingest_stream(table_name, schema.clone());
             let sender = stream.sender.clone();
+            let counter = std::sync::Arc::clone(&stream.batches_sent);
             streams.insert(table_name.to_string(), stream);
-            sender
+            (sender, counter)
         };
 
         for sub_batch in sub_batches {
@@ -366,6 +382,7 @@ impl AdbcSink {
                     "Bulk ingest stream for table '{table_name}' is no longer available"
                 )
             })?;
+            batches_sent.fetch_add(1, Ordering::Relaxed);
         }
 
         Ok(())
