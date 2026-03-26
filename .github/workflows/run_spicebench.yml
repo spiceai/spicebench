@@ -242,6 +242,7 @@ jobs:
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EPHEMERAL_STORAGE_LIMIT: '256Gi'
           SPIDAPTER_ORGANIZATION_TAG: 'spicehq'
+          ENABLE_PVC: 'false'
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
