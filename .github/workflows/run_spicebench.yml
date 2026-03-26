@@ -238,8 +238,9 @@ jobs:
           LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
-          SPIDAPTER_APP_MEMORY_LIMIT: '16Gi'
-          ENABLE_PVC: 'true'
+          SPIDAPTER_APP_MEMORY_LIMIT: '62Gi'
+          SPIDAPTER_EXECUTOR_MEMORY_LIMIT: '62Gi'
+          SPIDAPTER_EPHEMERAL_STORAGE_LIMIT: '256Gi'
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
