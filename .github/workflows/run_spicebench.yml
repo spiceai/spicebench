@@ -23,7 +23,7 @@ on:
       etl_type:
         description: 'ETL type'
         required: true
-        default: 'events'
+        default: 'changes'
         type: choice
         options:
           - events
