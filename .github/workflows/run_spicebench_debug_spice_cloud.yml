@@ -177,6 +177,7 @@ jobs:
           EXECUTOR_REPLICAS: ${{ github.event.inputs.executor_replicas || '4' }}
           SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '16Gi' }}
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ github.event.inputs.executor_memory_limit || '16Gi' }}
+          SPIDAPTER_ORGANIZATION_TAG: 'spicehq'
           CUSTOM_IMAGE: ${{ github.event.inputs.custom_image || '' }}
         run: |
           set -euo pipefail
@@ -225,6 +226,7 @@ jobs:
 
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
+          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
 
           # Parse custom image into registry, name, and tag for spidapter.
           # Expected format: registry/image:tag (e.g. ghcr.io/spiceai/spiceai-dev:spicebench-sf10)
