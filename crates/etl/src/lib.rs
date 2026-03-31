@@ -830,6 +830,30 @@ async fn write_segments_for_batch(
 ) -> Result<(), String> {
     let table_name_owned = table_name.to_string();
 
+    // Log per-operation row counts for data reconciliation.
+    {
+        let mut insert_rows: usize = 0;
+        let mut update_rows: usize = 0;
+        let mut delete_rows: usize = 0;
+        for seg in &segments {
+            let n = seg.batch.num_rows();
+            match &seg.op {
+                InsertOp::Insert => insert_rows += n,
+                InsertOp::Update { .. } => update_rows += n,
+                InsertOp::Delete { .. } => delete_rows += n,
+            }
+        }
+        tracing::info!(
+            table = %table_name,
+            batch_id,
+            segments = segments.len(),
+            insert_rows,
+            update_rows,
+            delete_rows,
+            "Writing segments for batch",
+        );
+    }
+
     let insert_only = segments
         .iter()
         .all(|segment| matches!(segment.op, InsertOp::Insert));
