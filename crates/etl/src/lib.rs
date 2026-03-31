@@ -666,13 +666,11 @@ fn strip_internal_columns(batch: &RecordBatch) -> anyhow::Result<RecordBatch> {
 fn batch_is_insert_only(batch: &RecordBatch, mutations: &MutationConfig) -> anyhow::Result<bool> {
     // Naive check: if the dataset was generated with non-zero update or delete
     // ratios, batches may contain `_op` values other than "c".
-    if mutations.update_ratio == 0.0 && mutations.delete_ratio == 0.0 {
+    if mutations.etl_type() != data_generation::dataset::EtlType::Changes {
         return Ok(true);
     }
 
-    let schema = batch.schema();
-
-    let op_idx = match schema.index_of("_op") {
+    let op_idx = match batch.schema().index_of("_op") {
         Ok(idx) => idx,
         Err(_) => return Ok(true),
     };
@@ -1197,7 +1195,12 @@ impl ETLPipeline {
             .map(|(name, table)| {
                 let schema =
                     schema_with_created_at(&schema_without_internal_columns(&table.schema));
-                let primary_key_columns = dataset.primary_key(&name);
+                let primary_key_columns =
+                    if mutations.etl_type() == data_generation::dataset::EtlType::Changes {
+                        dataset.primary_key(&name)
+                    } else {
+                        Vec::new()
+                    };
                 let config = ProtocolDatasetConfig {
                     schema,
                     primary_key_columns,
@@ -2009,6 +2012,9 @@ mod tests {
     use arrow::array::{RecordBatch, StringViewArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::ipc::writer::StreamWriter;
+    use data_generation::config::DatasetConfig as GenerationDatasetConfig;
+    use data_generation::dataset::MutationConfig;
+    use data_generation::storage::file::FileStorage;
     use std::sync::Arc;
 
     /// Measures the IPC-serialized size of a [`RecordBatch`].
@@ -2089,5 +2095,64 @@ mod tests {
                 raw_single_size as f64 / 1_048_576.0,
             );
         }
+    }
+
+    #[test]
+    fn create_tables_request_datasets_omits_primary_keys_for_events() {
+        let config = GenerationDatasetConfig {
+            dataset_type: "simple_sequence".to_string(),
+            scale_factor: 0.01,
+            num_steps: 1,
+        };
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let storage = Arc::new(FileStorage::new(tempdir.path().to_path_buf()));
+        let mutations = MutationConfig::new(0.0, 0.0);
+
+        let datasets = ETLPipeline::create_tables_request_datasets(
+            DatasetSource::SimpleSequence,
+            &config,
+            storage,
+            &mutations,
+            None,
+        )
+        .expect("create tables datasets");
+
+        let table_cfg = datasets
+            .get("integer_sequence")
+            .expect("integer_sequence config");
+        assert!(
+            table_cfg.primary_key_columns.is_empty(),
+            "events ETL should not provide primary keys"
+        );
+    }
+
+    #[test]
+    fn create_tables_request_datasets_includes_primary_keys_for_changes() {
+        let config = GenerationDatasetConfig {
+            dataset_type: "simple_sequence".to_string(),
+            scale_factor: 0.01,
+            num_steps: 1,
+        };
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let storage = Arc::new(FileStorage::new(tempdir.path().to_path_buf()));
+        let mutations = MutationConfig::new(0.1, 0.0);
+
+        let datasets = ETLPipeline::create_tables_request_datasets(
+            DatasetSource::SimpleSequence,
+            &config,
+            storage,
+            &mutations,
+            None,
+        )
+        .expect("create tables datasets");
+
+        let table_cfg = datasets
+            .get("integer_sequence")
+            .expect("integer_sequence config");
+        assert_eq!(
+            table_cfg.primary_key_columns,
+            vec!["id".to_string()],
+            "changes ETL should provide primary keys"
+        );
     }
 }

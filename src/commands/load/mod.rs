@@ -653,8 +653,48 @@ async fn run_checkpoint_validation(
         return CheckpointValidationResult::TimedOut;
     };
 
+    // Phase 0: validate table row counts first as a fast correctness probe.
+    // Row count queries are cheap and immediately surface data loss/duplication
+    // without waiting for expensive analytical queries to converge.
+    println!("Checkpoint {checkpoint_idx}: validating table row counts before probing queries",);
+    {
+        let mut row_count_ticker = tokio::time::interval(probe_period);
+        let mut row_count_attempt = 0u64;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                println!(
+                    "Checkpoint {checkpoint_idx}: row count validation timed out after {} attempts",
+                    row_count_attempt
+                );
+                return CheckpointValidationResult::TimedOut;
+            }
+
+            tokio::select! {
+                biased;
+                _ = signal::ctrl_c() => return CheckpointValidationResult::Interrupted,
+                _ = row_count_ticker.tick() => {}
+            };
+
+            row_count_attempt += 1;
+            if validate_checkpoint_table_row_counts(
+                executor,
+                expected_row_counts,
+                checkpoint_idx,
+                query_catalog_namespace,
+            )
+            .await
+            {
+                break;
+            }
+
+            println!(
+                "Checkpoint {checkpoint_idx}: row count validation attempt {row_count_attempt} failed, retrying",
+            );
+        }
+    }
+
     println!(
-        "Checkpoint {checkpoint_idx}: probing '{}' every {}s",
+        "Checkpoint {checkpoint_idx}: row counts passed, probing '{}' every {}s",
         probe_query.name,
         probe_period.as_secs()
     );
@@ -663,7 +703,7 @@ async fn run_checkpoint_validation(
     let mut probe_count = 0u64;
 
     loop {
-        // Phase 1: probe Q1 until it passes
+        // Phase 1: probe query until it passes
         let e2e_send_time = match probe_until_pass(
             executor,
             probe_query,
@@ -677,7 +717,7 @@ async fn run_checkpoint_validation(
         {
             ProbeOutcome::Passed(send_time) => {
                 println!(
-                    "Checkpoint {checkpoint_idx}: probe query '{}' passed, validating table row counts",
+                    "Checkpoint {checkpoint_idx}: probe query '{}' passed, validating full query set",
                     probe_query.name
                 );
                 send_time
@@ -689,17 +729,6 @@ async fn run_checkpoint_validation(
         // Phase 2: validate the full query set
         if tokio::time::Instant::now() >= deadline {
             return CheckpointValidationResult::TimedOut;
-        }
-
-        if !validate_checkpoint_table_row_counts(
-            executor,
-            expected_row_counts,
-            checkpoint_idx,
-            query_catalog_namespace,
-        )
-        .await
-        {
-            continue;
         }
 
         if validate_full_query_set(
