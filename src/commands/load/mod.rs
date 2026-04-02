@@ -769,7 +769,8 @@ pub(crate) async fn run(
     checkpoint_dir: Option<&Path>,
     query_catalog_namespace: Option<String>,
 ) -> anyhow::Result<()> {
-    let metric_attributes = run_metric_attributes(common_args, run_id, version_metadata.etl_type());
+    let metric_attributes =
+        run_metric_attributes(common_args, run_id, version_metadata.etl_type().as_str());
 
     scenario.load_query_set()?;
 
@@ -784,7 +785,7 @@ pub(crate) async fn run(
                 data_generation::config::format_scale_factor(common_args.scale_factor),
             ),
             KeyValue::new("scale_factor", version_metadata.scale_factor.to_string()),
-            KeyValue::new("etl_type", version_metadata.etl_type()),
+            KeyValue::new("etl_type", version_metadata.etl_type().to_string()),
         ])
         .build();
 
