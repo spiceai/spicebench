@@ -266,6 +266,10 @@ impl SpiceTest<NotStarted> {
             return Err(anyhow::anyhow!("Query set is empty"));
         }
 
+        if self.state.parallel_count == 0 {
+            return Err(anyhow::anyhow!("Parallel count must be greater than 0"));
+        }
+
         // Ensure executor is configured
         let executor = self
             .state
@@ -477,9 +481,6 @@ impl SpiceTest<Completed> {
     }
 
     pub fn get_throughput_metric(&self, scale: f64) -> Result<f64> {
-        if self.state.parallel_count == 0 {
-            return Ok(0.0);
-        }
         // metric = (Parallel Query Count * Test Suite Query Count * 3600) / Cs * Scale
         let lhs = self.state.parallel_count * self.state.query_count * 3600;
 

@@ -557,8 +557,6 @@ async fn validate_full_query_set(
 ) -> bool {
     use futures::stream::{self, StreamExt};
 
-    // buffer_unordered(0) would never poll futures, so use at least 1.
-    let effective_concurrency = concurrency.max(1);
     let results: Vec<(Arc<str>, _)> = stream::iter(queries)
         .map(|query| {
             let query_name = Arc::clone(&query.name);
@@ -569,7 +567,7 @@ async fn validate_full_query_set(
                 (query_name, result)
             }
         })
-        .buffer_unordered(effective_concurrency)
+        .buffer_unordered(concurrency)
         .collect()
         .await;
 
@@ -927,188 +925,105 @@ pub(crate) async fn run(
     // them post-loop so they carry the final `outcome` dimension.
     let mut checkpoint_e2e_latency_samples: Vec<f64> = Vec::new();
 
-    // If there are no query workers, skip the ETL monitoring loop entirely —
-    // just wait for the pipeline to finish, then proceed to results.
-    let run_outcome: Option<RunOutcome> = if common_args.concurrency == 0 {
-        // No query workers — just monitor the ETL pipeline and run checkpoint
-        // validation when it pauses. Break when the pipeline reaches a terminal state.
-        loop {
-            if etl_state_rx.changed().await.is_err() {
-                break None;
-            }
-            let state = etl_state_rx.borrow_and_update().clone();
-            match state {
-                PipelineState::Paused => {
-                    let checkpoint_idx = etl_pipeline.checkpoint_idx();
-                    tracing::info!(
-                        checkpoint_idx,
-                        "ETL pipeline paused at checkpoint boundary (no query workers)"
-                    );
-
-                    if has_checkpoint_validation && let Some(cp_dir) = checkpoint_dir {
-                        match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
-                            Ok(expected_results) if !expected_results.is_empty() => {
-                                let expected_row_counts =
-                                    load_checkpoint_row_counts(cp_dir, checkpoint_idx)
-                                        .unwrap_or_default();
-                                tracing::info!(
-                                    checkpoint_idx,
-                                    num_queries = expected_results.len(),
-                                    num_tables = expected_row_counts.len(),
-                                    "Running checkpoint validation (no query workers)"
-                                );
-
-                                let checkpoint_pause_time = std::time::Instant::now();
-
-                                let result = run_checkpoint_validation(
-                                    &validation_executor,
-                                    &queries,
-                                    &expected_results,
-                                    &expected_row_counts,
-                                    checkpoint_idx,
-                                    common_args.concurrency,
-                                    Duration::from_secs(common_args.checkpoint_validation_period),
-                                    Duration::from_secs(600),
-                                    checkpoint_pause_time,
-                                    query_catalog_namespace.as_deref(),
-                                )
-                                .await;
-
-                                match result {
-                                    CheckpointValidationResult::Converged { e2e_latency_ms } => {
-                                        checkpoint_e2e_latency_samples.push(e2e_latency_ms);
-                                    }
-                                    CheckpointValidationResult::Interrupted => {
-                                        eprintln!(
-                                            "Interrupt received during checkpoint validation, stopping..."
-                                        );
-                                        etl_pipeline.cancel();
-                                        break Some(RunOutcome::Cancelled);
-                                    }
-                                    CheckpointValidationResult::TimedOut => {
-                                        eprintln!(
-                                            "Checkpoint {checkpoint_idx} validation timed out"
-                                        );
-                                        etl_pipeline.cancel();
-                                        break Some(RunOutcome::ValidationTimeout);
-                                    }
-                                }
-                            }
-                            Ok(_) => {
-                                tracing::info!(
-                                    checkpoint_idx,
-                                    "No checkpoint results found, skipping validation"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    checkpoint_idx,
-                                    error = %e,
-                                    "Failed to load checkpoint results, skipping validation"
-                                );
-                            }
-                        }
-                    }
-
-                    if let Err(e) = etl_pipeline.continue_pipeline() {
-                        eprintln!("Failed to continue ETL pipeline: {e}");
-                        break Some(RunOutcome::PipelineFailure(format!(
-                            "Failed to continue ETL pipeline: {e}"
-                        )));
-                    }
-                }
-                PipelineState::Stopped(StopReason::Completed) => {
-                    println!("ETL pipeline completed (no query workers)");
-
-                    // --- Final checkpoint validation ---
-                    // The pipeline transitions directly from Running →
-                    // Completed after the last batch, so the final
-                    // checkpoint boundary is never seen as a Paused state.
-                    // Run validation for it here.
-                    if has_checkpoint_validation && let Some(cp_dir) = checkpoint_dir {
+    let run_outcome: Option<RunOutcome> = loop {
+        tokio::select! {
+            // ETL state changed — check if stopped or paused
+            _ = etl_state_rx.changed() => {
+                let state = etl_state_rx.borrow_and_update().clone();
+                match state {
+                    PipelineState::Paused => {
                         let checkpoint_idx = etl_pipeline.checkpoint_idx();
-                        match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
-                            Ok(expected_results) if !expected_results.is_empty() => {
-                                let expected_row_counts =
-                                    load_checkpoint_row_counts(cp_dir, checkpoint_idx)
-                                        .unwrap_or_default();
-                                tracing::info!(
-                                    checkpoint_idx,
-                                    num_queries = expected_results.len(),
-                                    num_tables = expected_row_counts.len(),
-                                    "Running final checkpoint validation (no query workers)"
-                                );
+                        tracing::info!(
+                            checkpoint_idx,
+                            "ETL pipeline paused at checkpoint boundary"
+                        );
 
-                                let checkpoint_pause_time = std::time::Instant::now();
+                        // --- Checkpoint validation window ---
+                        if has_checkpoint_validation
+                            && let Some(cp_dir) = checkpoint_dir
+                        {
+                            match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
+                                Ok(expected_results) if !expected_results.is_empty() => {
+                                    let expected_row_counts =
+                                        load_checkpoint_row_counts(cp_dir, checkpoint_idx)
+                                            .unwrap_or_default();
+                                    tracing::info!(
+                                        checkpoint_idx,
+                                        num_queries = expected_results.len(),
+                                        num_tables = expected_row_counts.len(),
+                                        "Running checkpoint validation"
+                                    );
 
-                                let result = run_checkpoint_validation(
-                                    &validation_executor,
-                                    &queries,
-                                    &expected_results,
-                                    &expected_row_counts,
-                                    checkpoint_idx,
-                                    common_args.concurrency,
-                                    Duration::from_secs(common_args.checkpoint_validation_period),
-                                    Duration::from_secs(600),
-                                    checkpoint_pause_time,
-                                    query_catalog_namespace.as_deref(),
-                                )
-                                .await;
+                                    let checkpoint_pause_time = std::time::Instant::now();
 
-                                match result {
-                                    CheckpointValidationResult::Converged { e2e_latency_ms } => {
-                                        checkpoint_e2e_latency_samples.push(e2e_latency_ms);
-                                    }
-                                    CheckpointValidationResult::Interrupted => {
-                                        eprintln!(
-                                            "Interrupt received during final checkpoint validation, stopping..."
-                                        );
-                                        break Some(RunOutcome::Cancelled);
-                                    }
-                                    CheckpointValidationResult::TimedOut => {
-                                        eprintln!(
-                                            "Final checkpoint {checkpoint_idx} validation timed out after 600s without convergence, aborting run"
-                                        );
-                                        break Some(RunOutcome::ValidationTimeout);
+                                    let result = run_checkpoint_validation(
+                                        &validation_executor,
+                                        &queries,
+                                        &expected_results,
+                                        &expected_row_counts,
+                                        checkpoint_idx,
+                                        common_args.concurrency,
+                                        Duration::from_secs(common_args.checkpoint_validation_period),
+                                        Duration::from_secs(600),
+                                        checkpoint_pause_time,
+                                        query_catalog_namespace.as_deref(),
+                                    )
+                                    .await;
+
+                                    match result {
+                                        CheckpointValidationResult::Converged { e2e_latency_ms } => {
+                                            checkpoint_e2e_latency_samples.push(e2e_latency_ms);
+                                        }
+                                        CheckpointValidationResult::Interrupted => {
+                                            eprintln!("Interrupt received during checkpoint validation, stopping...");
+                                            shutdown_token.cancel();
+                                            etl_pipeline.cancel();
+                                            break Some(RunOutcome::Cancelled);
+                                        }
+                                        CheckpointValidationResult::TimedOut => {
+                                            eprintln!(
+                                                "Checkpoint {checkpoint_idx} validation timed out after 600s without convergence, aborting run"
+                                            );
+                                            shutdown_token.cancel();
+                                            etl_pipeline.cancel();
+                                            break Some(RunOutcome::ValidationTimeout);
+                                        }
                                     }
                                 }
-                            }
-                            Ok(_) => {
-                                tracing::info!(
-                                    checkpoint_idx,
-                                    "No final checkpoint results found, skipping validation"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    checkpoint_idx,
-                                    error = %e,
-                                    "Failed to load final checkpoint results, skipping validation"
-                                );
+                                Ok(_) => {
+                                    tracing::info!(
+                                        checkpoint_idx,
+                                        "No checkpoint results found, skipping validation"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        checkpoint_idx,
+                                        error = %e,
+                                        "Failed to load checkpoint results, skipping validation"
+                                    );
+                                }
                             }
                         }
-                    }
 
-                    break None;
-                }
-                PipelineState::Stopped(StopReason::Error(ref e)) => {
-                    eprintln!("ETL pipeline failed: {e}");
-                    break Some(RunOutcome::PipelineFailure(e.clone()));
-                }
-                PipelineState::Stopped(StopReason::Cancelled) => {
-                    break None;
-                }
-                _ => {}
-            }
-        }
-    } else {
-        loop {
-            tokio::select! {
-                // ETL state changed — check if stopped or paused
-                _ = etl_state_rx.changed() => {
-                    let state = etl_state_rx.borrow_and_update().clone();
-                    match state {
-                        PipelineState::Paused => {
+                        if let Err(e) = etl_pipeline.continue_pipeline() {
+                            eprintln!("Failed to continue ETL pipeline after pause: {e}");
+                            shutdown_token.cancel();
+                            break Some(RunOutcome::PipelineFailure(format!("Failed to continue ETL pipeline: {e}")));
+                        }
+                        tracing::info!("ETL pipeline resumed");
+                    }
+                    PipelineState::Stopped(StopReason::Completed) => {
+                        println!("ETL pipeline completed");
+
+                        // --- Final checkpoint validation ---
+                        // The pipeline transitions directly from Running →
+                        // Completed after the last batch, so the final
+                        // checkpoint boundary is never seen as a Paused state.
+                        // Run validation for it here.
+                        if has_checkpoint_validation
+                            && let Some(cp_dir) = checkpoint_dir
+                        {
                             let checkpoint_idx = etl_pipeline.checkpoint_idx();
                             tracing::info!(
                                 checkpoint_idx,
@@ -1182,6 +1097,29 @@ pub(crate) async fn run(
                                     }
                                 }
                             }
+                        } else if !has_checkpoint_validation {
+                            // When results validation is not enabled, wait for
+                            // at least 1 query set iteration to complete so we
+                            // collect meaningful query metrics before stopping.
+                            const POLL_INTERVAL: Duration = Duration::from_secs(1);
+                            const MAX_WAIT: Duration = Duration::from_secs(300);
+                            let wait_start = tokio::time::Instant::now();
+                            loop {
+                                let status =
+                                    validation_controller.status_rx.borrow().clone();
+                                if status.completed_iterations() >= 1 {
+                                    break;
+                                }
+                                if wait_start.elapsed() >= MAX_WAIT {
+                                    tracing::warn!(
+                                        completed = status.completed_iterations(),
+                                        "Timed out waiting for at least 1 query set iteration after ETL completion"
+                                    );
+                                    break;
+                                }
+                                tokio::time::sleep(POLL_INTERVAL).await;
+                            }
+                        }
 
                             if let Err(e) = etl_pipeline.continue_pipeline() {
                                 eprintln!("Failed to continue ETL pipeline after pause: {e}");
