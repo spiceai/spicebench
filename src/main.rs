@@ -30,39 +30,18 @@ use crate::args::{Cli, Command};
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    let _ = rustls::crypto::CryptoProvider::install_default(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    );
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     match cli.command {
-        Command::Run(args) => {
-            // The `run` subcommand uses INFO + env filter and needs rustls.
-            let _ = rustls::crypto::CryptoProvider::install_default(
-                rustls::crypto::aws_lc_rs::default_provider(),
-            );
-            tracing_subscriber::fmt()
-                .with_max_level(Level::INFO)
-                .with_env_filter(EnvFilter::from_default_env())
-                .init();
-
-            commands::run::execute(&args).await
-        }
-        Command::Generate(args) => {
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .init();
-
-            commands::generate::execute(&args).await
-        }
-        Command::Etl(args) => {
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .init();
-
-            commands::etl_cmd::execute(&args).await
-        }
-        Command::Checkpoint(args) => {
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .init();
-
-            commands::checkpoint::execute(&args).await
-        }
+        Command::Run(args) => commands::run::execute(&args).await,
+        Command::Generate(args) => commands::generate::execute(&args).await,
+        Command::Etl(args) => commands::etl_cmd::execute(&args).await,
+        Command::Checkpoint(args) => commands::checkpoint::execute(&args).await,
     }
 }
