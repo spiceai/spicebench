@@ -161,7 +161,7 @@ jobs:
           ETL_REGION: "us-east-1"
           ETL_SINK: "adbc"
           SCHEDULER_STATE_LOCATION: "s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/"
-          VALIDATE_CHECKPOINT_RESULTS: "false"
+          VALIDATE_CHECKPOINT_RESULTS: "true"
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SCRAPE_SUT_METRICS: "true"
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
