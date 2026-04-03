@@ -371,10 +371,31 @@ pub mod error_codes {
     pub const INTERNAL_ERROR: i32 = -32603;
 }
 
+/// Request to create a staging table for MERGE-based updates.
+///
+/// JSON-RPC method: `create_staging_table`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateStagingTableRequest {
+    /// Unique identifier for the benchmark run
+    pub run_id: Uuid,
+    /// Name of the source dataset this staging table is based on
+    pub source_dataset: String,
+    /// Name to use for the staging table
+    pub staging_table_name: String,
+}
+
+/// Response from create staging table request
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateStagingTableResponse {
+    /// Indicates if the staging table was created successfully
+    pub ok: bool,
+}
+
 /// Method names for the system adapter protocol
 pub mod methods {
     pub const SETUP: &str = "setup";
     pub const TEARDOWN: &str = "teardown";
     pub const METRICS: &str = "metrics";
+    pub const CREATE_STAGING_TABLE: &str = "create_staging_table";
     pub const RPC_METHODS: &str = "rpc.methods";
 }
