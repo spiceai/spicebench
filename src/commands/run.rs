@@ -304,76 +304,41 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     let run_id = uuid::Uuid::new_v4();
     let scenario_name = args.scenario.to_string();
 
-    let mut setup_metadata: HashMap<String, serde_json::Value> = HashMap::from([
-        (
-            "executor_instance_type".to_string(),
-            serde_json::Value::String(args.executor_instance_type.clone()),
-        ),
-        (
-            "table_format".to_string(),
-            serde_json::Value::String(args.table_format.to_string()),
-        ),
-        (
-            "scenario".to_string(),
-            serde_json::Value::String(scenario_name.clone()),
-        ),
-        (
-            "etl_bucket".to_string(),
-            serde_json::Value::String(args.etl_bucket.clone()),
-        ),
-        (
-            "etl_prefix".to_string(),
-            serde_json::Value::String(args.etl_prefix.clone()),
-        ),
-        (
-            "etl_version".to_string(),
-            serde_json::Value::String(derived_version.clone()),
-        ),
-        (
-            "etl_region".to_string(),
-            args.etl_region
-                .as_ref()
-                .map_or(serde_json::Value::Null, |v| {
-                    serde_json::Value::String(v.clone())
-                }),
-        ),
-        (
-            "etl_endpoint".to_string(),
-            args.etl_endpoint
-                .as_ref()
-                .map_or(serde_json::Value::Null, |v| {
-                    serde_json::Value::String(v.clone())
-                }),
-        ),
-        (
-            "etl_sink".to_string(),
-            serde_json::Value::String("adbc".to_string()),
-        ),
-        (
-            "etl_type".to_string(),
-            serde_json::Value::String(version_metadata.etl_type().to_string()),
-        ),
-    ]);
+    let serde_json::Value::Object(setup_map) = serde_json::json!({
+        "executor_instance_type": args.executor_instance_type,
+        "table_format": args.table_format.to_string(),
+        "scenario": scenario_name,
+        "etl_bucket": args.etl_bucket,
+        "etl_prefix": args.etl_prefix,
+        "etl_version": derived_version,
+        "etl_region": args.etl_region,
+        "etl_endpoint": args.etl_endpoint,
+        "etl_sink": "adbc",
+        "etl_type": version_metadata.etl_type().to_string(),
+    }) else {
+        unreachable!()
+    };
+    let mut setup_metadata: HashMap<String, serde_json::Value> = setup_map.into_iter().collect();
 
     if let Ok(system_under_test) = std::env::var("SYSTEM_UNDER_TEST") {
         setup_metadata.insert(
             "system_under_test".to_string(),
-            serde_json::Value::String(system_under_test.clone()),
+            serde_json::json!(system_under_test),
         );
 
         if let Some((prefix, variant)) = system_under_test.split_once('-') {
             setup_metadata.insert(
                 "system_adapter_prefix".to_string(),
-                serde_json::Value::String(prefix.to_string()),
+                serde_json::json!(prefix),
             );
             setup_metadata.insert(
                 "system_adapter_variant".to_string(),
-                serde_json::Value::String(variant.to_string()),
+                serde_json::json!(variant),
             );
         } else {
             setup_metadata.insert(
                 "system_adapter_prefix".to_string(),
-                serde_json::Value::String(system_under_test),
+                serde_json::json!(system_under_test),
             );
         }
     }
