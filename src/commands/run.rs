@@ -118,13 +118,27 @@ async fn run_benchmark(
     let etl_sink_type = system_adapter_protocol::EtlSinkType::Adbc;
     let target_config = None;
 
-    let datasets = ETLPipeline::create_tables_request_datasets(
+    let mut datasets = ETLPipeline::create_tables_request_datasets(
         dataset_source.clone(),
         &generation_config,
         Arc::clone(&data_source),
         &mutations,
         target_config.clone(),
     )?;
+
+    // When using the staging_table update strategy, tables must NOT have
+    // primary keys. MERGE INTO handles matching via the ON clause and uses
+    // delete+insert execution, which conflicts with Cayenne's automatic
+    // on_conflict: Upsert behavior on primary-key tables.
+    let uses_staging_table = std::env::var("SPICEBENCH_ADBC_UPDATE_STRATEGY")
+        .ok()
+        .map(|v| v.eq_ignore_ascii_case("staging_table"))
+        .unwrap_or(false);
+    if uses_staging_table {
+        for config in datasets.values_mut() {
+            config.primary_key_columns.clear();
+        }
+    }
     let (setup_response, mut pipeline) = {
         let setup_response = system_adapter_client
             .lock()
@@ -156,6 +170,7 @@ async fn run_benchmark(
             db_kwargs,
             target_db_catalog,
             target_db_schema,
+            Some((Arc::clone(&system_adapter_client), run_id)),
         )?);
 
         let mut pipeline = ETLPipeline::new(

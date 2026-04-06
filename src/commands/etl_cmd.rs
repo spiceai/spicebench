@@ -138,6 +138,7 @@ pub async fn execute(args: &EtlArgs) -> anyhow::Result<()> {
                 db_kwargs,
                 args.adbc_catalog.clone(),
                 args.adbc_schema.clone(),
+                None,
             )?);
 
             (

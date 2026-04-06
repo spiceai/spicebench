@@ -228,6 +228,40 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
+    /// Create a staging table for MERGE-based updates.
+    ///
+    /// If the remote adapter does not support this method (returns
+    /// `METHOD_NOT_FOUND`), the call is treated as a successful no-op so that
+    /// newer spicebench versions work against older adapters.
+    pub async fn create_staging_table(
+        &mut self,
+        run_id: uuid::Uuid,
+        source_dataset: &str,
+        staging_table_name: &str,
+    ) -> Result<crate::CreateStagingTableResponse> {
+        let request = crate::CreateStagingTableRequest {
+            run_id,
+            source_dataset: source_dataset.to_string(),
+            staging_table_name: staging_table_name.to_string(),
+        };
+        let rpc_request = JsonRpcRequest::new(1, crate::methods::CREATE_STAGING_TABLE, request);
+        match self.call_typed(rpc_request).await {
+            Ok(response) => response
+                .result
+                .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string())),
+            Err(ClientError::JsonRpc(ref e)) if e.code == crate::error_codes::METHOD_NOT_FOUND => {
+                tracing::warn!(
+                    source_dataset,
+                    staging_table_name,
+                    "System adapter does not support create_staging_table; \
+                     falling back to implicit table creation via bulk ingest"
+                );
+                Ok(crate::CreateStagingTableResponse { ok: true })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Make a typed JSON-RPC call with request and response types
     async fn call_typed<Req: Serialize, Resp: DeserializeOwned>(
         &mut self,
