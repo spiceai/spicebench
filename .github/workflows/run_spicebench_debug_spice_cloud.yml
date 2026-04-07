@@ -81,6 +81,14 @@ on:
         required: false
         default: '16Gi'
         type: string
+      catalog_mode:
+        description: 'ADBC runtime catalog mode for spidapter (cayenne keeps existing spicebench.bench catalog, iceberg-write-through uses Glue-backed iceberg_catalog.cayenne with write-through acceleration)'
+        required: false
+        default: 'cayenne'
+        type: choice
+        options:
+          - cayenne
+          - iceberg-write-through
       custom_image:
         description: 'Custom runtime container image (e.g. ghcr.io/spiceai/spiceai-dev:spicebench-sf10). Overrides the default channel image. Requires the internal update channel on the target SCP environment.'
         required: false
@@ -173,6 +181,7 @@ jobs:
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
+          CATALOG_MODE: ${{ github.event.inputs.catalog_mode || 'cayenne' }}
           ENABLE_PVC: ${{ github.event.inputs.enable_pvc || 'false' }}
           EXECUTOR_REPLICAS: ${{ github.event.inputs.executor_replicas || '4' }}
           SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '16Gi' }}
@@ -270,6 +279,11 @@ jobs:
             NO_TEARDOWN_ARG="--no-teardown"
           fi
 
+          CATALOG_MODE_ARG=""
+          if [ -n "${CATALOG_MODE:-}" ]; then
+            CATALOG_MODE_ARG="--system-adapter-param catalog_mode=${CATALOG_MODE}"
+          fi
+
           ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
@@ -283,3 +297,4 @@ jobs:
             ${ADAPTER_ENVS} \
             ${SCHEDULER_STATE_ADAPTER_ENV} \
             ${NO_TEARDOWN_ARG} \
+            ${CATALOG_MODE_ARG} \

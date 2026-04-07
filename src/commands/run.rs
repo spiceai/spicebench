@@ -335,6 +335,10 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     };
     let mut setup_metadata: HashMap<String, serde_json::Value> = setup_map.into_iter().collect();
 
+    for (key, value) in &args.system_adapter_param {
+        setup_metadata.insert(key.clone(), serde_json::json!(value));
+    }
+
     if let Ok(system_under_test) = std::env::var("SYSTEM_UNDER_TEST") {
         setup_metadata.insert(
             "system_under_test".to_string(),
