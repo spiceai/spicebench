@@ -253,8 +253,13 @@ jobs:
             SPIDAPTER_IMAGE_REGISTRY="${IMAGE_WITHOUT_TAG%%/*}"
             SPIDAPTER_IMAGE_NAME="${IMAGE_WITHOUT_TAG#*/}"
 
+            SPIDAPTER_CATALOG_MODE="cayenne"
+            if [ -n "${CATALOG_MODE:-}" ]; then
+              SPIDAPTER_CATALOG_MODE="${CATALOG_MODE}"
+            fi
+
             echo "Custom image: registry=${SPIDAPTER_IMAGE_REGISTRY}, name=${SPIDAPTER_IMAGE_NAME}, tag=${SPIDAPTER_IMAGE_TAG}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_REGISTRY=${SPIDAPTER_IMAGE_REGISTRY} -e SPIDAPTER_IMAGE_NAME=${SPIDAPTER_IMAGE_NAME}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_REGISTRY=${SPIDAPTER_IMAGE_REGISTRY} -e SPIDAPTER_IMAGE_NAME=${SPIDAPTER_IMAGE_NAME} -e SPIDAPTER_CATALOG_MODE=${SPIDAPTER_CATALOG_MODE}"
             if [ -n "${SPIDAPTER_IMAGE_TAG}" ]; then
               ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${SPIDAPTER_IMAGE_TAG}"
             fi
@@ -277,11 +282,6 @@ jobs:
           NO_TEARDOWN_ARG=""
           if [ "${DISABLE_TEARDOWN}" = "true" ]; then
             NO_TEARDOWN_ARG="--no-teardown"
-          fi
-
-          CATALOG_MODE_ARG=""
-          if [ -n "${CATALOG_MODE:-}" ]; then
-            CATALOG_MODE_ARG="--system-adapter-param catalog_mode=${CATALOG_MODE}"
           fi
 
           ~/.spice/bin/spicebench run \
