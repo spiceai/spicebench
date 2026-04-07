@@ -296,5 +296,4 @@ jobs:
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
             ${SCHEDULER_STATE_ADAPTER_ENV} \
-            ${NO_TEARDOWN_ARG} \
-            ${CATALOG_MODE_ARG} \
+            ${NO_TEARDOWN_ARG}
