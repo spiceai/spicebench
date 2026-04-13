@@ -15,9 +15,10 @@ limitations under the License.
 */
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinHandle;
 
 use adbc_client::{
@@ -28,7 +29,8 @@ use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatchIterator;
 use arrow_cast::display::array_value_to_string;
 use async_trait::async_trait;
-use system_adapter_protocol::DatasetConfig;
+use system_adapter_protocol::{Client as SystemAdapterClient, DatasetConfig};
+use uuid::Uuid;
 
 use super::{InsertOp, Sink};
 
@@ -174,6 +176,8 @@ pub struct AdbcSink {
     reuse_bulk_ingest_streams: bool,
     flush_stream_before_upsert: bool,
     bulk_ingest_stream_buffer: usize,
+    /// Optional system adapter client for staging table creation.
+    staging_adapter: Option<(Arc<Mutex<SystemAdapterClient>>, Uuid)>,
 }
 
 impl AdbcSink {
@@ -230,11 +234,15 @@ impl AdbcSink {
     }
 
     /// Creates a new [`AdbcSink`] backed by a connection pool.
+    ///
+    /// When a system adapter client and run ID are provided, the `StagingTable`
+    /// update strategy will use the adapter to create staging tables remotely.
     pub fn new(
         driver_name: &str,
         db_kwargs: HashMap<String, serde_json::Value>,
         target_db_catalog: Option<String>,
         target_db_schema: Option<String>,
+        staging_adapter: Option<(Arc<Mutex<SystemAdapterClient>>, Uuid)>,
     ) -> anyhow::Result<Self> {
         let update_strategy = UpdateStrategy::from_env()?;
         let pool_size = Self::pool_size();
@@ -269,6 +277,7 @@ impl AdbcSink {
             reuse_bulk_ingest_streams,
             flush_stream_before_upsert,
             bulk_ingest_stream_buffer,
+            staging_adapter,
         })
     }
 
@@ -1148,10 +1157,11 @@ impl AdbcSink {
 
     /// Perform an UPDATE via a temporary staging table:
     ///
-    /// 1. Bulk-ingest the update batch into a staging table.
-    /// 2. `MERGE INTO target USING staging ON … WHEN MATCHED THEN UPDATE SET …`
-    /// 3. `DROP TABLE staging`.
-    fn staging_merge_update(
+    /// 1. Create the staging table via the hook (same schema/partitioning as target).
+    /// 2. Bulk-ingest the update batch into the staging table.
+    /// 3. `MERGE INTO target USING staging ON … WHEN MATCHED THEN UPDATE SET …`
+    /// 4. `DROP TABLE staging` (via hook, then SQL fallback).
+    async fn staging_merge_update(
         &self,
         conn: &mut AdbcConnection,
         table_name: &str,
@@ -1182,15 +1192,30 @@ impl AdbcSink {
             .as_millis();
         let staging_table = format!("_spicebench_stg_{table_name}_{ts}");
 
-        // 1. Bulk-ingest batch into the staging table.
+        // 1. Create the staging table via the system adapter (if available).
+        if let Some((client, run_id)) = &self.staging_adapter {
+            client
+                .lock()
+                .await
+                .create_staging_table(*run_id, table_name, &staging_table)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to create staging table '{staging_table}' for '{table_name}': {e}"
+                    )
+                })?;
+        }
+
+        // 2. Bulk-ingest batch into the staging table.
         if let Err(e) = self.ingest_insert_batch(conn, &staging_table, batch) {
-            self.drop_staging_table(conn, &staging_table);
+            self.drop_staging_table_best_effort(conn, &staging_table)
+                .await;
             return Err(e.context(format!(
                 "Failed to ingest update data into staging table '{staging_table}'"
             )));
         }
 
-        // 2. MERGE INTO target from staging.
+        // 3. MERGE INTO target from staging.
         let merge_sql = Self::build_staging_merge_sql(
             &self.target_table_identifier(table_name),
             &self.target_table_identifier(&staging_table),
@@ -1202,8 +1227,9 @@ impl AdbcSink {
             .execute_update(&merge_sql)
             .map_err(|e| anyhow::anyhow!("MERGE INTO update failed for '{table_name}': {e}"));
 
-        // 3. Drop staging table (always, even on merge failure).
-        self.drop_staging_table(conn, &staging_table);
+        // 4. Drop staging table (always, even on merge failure).
+        self.drop_staging_table_best_effort(conn, &staging_table)
+            .await;
 
         merge_result?;
         tracing::debug!(
@@ -1215,8 +1241,8 @@ impl AdbcSink {
         Ok(())
     }
 
-    /// Best-effort drop of a staging table.
-    fn drop_staging_table(&self, conn: &mut AdbcConnection, staging_table: &str) {
+    /// Best-effort drop of a staging table via SQL DROP TABLE.
+    async fn drop_staging_table_best_effort(&self, conn: &mut AdbcConnection, staging_table: &str) {
         let drop_sql = format!(
             "DROP TABLE IF EXISTS {}",
             self.target_table_identifier(staging_table)
@@ -1372,7 +1398,8 @@ impl Sink for AdbcSink {
                         let mut conn = self.pool.get().map_err(|e| {
                             anyhow::anyhow!("Failed to get ADBC connection from pool: {e}")
                         })?;
-                        self.staging_merge_update(&mut conn, table_name, batch, &key_columns)?;
+                        self.staging_merge_update(&mut conn, table_name, batch, &key_columns)
+                            .await?;
                     }
                     UpdateStrategy::BulkIngestUpsert => {
                         if self.reuse_bulk_ingest_streams && !self.flush_stream_before_upsert {

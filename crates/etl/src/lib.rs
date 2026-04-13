@@ -872,7 +872,7 @@ async fn write_segments_for_batch(
                     partition_columns.to_vec(),
                 )
                 .await
-                .map_err(|e| format!("write {table_name_owned} batch {batch_id}: {e}"))?;
+                .map_err(|e| format!("write {table_name_owned} batch {batch_id}: {e:#}"))?;
         }
 
         return Ok(());

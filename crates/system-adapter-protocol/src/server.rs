@@ -17,8 +17,9 @@ limitations under the License.
 //! Server implementations for system adapter JSON-RPC protocol.
 
 use crate::{
-    DatasetConfig, EtlSinkType, JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse,
-    SetupRequest, SetupResponse, TeardownRequest, TeardownResponse, error_codes, methods,
+    CreateStagingTableRequest, CreateStagingTableResponse, DatasetConfig, EtlSinkType,
+    JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse, SetupRequest, SetupResponse,
+    TeardownRequest, TeardownResponse, error_codes, methods,
 };
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -106,8 +107,24 @@ pub trait Handler: Send + Sync {
             methods::SETUP.to_string(),
             methods::TEARDOWN.to_string(),
             methods::METRICS.to_string(),
+            methods::CREATE_STAGING_TABLE.to_string(),
             methods::RPC_METHODS.to_string(),
         ]
+    }
+
+    /// Create a staging table for MERGE-based updates.
+    ///
+    /// The staging table should have the same schema and partitioning as the
+    /// source dataset but with the given staging table name. Adapters that
+    /// handle staging table creation implicitly (e.g. via bulk ingest) can
+    /// leave the default no-op implementation.
+    async fn create_staging_table(
+        &mut self,
+        _run_id: Uuid,
+        _source_dataset: &str,
+        _staging_table_name: &str,
+    ) -> std::result::Result<CreateStagingTableResponse, String> {
+        Ok(CreateStagingTableResponse { ok: true })
     }
 }
 
@@ -182,6 +199,9 @@ impl<H: Handler> Server<H> {
             methods::SETUP => self.handle_setup(&request, id.clone()).await,
             methods::TEARDOWN => self.handle_teardown(&request, id.clone()).await,
             methods::METRICS => self.handle_metrics(&request, id.clone()).await,
+            methods::CREATE_STAGING_TABLE => {
+                self.handle_create_staging_table(&request, id.clone()).await
+            }
             methods::RPC_METHODS => self.handle_rpc_methods(id.clone()).await,
             _ => serde_json::to_value(JsonRpcResponse::<()>::error(
                 id,
@@ -270,6 +290,23 @@ impl<H: Handler> Server<H> {
             Err(e) => return e,
         };
         Self::handler_response(self.handler.metrics(req.run_id, req.final_scrape).await, id)
+    }
+
+    async fn handle_create_staging_table(
+        &mut self,
+        request: &serde_json::Value,
+        id: serde_json::Value,
+    ) -> serde_json::Value {
+        let req: CreateStagingTableRequest = match Self::parse_params(request, &id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        Self::handler_response(
+            self.handler
+                .create_staging_table(req.run_id, &req.source_dataset, &req.staging_table_name)
+                .await,
+            id,
+        )
     }
 
     async fn handle_rpc_methods(&mut self, id: serde_json::Value) -> serde_json::Value {
