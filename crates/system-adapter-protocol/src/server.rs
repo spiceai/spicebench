@@ -335,6 +335,8 @@ mod tests {
                 driver: crate::AdbcDriver::Flightsql,
                 db_kwargs: HashMap::new(),
                 catalog_namespace: None,
+                read_driver: None,
+                endpoints: HashMap::new(),
             })
         }
 
