@@ -61,6 +61,14 @@ on:
         required: false
         default: false
         type: boolean
+      adbc_update_strategy:
+        description: 'ADBC update strategy'
+        required: false
+        default: 'bulk_ingest_upsert'
+        type: choice
+        options:
+          - bulk_ingest_upsert
+          - staging_table
       enable_pvc:
         description: 'Enable PVC block storage for scheduler and executor pods (sizes are derived from scale_factor)'
         required: false
@@ -217,9 +225,13 @@ jobs:
             SUT_METRICS_ARGS="--scrape-sut-metrics"
           fi
 
-          export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
-          export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
+          export SPICEBENCH_ADBC_UPDATE_STRATEGY=${{ github.event.inputs.adbc_update_strategy || 'bulk_ingest_upsert' }}
           export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
+          if [ "${SPICEBENCH_ADBC_UPDATE_STRATEGY}" = "bulk_ingest_upsert" ]; then
+            export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
+          else
+            export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
+          fi
           ADAPTER_CMD="docker"
           ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=${EXECUTOR_REPLICAS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
 
