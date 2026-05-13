@@ -2138,6 +2138,7 @@ impl Handler for DatabricksAdapter {
                         AdbcDriver::Postgresql,
                         HashMap::from([("uri".to_string(), Value::String(pg_uri))]),
                     )),
+                    endpoints: HashMap::new(),
                 })
             }
             // For other variants, return a single Databricks ADBC driver.
@@ -2152,6 +2153,7 @@ impl Handler for DatabricksAdapter {
                 ]),
                 catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
                 read_driver: None,
+                endpoints: HashMap::new(),
             }),
         }
     }

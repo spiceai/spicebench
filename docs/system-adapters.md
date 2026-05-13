@@ -108,12 +108,38 @@ Returns ADBC connection details for the benchmark run and can optionally provisi
 
 The response tells SpiceBench which ADBC driver to use for query execution. For manually prepared systems, `setup` can simply validate inputs and return the existing driver + connection details without creating any new resources.
 
-| Field               | Required | Description                                                |
-| ------------------- | -------- | ---------------------------------------------------------- |
-| `driver`            | Yes      | ADBC driver name (`flightsql`, `databricks`, `postgresql`) |
-| `db_kwargs`         | Yes      | Driver-specific connection parameters                      |
-| `catalog_namespace` | No       | Catalog/schema path where tables were created              |
-| `read_driver`       | No       | Optional separate driver + kwargs for read-side queries    |
+| Field               | Required | Description                                                                                                                                                            |
+| ------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `driver`            | Yes      | ADBC driver name (`flightsql`, `databricks`, `postgresql`)                                                                                                             |
+| `db_kwargs`         | Yes      | Driver-specific connection parameters                                                                                                                                  |
+| `catalog_namespace` | No       | Catalog/schema path where tables were created                                                                                                                          |
+| `read_driver`       | No       | Optional separate driver + kwargs for read-side queries                                                                                                                |
+| `endpoints`         | No       | Map of additional non-ADBC transports the SUT exposes, keyed by transport identifier. Each value is a free-form kwargs map. Omit when only the ADBC path is available. |
+
+#### `endpoints` (non-ADBC transports)
+
+`endpoints` lets adapters advertise endpoints that aren't reachable through an ADBC driver — for example, Spice's HTTP query APIs — without growing the response shape every time a new field is needed. The outer key identifies the transport; the inner map is interpreted by the consumer based on that key.
+
+```json
+{
+    "result": {
+        "driver": "flightsql",
+        "db_kwargs": { "uri": "grpc://scheduler:50051" },
+        "endpoints": {
+            "spice.http.v1.queries": {
+                "url": "http://scheduler:8090/v1/queries",
+                "authorization_header": "Bearer ..."
+            }
+        }
+    }
+}
+```
+
+Well-known transport keys:
+
+| Key                     | Purpose                                                                                  | Kwargs                                                                                  |
+| ----------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `spice.http.v1.queries` | Spice's async query API (`POST /v1/queries`). Used to benchmark the distributed (Ballista) query path. | `url` (required), `authorization_header` (optional). Additional kwargs may be defined over time without protocol changes. |
 
 ### `teardown`
 

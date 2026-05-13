@@ -89,8 +89,8 @@ on:
         required: false
         default: '16Gi'
         type: string
-      custom_image:
-        description: 'Custom runtime container image (e.g. ghcr.io/spiceai/spiceai-dev:spicebench-sf10). Overrides the default channel image. Requires the internal update channel on the target SCP environment.'
+      custom_image_tag:
+        description: 'Custom runtime container image tag from ghcr.io/spiceai/spiceai-dev (e.g. spicebench-sf10).'
         required: false
         default: ''
         type: string
@@ -185,8 +185,7 @@ jobs:
           EXECUTOR_REPLICAS: ${{ github.event.inputs.executor_replicas || '4' }}
           SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '16Gi' }}
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ github.event.inputs.executor_memory_limit || '16Gi' }}
-          SPIDAPTER_ORGANIZATION_TAG: 'spicehq'
-          CUSTOM_IMAGE: ${{ github.event.inputs.custom_image || '' }}
+          CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -238,29 +237,10 @@ jobs:
 
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-
-          # Parse custom image into registry, name, and tag for spidapter.
-          # Expected format: registry/image:tag (e.g. ghcr.io/spiceai/spiceai-dev:spicebench-sf10)
-          # Parses as: registry=ghcr.io, image=spiceai/spiceai-dev, tag=spicebench-sf10
-          if [ -n "${CUSTOM_IMAGE}" ]; then
-            IMAGE_WITH_TAG="${CUSTOM_IMAGE}"
-            if [[ "${IMAGE_WITH_TAG}" == *":"* ]]; then
-              SPIDAPTER_IMAGE_TAG="${IMAGE_WITH_TAG##*:}"
-              IMAGE_WITHOUT_TAG="${IMAGE_WITH_TAG%:*}"
-            else
-              SPIDAPTER_IMAGE_TAG=""
-              IMAGE_WITHOUT_TAG="${IMAGE_WITH_TAG}"
-            fi
-            # Registry is the first path component (hostname), image is the rest
-            SPIDAPTER_IMAGE_REGISTRY="${IMAGE_WITHOUT_TAG%%/*}"
-            SPIDAPTER_IMAGE_NAME="${IMAGE_WITHOUT_TAG#*/}"
-
-            echo "Custom image: registry=${SPIDAPTER_IMAGE_REGISTRY}, name=${SPIDAPTER_IMAGE_NAME}, tag=${SPIDAPTER_IMAGE_TAG}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_REGISTRY=${SPIDAPTER_IMAGE_REGISTRY} -e SPIDAPTER_IMAGE_NAME=${SPIDAPTER_IMAGE_NAME}"
-            if [ -n "${SPIDAPTER_IMAGE_TAG}" ]; then
-              ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${SPIDAPTER_IMAGE_TAG}"
-            fi
+          # Optional custom image from ghcr.io/spiceai/spiceai-dev
+          if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
+            echo "Custom image tag: tag=${CUSTOM_IMAGE_TAG}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
           fi
 
           if [ "${ENABLE_PVC}" = "true" ]; then
@@ -270,7 +250,7 @@ jobs:
 
           # Use internal channel when a custom image is specified, otherwise nightly.
           SPIDAPTER_CHANNEL="nightly"
-          if [ -n "${CUSTOM_IMAGE}" ]; then
+          if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
             SPIDAPTER_CHANNEL="internal"
           fi
 
