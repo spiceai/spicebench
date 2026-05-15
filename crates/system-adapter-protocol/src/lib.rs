@@ -123,6 +123,10 @@ pub enum AdbcDriver {
     Databricks,
     #[serde(rename = "postgresql")]
     Postgresql,
+    #[serde(rename = "dynamodb")]
+    Dynamodb,
+    #[serde(rename = "mongodb")]
+    MongoDB,
 }
 
 /// ETL sink type used by spicebench for this run.
@@ -141,6 +145,8 @@ impl std::fmt::Display for AdbcDriver {
             Self::Flightsql => write!(f, "flightsql"),
             Self::Databricks => write!(f, "databricks"),
             Self::Postgresql => write!(f, "postgresql"),
+            Self::Dynamodb => write!(f, "dynamodb"),
+            Self::MongoDB => write!(f, "mongodb"),
         }
     }
 }
