@@ -31,6 +31,7 @@ arrow-array = "57.0.0"
 arrow-buffer = "57.0.0"
 arrow-cast = "57.0.0"
 arrow-flight = "57.0.0"
+arrow-ipc = "57.0.0"
 arrow-schema = "57.0.0"
 async-trait = "0.1.89"
 base64 = "0.22.1"
@@ -122,7 +123,9 @@ version.workspace = true
 [dependencies]
 adbc_client = { path = "crates/adbc_client" }
 arrow.workspace = true
+arrow-ipc.workspace = true
 arrow-schema.workspace = true
+base64.workspace = true
 async-trait.workspace = true
 checkpointer = { path = "crates/checkpointer" }
 clap.workspace = true

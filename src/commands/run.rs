@@ -139,6 +139,7 @@ async fn run_benchmark(
             config.primary_key_columns.clear();
         }
     }
+    let seed_data = generate_seed_data(&datasets, 5)?;
     let (setup_response, mut pipeline) = {
         let setup_response = system_adapter_client
             .lock()
@@ -148,6 +149,7 @@ async fn run_benchmark(
                 setup_metadata.clone(),
                 datasets.clone(),
                 Some(etl_sink_type),
+                seed_data,
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
@@ -378,4 +380,78 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     }
 
     result
+}
+
+/// Generate a base64-encoded Arrow IPC stream for each dataset containing
+/// `n_rows` zero-value rows. Used to bootstrap schema inference in adapters
+/// (e.g. DynamoDB, MongoDB) that require pre-existing records before the
+/// system under test can start.
+fn generate_seed_data(
+    datasets: &HashMap<String, system_adapter_protocol::DatasetConfig>,
+    n_rows: usize,
+) -> anyhow::Result<HashMap<String, String>> {
+    use base64::Engine as _;
+    datasets
+        .iter()
+        .map(|(name, config)| {
+            let batch = make_zero_batch(&config.schema, n_rows)?;
+            let ipc_bytes = batch_to_ipc_bytes(&batch)?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&ipc_bytes);
+            Ok((name.clone(), encoded))
+        })
+        .collect()
+}
+
+fn make_zero_batch(
+    schema: &arrow_schema::SchemaRef,
+    n_rows: usize,
+) -> anyhow::Result<arrow::record_batch::RecordBatch> {
+    use arrow::array::*;
+    use arrow::datatypes::DataType;
+    use std::sync::Arc;
+
+    let arrays = schema
+        .fields()
+        .iter()
+        .map(|field| -> anyhow::Result<arrow::array::ArrayRef> {
+            let arr: ArrayRef = match field.data_type() {
+                DataType::Boolean => Arc::new(BooleanArray::from(vec![false; n_rows])),
+                DataType::Int8 => Arc::new(Int8Array::from(vec![0i8; n_rows])),
+                DataType::Int16 => Arc::new(Int16Array::from(vec![0i16; n_rows])),
+                DataType::Int32 => Arc::new(Int32Array::from(vec![0i32; n_rows])),
+                DataType::Int64 => Arc::new(Int64Array::from(vec![0i64; n_rows])),
+                DataType::UInt8 => Arc::new(UInt8Array::from(vec![0u8; n_rows])),
+                DataType::UInt16 => Arc::new(UInt16Array::from(vec![0u16; n_rows])),
+                DataType::UInt32 => Arc::new(UInt32Array::from(vec![0u32; n_rows])),
+                DataType::UInt64 => Arc::new(UInt64Array::from(vec![0u64; n_rows])),
+                DataType::Float32 => Arc::new(Float32Array::from(vec![0.0f32; n_rows])),
+                DataType::Float64 => Arc::new(Float64Array::from(vec![0.0f64; n_rows])),
+                DataType::Utf8 => Arc::new(StringArray::from(vec![""; n_rows])),
+                DataType::LargeUtf8 => Arc::new(LargeStringArray::from(vec![""; n_rows])),
+                DataType::Date32 => Arc::new(Date32Array::from(vec![0i32; n_rows])),
+                DataType::Date64 => Arc::new(Date64Array::from(vec![0i64; n_rows])),
+                DataType::Decimal128(p, s) => Arc::new(
+                    Decimal128Array::from(vec![0i128; n_rows])
+                        .with_precision_and_scale(*p, *s)
+                        .map_err(|e| anyhow::anyhow!("invalid decimal128 precision/scale: {e}"))?,
+                ),
+                dt => anyhow::bail!("unsupported data type in seed batch: {dt}"),
+            };
+            Ok(arr)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(arrow::record_batch::RecordBatch::try_new(
+        Arc::clone(schema),
+        arrays,
+    )?)
+}
+
+fn batch_to_ipc_bytes(batch: &arrow::record_batch::RecordBatch) -> anyhow::Result<Vec<u8>> {
+    use arrow_ipc::writer::StreamWriter;
+    let mut buf = Vec::new();
+    let mut writer = StreamWriter::try_new(&mut buf, &batch.schema())?;
+    writer.write(batch)?;
+    writer.finish()?;
+    Ok(buf)
 }

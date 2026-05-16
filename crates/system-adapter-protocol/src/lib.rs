@@ -75,8 +75,9 @@ limitations under the License.
 //!         metadata: HashMap<String, serde_json::Value>,
 //!         datasets: HashMap<String, DatasetConfig>,
 //!         etl_sink_type: Option<EtlSinkType>,
+//!         seed_data: HashMap<String, String>,
 //!     ) -> Result<SetupResponse, String> {
-//!         let _ = (metadata, datasets, etl_sink_type);
+//!         let _ = (metadata, datasets, etl_sink_type, seed_data);
 //!         Ok(SetupResponse {
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
@@ -185,6 +186,12 @@ pub struct SetupRequest {
     /// Optional ETL sink type selected by spicebench.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub etl_sink_type: Option<EtlSinkType>,
+    /// Seed records for schema bootstrapping, keyed by dataset name.
+    /// Each value is an Arrow IPC stream (base64-encoded). Adapters that
+    /// require pre-existing records for schema inference (e.g. DynamoDB,
+    /// MongoDB) should write these before starting the system under test.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub seed_data: HashMap<String, String>,
 }
 
 /// Response from setup request containing ADBC connection information

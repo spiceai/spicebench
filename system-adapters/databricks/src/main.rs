@@ -1917,6 +1917,7 @@ impl Handler for DatabricksAdapter {
         metadata: HashMap<String, Value>,
         datasets: HashMap<String, DatasetConfig>,
         etl_sink_type: Option<EtlSinkType>,
+        _seed_data: HashMap<String, String>,
     ) -> std::result::Result<SetupResponse, String> {
         let _ = etl_sink_type;
         eprintln!("[databricks-adapter] setup: run_id={run_id}");

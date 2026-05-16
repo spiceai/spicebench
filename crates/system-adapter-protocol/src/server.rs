@@ -78,6 +78,7 @@ pub trait Handler: Send + Sync {
         metadata: HashMap<String, serde_json::Value>,
         datasets: HashMap<String, DatasetConfig>,
         etl_sink_type: Option<EtlSinkType>,
+        seed_data: HashMap<String, String>,
     ) -> std::result::Result<SetupResponse, String>;
 
     /// Teardown a benchmark run
@@ -262,7 +263,7 @@ impl<H: Handler> Server<H> {
         };
         Self::handler_response(
             self.handler
-                .setup(req.run_id, req.metadata, req.datasets, req.etl_sink_type)
+                .setup(req.run_id, req.metadata, req.datasets, req.etl_sink_type, req.seed_data)
                 .await,
             id,
         )
@@ -330,6 +331,7 @@ mod tests {
             _metadata: HashMap<String, serde_json::Value>,
             _datasets: HashMap<String, DatasetConfig>,
             _etl_sink_type: Option<EtlSinkType>,
+            _seed_data: HashMap<String, String>,
         ) -> std::result::Result<SetupResponse, String> {
             Ok(SetupResponse {
                 driver: crate::AdbcDriver::Flightsql,

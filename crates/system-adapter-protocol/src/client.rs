@@ -187,12 +187,14 @@ impl Client {
         metadata: std::collections::HashMap<String, serde_json::Value>,
         datasets: std::collections::HashMap<String, crate::DatasetConfig>,
         etl_sink_type: Option<crate::EtlSinkType>,
+        seed_data: std::collections::HashMap<String, String>,
     ) -> Result<crate::SetupResponse> {
         let request = crate::SetupRequest {
             run_id,
             metadata,
             datasets,
             etl_sink_type,
+            seed_data,
         };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::SETUP, request);
         let response = self.call_typed(rpc_request).await?;
