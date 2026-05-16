@@ -81,6 +81,8 @@ limitations under the License.
 //!             driver: AdbcDriver::Flightsql,
 //!             db_kwargs: HashMap::new(),
 //!             catalog_namespace: None,
+//!             read_driver: None,
+//!             endpoints: HashMap::new(),
 //!         })
 //!     }
 //!
@@ -198,6 +200,19 @@ pub struct SetupResponse {
     pub catalog_namespace: Option<String>,
     /// Optional read driver to use for reading data from the benchmark tables.
     pub read_driver: Option<(AdbcDriver, HashMap<String, serde_json::Value>)>,
+    /// Additional non-ADBC transports the SUT exposes, keyed by transport
+    /// identifier. Each value is a free-form kwargs map (mirroring `db_kwargs`
+    /// in shape) whose keys are interpreted by the consumer based on the
+    /// transport identifier. Lets adapters expose endpoints that aren't
+    /// reachable through an ADBC driver (e.g. Spice-specific HTTP APIs)
+    /// without growing the protocol every time a new field is needed.
+    ///
+    /// Well-known transport keys and their kwargs:
+    /// - `spice.http.v1.queries` — Spice's async query API
+    ///   (`POST /v1/queries`). Kwargs: `url` (required), `authorization_header`
+    ///   (optional). Used to benchmark the distributed (Ballista) query path.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub endpoints: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 /// Request to teardown a benchmark run
 ///
