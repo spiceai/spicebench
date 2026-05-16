@@ -51,11 +51,13 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A generic ADBC connection wrapping [`adbc_driver_manager::ManagedConnection`].
+
 ///
 /// Use a connector-specific builder (e.g. [`databricks::connect`]) to obtain an instance.
 pub struct AdbcConnection {
     conn: adbc_driver_manager::ManagedConnection,
     downcast_utf8view: bool,
+    downcast_decimal: bool,
     resolve_opaque_numerics: bool,
 }
 
@@ -65,11 +67,13 @@ impl AdbcConnection {
     pub fn new(
         conn: adbc_driver_manager::ManagedConnection,
         downcast_utf8view: bool,
+        downcast_decimal: bool,
         resolve_opaque_numerics: bool,
     ) -> Self {
         Self {
             conn,
             downcast_utf8view,
+            downcast_decimal,
             resolve_opaque_numerics,
         }
     }
@@ -115,6 +119,7 @@ impl AdbcConnection {
         Ok(Self::new(
             conn,
             driver_name == "databricks",
+            driver_name == "postgresql",
             driver_name == "postgresql" || driver_name == "databricks",
         ))
     }
@@ -190,6 +195,11 @@ impl AdbcConnection {
         } else {
             batch
         };
+        let batch = if self.downcast_decimal {
+            downcast_decimal(&batch)
+        } else {
+            batch
+        };
 
         self.bulk_ingest_stream(
             target_table,
@@ -218,6 +228,11 @@ impl AdbcConnection {
     ) -> Result<Option<i64>> {
         let reader: Box<dyn arrow_array::RecordBatchReader + Send> = if self.downcast_utf8view {
             Box::new(DowncastUtf8ViewReader::new(reader))
+        } else {
+            reader
+        };
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = if self.downcast_decimal {
+            Box::new(DowncastDecimalReader::new(reader))
         } else {
             reader
         };
@@ -335,6 +350,75 @@ impl Iterator for DowncastUtf8ViewReader {
 }
 
 impl arrow_array::RecordBatchReader for DowncastUtf8ViewReader {
+    fn schema(&self) -> Arc<Schema> {
+        self.schema.clone()
+    }
+}
+
+/// Cast `Decimal128` columns to `Float64` so the PostgreSQL ADBC driver can
+/// encode them via COPY binary without producing an invalid `dscale` field.
+fn downcast_decimal(batch: &RecordBatch) -> RecordBatch {
+    let schema = batch.schema();
+    let mut fields = Vec::with_capacity(schema.fields().len());
+    let mut columns = Vec::with_capacity(schema.fields().len());
+
+    for (i, field) in schema.fields().iter().enumerate() {
+        match field.data_type() {
+            DataType::Decimal128(_, _) => {
+                fields.push(Arc::new(Field::new(
+                    field.name(),
+                    DataType::Float64,
+                    field.is_nullable(),
+                )));
+                columns.push(cast(batch.column(i), &DataType::Float64).unwrap());
+            }
+            _ => {
+                fields.push(field.clone());
+                columns.push(batch.column(i).clone());
+            }
+        }
+    }
+
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+/// Wraps a [`RecordBatchReader`] and casts any `Decimal128` columns to `Float64`
+/// on each yielded batch.
+struct DowncastDecimalReader {
+    inner: Box<dyn arrow_array::RecordBatchReader + Send>,
+    schema: Arc<Schema>,
+}
+
+impl DowncastDecimalReader {
+    fn new(inner: Box<dyn arrow_array::RecordBatchReader + Send>) -> Self {
+        let original_schema = inner.schema();
+        let fields: Vec<Arc<Field>> = original_schema
+            .fields()
+            .iter()
+            .map(|f| {
+                if matches!(f.data_type(), DataType::Decimal128(_, _)) {
+                    Arc::new(Field::new(f.name(), DataType::Float64, f.is_nullable()))
+                } else {
+                    f.clone()
+                }
+            })
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        Self { inner, schema }
+    }
+}
+
+impl Iterator for DowncastDecimalReader {
+    type Item = std::result::Result<RecordBatch, arrow::error::ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|result| result.map(|batch| downcast_decimal(&batch)))
+    }
+}
+
+impl arrow_array::RecordBatchReader for DowncastDecimalReader {
     fn schema(&self) -> Arc<Schema> {
         self.schema.clone()
     }
