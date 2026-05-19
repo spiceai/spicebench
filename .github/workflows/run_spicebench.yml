@@ -22,7 +22,7 @@ on:
           - spice_cloud
           - databricks-sql
           - databricks-lakebase
-          - postgres
+          - postgres-cdc-cayenne
       etl_type:
         description: 'ETL type'
         required: true
@@ -65,7 +65,7 @@ jobs:
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
 
       - name: Log in to GHCR
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || env.SYSTEM_UNDER_TEST == 'postgres' }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -73,7 +73,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: pull spidapter image
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || env.SYSTEM_UNDER_TEST == 'postgres' }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') }}
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
       - uses: ./.github/actions/build-spicebench
@@ -219,7 +219,7 @@ jobs:
           sudo ldconfig
 
       - name: Install ADBC Postgres driver
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') || env.SYSTEM_UNDER_TEST == 'postgres' }}
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') }}
         uses: columnar-tech/setup-dbc@v1
         with:
           drivers: postgresql
