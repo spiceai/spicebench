@@ -114,7 +114,7 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-          PG_HOST: ${{ secrets.POSTGRES_PG_HOST }}
+          PG_HOST: ${{ vars.POSTGRES_PG_HOST }}
           PG_USER: ${{ secrets.POSTGRES_PG_USER }}
           PG_DATABASE: ${{ vars.POSTGRES_PG_DATABASE }}
         run: |
