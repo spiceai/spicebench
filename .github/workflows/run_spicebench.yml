@@ -23,6 +23,7 @@ on:
           - databricks-sql
           - databricks-lakebase
           - postgres-cdc-cayenne
+          - postgres-cdc-duckdb
       etl_type:
         description: 'ETL type'
         required: true
@@ -346,8 +347,12 @@ jobs:
             fi
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "postgres" ]; then
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=statement
+            case "${SYSTEM_UNDER_TEST}" in
+              postgres-cdc-duckdb) PG_ACCEL="duckdb" ;;
+              *)                   PG_ACCEL="cayenne" ;;
+            esac
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e PG_HOST=${PG_HOST} -e PG_PORT=${PG_PORT} -e PG_USER=${PG_USER} -e PG_PASSWORD=${PG_PASSWORD} -e PG_DATABASE=${PG_DATABASE} ghcr.io/spiceai/spidapter:latest stdio --backend local --deployment-mode single-node"
+            ADAPTER_ARGS="run -i -e PG_HOST=${PG_HOST} -e PG_PORT=${PG_PORT} -e PG_USER=${PG_USER} -e PG_PASSWORD=${PG_PASSWORD} -e PG_DATABASE=${PG_DATABASE} ghcr.io/spiceai/spidapter:latest stdio --backend local --deployment-mode single-node --pg-acceleration ${PG_ACCEL}"
             ADAPTER_ENVS=""
           else
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
