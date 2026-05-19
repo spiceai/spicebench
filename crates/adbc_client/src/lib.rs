@@ -118,7 +118,7 @@ impl AdbcConnection {
 
         Ok(Self::new(
             conn,
-            driver_name == "databricks",
+            driver_name == "databricks" || driver_name.eq_ignore_ascii_case("dynamodb"),
             driver_name == "postgresql",
             driver_name == "postgresql" || driver_name == "databricks",
         ))

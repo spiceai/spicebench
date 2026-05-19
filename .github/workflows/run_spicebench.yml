@@ -14,7 +14,7 @@ on:
         options:
           - tpch
       system_under_test:
-        description: 'System under test (spice_cloud via spidapter docker image, or local databricks adapter modes)'
+        description: 'System under test (spice_cloud via spidapter docker image, local databricks adapter modes, or postgres via spidapter local backend)'
         required: true
         default: spice_cloud
         type: choice
@@ -22,6 +22,7 @@ on:
           - spice_cloud
           - databricks-sql
           - databricks-lakebase
+          - postgres
       etl_type:
         description: 'ETL type'
         required: true
@@ -64,7 +65,7 @@ jobs:
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
 
       - name: Log in to GHCR
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || env.SYSTEM_UNDER_TEST == 'postgres' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -72,7 +73,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: pull spidapter image
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || env.SYSTEM_UNDER_TEST == 'postgres' }}
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
       - uses: ./.github/actions/build-spicebench
@@ -112,6 +113,9 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+          PG_HOST: ${{ secrets.POSTGRES_PG_HOST }}
+          PG_USER: ${{ secrets.POSTGRES_PG_USER }}
+          PG_DATABASE: ${{ vars.POSTGRES_PG_DATABASE }}
         run: |
           set -euo pipefail
           SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
@@ -165,6 +169,25 @@ jobs:
               "${HOME}/.spice/bin/databricks-system-adapter" --help >/dev/null
               ;;
 
+            postgres)
+              for required_var in PG_HOST PG_USER PG_DATABASE; do
+                if [ -z "${!required_var:-}" ]; then
+                  echo "${required_var} must be set for postgres adapter mode"
+                  exit 1
+                fi
+              done
+
+              if ! command -v docker >/dev/null 2>&1; then
+                echo "docker is required for postgres mode"
+                exit 1
+              fi
+
+              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
+                echo "spidapter docker image not found locally; pull step may have failed"
+                exit 1
+              }
+              ;;
+
             *)
               echo "Unsupported system_under_test value: ${SYSTEM_UNDER_TEST}"
               exit 1
@@ -196,7 +219,7 @@ jobs:
           sudo ldconfig
 
       - name: Install ADBC Postgres driver
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') }}
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') || env.SYSTEM_UNDER_TEST == 'postgres' }}
         uses: columnar-tech/setup-dbc@v1
         with:
           drivers: postgresql
@@ -239,6 +262,11 @@ jobs:
           LAKEBASE_PG_SCHEMA: ${{ vars.LAKEBASE_PG_SCHEMA }}
           LAKEBASE_PROJECT: ${{ vars.LAKEBASE_PROJECT }}
           LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
+          PG_HOST: ${{ vars.POSTGRES_PG_HOST }}
+          PG_PORT: ${{ vars.POSTGRES_PG_PORT || '5432' }}
+          PG_USER: ${{ secrets.POSTGRES_PG_USER }}
+          PG_PASSWORD: ${{ secrets.POSTGRES_PG_PASSWORD }}
+          PG_DATABASE: ${{ vars.POSTGRES_PG_DATABASE }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           SPIDAPTER_APP_MEMORY_LIMIT: '62Gi'
@@ -307,6 +335,20 @@ jobs:
             if [ -n "${DATABRICKS_STAGING_VOLUME_PATH:-}" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STAGING_VOLUME_PATH=${DATABRICKS_STAGING_VOLUME_PATH}"
             fi
+
+            if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PROJECT=${LAKEBASE_PROJECT}"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
+            fi
+          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "postgres" ]; then
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=statement
+            ADAPTER_CMD="docker"
+            ADAPTER_ARGS="run -i -e PG_HOST=${PG_HOST} -e PG_PORT=${PG_PORT} -e PG_USER=${PG_USER} -e PG_PASSWORD=${PG_PASSWORD} -e PG_DATABASE=${PG_DATABASE} ghcr.io/spiceai/spidapter:latest stdio --backend local --deployment-mode single-node"
+            ADAPTER_ENVS=""
           else
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
             export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
@@ -324,15 +366,6 @@ jobs:
 
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
-          fi
-
-          if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PROJECT=${LAKEBASE_PROJECT}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
           fi
 
           ~/.spice/bin/spicebench run \

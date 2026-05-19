@@ -139,6 +139,7 @@ pub async fn execute(args: &EtlArgs) -> anyhow::Result<()> {
                 args.adbc_catalog.clone(),
                 args.adbc_schema.clone(),
                 None,
+                std::collections::HashMap::new(),
             )?);
 
             (

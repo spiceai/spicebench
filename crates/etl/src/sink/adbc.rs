@@ -178,6 +178,10 @@ pub struct AdbcSink {
     bulk_ingest_stream_buffer: usize,
     /// Optional system adapter client for staging table creation.
     staging_adapter: Option<(Arc<Mutex<SystemAdapterClient>>, Uuid)>,
+    /// Optional mapping from logical dataset name to physical table name.
+    /// When set, overrides the table name used for ADBC bulk ingest so the
+    /// sink writes to the correct physical table (e.g. DynamoDB prefixed names).
+    table_name_map: HashMap<String, String>,
 }
 
 impl AdbcSink {
@@ -243,6 +247,7 @@ impl AdbcSink {
         target_db_catalog: Option<String>,
         target_db_schema: Option<String>,
         staging_adapter: Option<(Arc<Mutex<SystemAdapterClient>>, Uuid)>,
+        table_name_map: HashMap<String, String>,
     ) -> anyhow::Result<Self> {
         let update_strategy = UpdateStrategy::from_env()?;
         let pool_size = Self::pool_size();
@@ -278,6 +283,7 @@ impl AdbcSink {
             flush_stream_before_upsert,
             bulk_ingest_stream_buffer,
             staging_adapter,
+            table_name_map,
         })
     }
 
@@ -386,11 +392,32 @@ impl AdbcSink {
         };
 
         for sub_batch in sub_batches {
-            sender.send(sub_batch).await.map_err(|_| {
-                anyhow::anyhow!(
-                    "Bulk ingest stream for table '{table_name}' is no longer available"
-                )
-            })?;
+            if sender.send(sub_batch).await.is_err() {
+                // Worker exited before receiving this batch. Remove the stream and
+                // await the worker to surface the actual error rather than a generic
+                // "no longer available" message.
+                let stream = {
+                    let mut streams = self.bulk_ingest_streams.write().await;
+                    streams.remove(table_name)
+                };
+                let err = if let Some(stream) = stream {
+                    match stream.worker.await {
+                        Ok(Ok(())) => anyhow::anyhow!(
+                            "Bulk ingest worker for '{table_name}' exited without error but before all data was sent"
+                        ),
+                        Ok(Err(worker_err)) => worker_err
+                            .context(format!("Bulk ingest worker for '{table_name}' failed")),
+                        Err(join_err) => anyhow::anyhow!(
+                            "Bulk ingest worker for '{table_name}' panicked: {join_err}"
+                        ),
+                    }
+                } else {
+                    anyhow::anyhow!(
+                        "Bulk ingest stream for table '{table_name}' is no longer available"
+                    )
+                };
+                return Err(err);
+            }
             batches_sent.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -530,7 +557,10 @@ impl AdbcSink {
     }
 
     fn target_table_ingest_name(&self, table_name: &str) -> String {
-        table_name.to_string()
+        self.table_name_map
+            .get(table_name)
+            .cloned()
+            .unwrap_or_else(|| table_name.to_string())
     }
 
     fn create_table_sql(

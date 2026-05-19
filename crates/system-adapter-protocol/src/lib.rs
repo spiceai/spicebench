@@ -220,6 +220,12 @@ pub struct SetupResponse {
     ///   (optional). Used to benchmark the distributed (Ballista) query path.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub endpoints: HashMap<String, HashMap<String, serde_json::Value>>,
+    /// Optional mapping from logical dataset name to physical table name.
+    /// When set, the ETL sink will write to the physical name instead of the
+    /// logical dataset name (e.g. DynamoDB uses timestamped table name prefixes
+    /// to avoid collisions between concurrent benchmark runs).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub table_name_map: HashMap<String, String>,
 }
 /// Request to teardown a benchmark run
 ///

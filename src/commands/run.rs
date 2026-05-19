@@ -173,6 +173,7 @@ async fn run_benchmark(
             target_db_catalog,
             target_db_schema,
             Some((Arc::clone(&system_adapter_client), run_id)),
+            setup_response.table_name_map.clone(),
         )?);
 
         let mut pipeline = ETLPipeline::new(
@@ -428,8 +429,31 @@ fn make_zero_batch(
                 DataType::Float64 => Arc::new(Float64Array::from(vec![0.0f64; n_rows])),
                 DataType::Utf8 => Arc::new(StringArray::from(vec![""; n_rows])),
                 DataType::LargeUtf8 => Arc::new(LargeStringArray::from(vec![""; n_rows])),
+                DataType::Utf8View => Arc::new(StringViewArray::from(vec![""; n_rows])),
                 DataType::Date32 => Arc::new(Date32Array::from(vec![0i32; n_rows])),
                 DataType::Date64 => Arc::new(Date64Array::from(vec![0i64; n_rows])),
+                DataType::Timestamp(unit, tz) => {
+                    use arrow::datatypes::TimeUnit;
+                    let arr: ArrayRef = match unit {
+                        TimeUnit::Second => Arc::new(
+                            arrow::array::TimestampSecondArray::from(vec![0i64; n_rows])
+                                .with_timezone_opt(tz.clone()),
+                        ),
+                        TimeUnit::Millisecond => Arc::new(
+                            arrow::array::TimestampMillisecondArray::from(vec![0i64; n_rows])
+                                .with_timezone_opt(tz.clone()),
+                        ),
+                        TimeUnit::Microsecond => Arc::new(
+                            arrow::array::TimestampMicrosecondArray::from(vec![0i64; n_rows])
+                                .with_timezone_opt(tz.clone()),
+                        ),
+                        TimeUnit::Nanosecond => Arc::new(
+                            arrow::array::TimestampNanosecondArray::from(vec![0i64; n_rows])
+                                .with_timezone_opt(tz.clone()),
+                        ),
+                    };
+                    arr
+                }
                 DataType::Decimal128(p, s) => Arc::new(
                     Decimal128Array::from(vec![0i128; n_rows])
                         .with_precision_and_scale(*p, *s)

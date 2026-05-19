@@ -263,7 +263,13 @@ impl<H: Handler> Server<H> {
         };
         Self::handler_response(
             self.handler
-                .setup(req.run_id, req.metadata, req.datasets, req.etl_sink_type, req.seed_data)
+                .setup(
+                    req.run_id,
+                    req.metadata,
+                    req.datasets,
+                    req.etl_sink_type,
+                    req.seed_data,
+                )
                 .await,
             id,
         )
