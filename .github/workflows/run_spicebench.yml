@@ -59,7 +59,7 @@ jobs:
       - uses: ./.github/actions/setup-cc
 
       - uses: ./.github/actions/management-login
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') }}
         with:
           token-url: https://spice.ai/api/oauth/token
           client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
@@ -268,6 +268,10 @@ jobs:
           PG_USER: ${{ secrets.POSTGRES_PG_USER }}
           PG_PASSWORD: ${{ secrets.POSTGRES_PG_PASSWORD }}
           PG_DATABASE: ${{ vars.POSTGRES_PG_DATABASE }}
+          EC2_SUBNET_ID: ${{ vars.EC2_SUBNET_ID }}
+          EC2_SECURITY_GROUP_ID: ${{ vars.EC2_SECURITY_GROUP_ID }}
+          EC2_AMI_ID: ${{ vars.EC2_AMI_ID }}
+          EC2_INSTANCE_TYPE: ${{ vars.EC2_INSTANCE_TYPE }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           SPIDAPTER_APP_MEMORY_LIMIT: '62Gi'
@@ -348,11 +352,16 @@ jobs:
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "postgres" ]; then
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=statement
             case "${SYSTEM_UNDER_TEST}" in
-              postgres-cdc-duckdb) PG_ACCEL="duckdb" ;;
-              *)                   PG_ACCEL="cayenne" ;;
+              postgres-cdc-duckdb) PG_ACCELERATION="duckdb" ;;
+              *)                   PG_ACCELERATION="cayenne" ;;
             esac
             ADAPTER_CMD="docker"
-            ADAPTER_ARGS="run -i -e PG_HOST=${PG_HOST} -e PG_PORT=${PG_PORT} -e PG_USER=${PG_USER} -e PG_PASSWORD=${PG_PASSWORD} -e PG_DATABASE=${PG_DATABASE} ghcr.io/spiceai/spidapter:latest stdio --backend local --deployment-mode single-node --pg-acceleration ${PG_ACCEL}"
+            ADAPTER_DOCKER_OPTS="run -i -e PG_HOST=${PG_HOST} -e PG_PORT=${PG_PORT} -e PG_USER=${PG_USER} -e PG_PASSWORD=${PG_PASSWORD} -e PG_DATABASE=${PG_DATABASE} -e PG_ACCELERATION=${PG_ACCELERATION}"
+            ADAPTER_DOCKER_OPTS="run -i -e PG_HOST -e PG_PORT -e PG_USER -e PG_PASSWORD -e PG_DATABASE -e PG_ACCELERATION -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --deployment-mode single-node --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           else
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
