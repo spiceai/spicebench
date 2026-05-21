@@ -36,6 +36,7 @@ tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tonic.workspace = true
+tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 sqlparser = { version = "0.61", features = ["visitor"] }
 

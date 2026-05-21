@@ -1359,8 +1359,8 @@ impl Sink for AdbcSink {
             InsertOp::Delete { .. } => "delete",
         };
 
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        tracing::debug!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
+        // let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
+        // tracing::debug!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
 
         if self.reuse_bulk_ingest_streams {
             let should_flush = match &op {
@@ -1521,18 +1521,18 @@ impl Sink for AdbcSink {
             Self::apply_row_count_delta(counter, op_label, rows_current)
         };
 
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        tracing::debug!(
-            "[adbc] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
-        );
+        // let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
+        // tracing::debug!(
+        //     "[adbc] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
+        // );
 
-        tracing::debug!(
-            table = %table_name,
-            op = op_label,
-            rows = rows_current,
-            elapsed_ms = write_start.elapsed().as_millis(),
-            "Sink::write completed"
-        );
+        // tracing::debug!(
+        //     table = %table_name,
+        //     op = op_label,
+        //     rows = rows_current,
+        //     elapsed_ms = write_start.elapsed().as_millis(),
+        //     "Sink::write completed"
+        // );
 
         Ok(())
     }

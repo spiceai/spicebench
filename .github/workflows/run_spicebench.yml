@@ -350,7 +350,9 @@ jobs:
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
             fi
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "postgres" ]; then
-            export SPICEBENCH_ADBC_UPDATE_STRATEGY=statement
+            SPICEBENCH_TARGET_BATCH_ROWS=500000
+            SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
+            SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
             case "${SYSTEM_UNDER_TEST}" in
               postgres-cdc-duckdb) PG_ACCELERATION="duckdb" ;;
               *)                   PG_ACCELERATION="cayenne" ;;
