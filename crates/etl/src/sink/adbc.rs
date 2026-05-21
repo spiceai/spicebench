@@ -1508,6 +1508,25 @@ impl Sink for AdbcSink {
                 .map(|counter| Self::apply_row_count_delta(counter, op_label, rows_current))
         };
 
+        let rows_total = if let Some(total) = existing_total {
+            total
+        } else {
+            let mut counts = self.row_counts.write().await;
+            let counter = counts
+                .entry(table_name.to_string())
+                .or_insert_with(|| AtomicU64::new(0));
+            Self::apply_row_count_delta(counter, op_label, rows_current)
+        };
+
+        tracing::debug!(
+            table = %table_name,
+            op = op_label,
+            rows = rows_current,
+            rows_total = rows_total,
+            elapsed_ms = write_start.elapsed().as_millis(),
+            "Sink::write completed"
+        );
+
         Ok(())
     }
 
