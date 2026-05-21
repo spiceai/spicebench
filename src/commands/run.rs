@@ -164,8 +164,15 @@ async fn run_benchmark(
                 });
         }
 
+        let write_schema = db_kwargs
+            .remove("spicebench.write_schema")
+            .and_then(|v| v.as_str().map(str::to_string));
         let (target_db_catalog, target_db_schema) =
-            infer_adbc_target_namespace(setup_response.catalog_namespace.as_deref());
+            infer_adbc_target_namespace(
+                write_schema
+                    .as_deref()
+                    .or(setup_response.catalog_namespace.as_deref()),
+            );
 
         let target_sink: Arc<dyn Sink> = Arc::new(AdbcSink::new(
             &driver_name,
