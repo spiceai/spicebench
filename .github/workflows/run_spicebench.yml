@@ -353,7 +353,7 @@ jobs:
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "postgres" ]; then
             SPICEBENCH_TARGET_BATCH_ROWS=50000
             SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
-            SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
+            SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
             case "${SYSTEM_UNDER_TEST}" in
               postgres-cdc-duckdb) PG_ACCELERATION="duckdb" ;;
               *)                   PG_ACCELERATION="cayenne" ;;
