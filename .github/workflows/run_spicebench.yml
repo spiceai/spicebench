@@ -121,7 +121,8 @@ jobs:
       - name: Build adbc-mongodb Rust driver
         if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.cache-adbc-mongodb.outputs.cache-hit != 'true' }}
         id: build-adbc-mongodb
-        run: cargo build --release --manifest-path adbc-drivers/mongodb/rust/Cargo.toml
+        working-directory: adbc-drivers/mongodb/rust
+        run: cargo build --release
 
       - name: Save adbc-mongodb cache
         if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.build-adbc-mongodb.outcome == 'success' }}
@@ -149,7 +150,8 @@ jobs:
       - name: Build adbc-dynamodb Rust driver
         if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.cache-adbc-dynamodb.outputs.cache-hit != 'true' }}
         id: build-adbc-dynamodb
-        run: cargo build --release --manifest-path adbc-drivers/dynamodb/rust/Cargo.toml
+        working-directory: adbc-drivers/dynamodb/rust
+        run: cargo build --release
 
       - name: Save adbc-dynamodb cache
         if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.build-adbc-dynamodb.outcome == 'success' }}
