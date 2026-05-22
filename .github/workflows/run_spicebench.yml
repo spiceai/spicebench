@@ -63,7 +63,7 @@ jobs:
       - uses: ./.github/actions/setup-cc
 
       - uses: ./.github/actions/management-login
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
         with:
           token-url: https://spice.ai/api/oauth/token
           client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
