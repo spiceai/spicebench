@@ -70,7 +70,7 @@ jobs:
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
 
       - name: Log in to GHCR
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -78,7 +78,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: pull spidapter image
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
       - uses: ./.github/actions/build-spicebench
@@ -107,6 +107,78 @@ jobs:
         with:
           path: ~/.spice/bin/databricks-system-adapter
           key: databricks-system-adapter-${{ runner.os }}-${{ hashFiles('system-adapters/databricks/Cargo.toml', 'system-adapters/databricks/Cargo.lock', 'system-adapters/databricks/src/**/*.rs', 'crates/system-adapter-protocol/Cargo.toml', 'crates/system-adapter-protocol/src/**/*.rs') }}
+
+      - name: Checkout adbc-mongodb Rust driver
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') }}
+        uses: actions/checkout@v6
+        with:
+          repository: spiceai/adbc-mongodb
+          ref: main
+          path: adbc-mongodb
+
+      - name: Restore adbc-mongodb cache
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') }}
+        id: cache-adbc-mongodb
+        uses: actions/cache/restore@v4
+        with:
+          path: adbc-mongodb/rust/target/release/libadbc_mongodb.so
+          key: adbc-mongodb-${{ runner.os }}-${{ hashFiles('adbc-mongodb/rust/Cargo.lock') }}
+          restore-keys: |
+            adbc-mongodb-${{ runner.os }}-
+
+      - name: Build adbc-mongodb Rust driver
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.cache-adbc-mongodb.outputs.cache-hit != 'true' }}
+        id: build-adbc-mongodb
+        run: cargo build --release --manifest-path adbc-mongodb/rust/Cargo.toml
+
+      - name: Save adbc-mongodb cache
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.build-adbc-mongodb.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: adbc-mongodb/rust/target/release/libadbc_mongodb.so
+          key: adbc-mongodb-${{ runner.os }}-${{ hashFiles('adbc-mongodb/rust/Cargo.lock') }}
+
+      - name: Install adbc-mongodb Rust driver
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') }}
+        run: |
+          sudo install -m 755 adbc-mongodb/rust/target/release/libadbc_mongodb.so /usr/local/lib/libmongodb.so
+          sudo ldconfig
+
+      - name: Checkout adbc-dynamodb Rust driver
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') }}
+        uses: actions/checkout@v6
+        with:
+          repository: spiceai/adbc-dynamodb
+          ref: main
+          path: adbc-dynamodb
+
+      - name: Restore adbc-dynamodb cache
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') }}
+        id: cache-adbc-dynamodb
+        uses: actions/cache/restore@v4
+        with:
+          path: adbc-dynamodb/rust/target/release/libadbc_dynamodb.so
+          key: adbc-dynamodb-${{ runner.os }}-${{ hashFiles('adbc-dynamodb/rust/Cargo.lock') }}
+          restore-keys: |
+            adbc-dynamodb-${{ runner.os }}-
+
+      - name: Build adbc-dynamodb Rust driver
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.cache-adbc-dynamodb.outputs.cache-hit != 'true' }}
+        id: build-adbc-dynamodb
+        run: cargo build --release --manifest-path adbc-dynamodb/rust/Cargo.toml
+
+      - name: Save adbc-dynamodb cache
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.build-adbc-dynamodb.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: adbc-dynamodb/rust/target/release/libadbc_dynamodb.so
+          key: adbc-dynamodb-${{ runner.os }}-${{ hashFiles('adbc-dynamodb/rust/Cargo.lock') }}
+
+      - name: Install adbc-dynamodb Rust driver
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') }}
+        run: |
+          sudo install -m 755 adbc-dynamodb/rust/target/release/libadbc_dynamodb.so /usr/local/lib/libdynamodb.so
+          sudo ldconfig
 
       - name: Validate adapter configuration
         env:
@@ -184,27 +256,17 @@ jobs:
               ;;
 
             mongodb)
-              if ! command -v docker >/dev/null 2>&1; then
-                echo "docker is required for postgres mode"
+              if [ ! -f /usr/local/lib/libmongodb.so ]; then
+                echo "MongoDB ADBC driver not found at /usr/local/lib/libmongodb.so; build step may have failed"
                 exit 1
               fi
-
-              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
-                echo "spidapter docker image not found locally; pull step may have failed"
-                exit 1
-              }
               ;;
 
             dynamodb)
-              if ! command -v docker >/dev/null 2>&1; then
-                echo "docker is required for postgres mode"
+              if [ ! -f /usr/local/lib/libdynamodb.so ]; then
+                echo "DynamoDB ADBC driver not found at /usr/local/lib/libdynamodb.so; build step may have failed"
                 exit 1
               fi
-
-              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
-                echo "spidapter docker image not found locally; pull step may have failed"
-                exit 1
-              }
               ;;
 
             *)
