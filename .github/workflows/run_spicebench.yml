@@ -118,10 +118,16 @@ jobs:
           restore-keys: |
             adbc-mongodb-${{ runner.os }}-
 
+      - name: Install Rust 1.94.1 for adbc-mongodb
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.cache-adbc-mongodb.outputs.cache-hit != 'true' }}
+        run: rustup toolchain install 1.94.1 --no-self-update
+
       - name: Build adbc-mongodb Rust driver
         if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.cache-adbc-mongodb.outputs.cache-hit != 'true' }}
         id: build-adbc-mongodb
         working-directory: adbc-drivers/mongodb/rust
+        env:
+          RUSTUP_TOOLCHAIN: "1.94.1"
         run: cargo build --release
 
       - name: Save adbc-mongodb cache
@@ -147,10 +153,16 @@ jobs:
           restore-keys: |
             adbc-dynamodb-${{ runner.os }}-
 
+      - name: Install Rust 1.94.1 for adbc-dynamodb
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.cache-adbc-dynamodb.outputs.cache-hit != 'true' }}
+        run: rustup toolchain install 1.94.1 --no-self-update
+
       - name: Build adbc-dynamodb Rust driver
         if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.cache-adbc-dynamodb.outputs.cache-hit != 'true' }}
         id: build-adbc-dynamodb
         working-directory: adbc-drivers/dynamodb/rust
+        env:
+          RUSTUP_TOOLCHAIN: "1.94.1"
         run: cargo build --release
 
       - name: Save adbc-dynamodb cache
