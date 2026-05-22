@@ -24,6 +24,10 @@ on:
           - databricks-lakebase
           - postgres-cdc-cayenne
           - postgres-cdc-duckdb
+          - mongodb-cdc-cayenne
+          - mongodb-cdc-duckdb
+          - dynamodb-cdc-cayenne
+          - dynamodb-cdc-duckdb
       etl_type:
         description: 'ETL type'
         required: true
@@ -358,6 +362,34 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage postgres --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ENVS=""
+          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
+            export SPICEBENCH_TARGET_BATCH_ROWS=50000
+            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=statement
+            case "${SYSTEM_UNDER_TEST}" in
+              mongodb-cdc-duckdb) SPICE_ACCELERATION="duckdb" ;;
+              *)                  SPICE_ACCELERATION="cayenne" ;;
+            esac
+            ADAPTER_CMD="docker"
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage mongo --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ENVS=""
+          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
+            export SPICEBENCH_TARGET_BATCH_ROWS=50000
+            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
+            case "${SYSTEM_UNDER_TEST}" in
+              dynamodb-cdc-duckdb) SPICE_ACCELERATION="duckdb" ;;
+              *)                   SPICE_ACCELERATION="cayenne" ;;
+            esac
+            ADAPTER_CMD="docker"
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage dynamodb --verbose --channel nightly"
             ADAPTER_ENVS=""
           else
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
