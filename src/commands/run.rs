@@ -130,10 +130,13 @@ async fn run_benchmark(
     // primary keys. MERGE INTO handles matching via the ON clause and uses
     // delete+insert execution, which conflicts with Cayenne's automatic
     // on_conflict: Upsert behavior on primary-key tables.
+    // Note: preserve PKs for system adapter setup (e.g. Lakebase synced tables
+    // require primary_key_columns) and only strip them for the ETL pipeline.
     let uses_staging_table = std::env::var("SPICEBENCH_ADBC_UPDATE_STRATEGY")
         .ok()
         .map(|v| v.eq_ignore_ascii_case("staging_table"))
         .unwrap_or(false);
+    let setup_datasets = datasets.clone();
     if uses_staging_table {
         for config in datasets.values_mut() {
             config.primary_key_columns.clear();
@@ -147,7 +150,7 @@ async fn run_benchmark(
             .setup(
                 run_id,
                 setup_metadata.clone(),
-                datasets.clone(),
+                setup_datasets,
                 Some(etl_sink_type),
                 seed_data,
             )
