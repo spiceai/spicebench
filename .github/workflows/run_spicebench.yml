@@ -263,11 +263,6 @@ jobs:
           LAKEBASE_PG_SCHEMA: ${{ vars.LAKEBASE_PG_SCHEMA }}
           LAKEBASE_PROJECT: ${{ vars.LAKEBASE_PROJECT }}
           LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
-          PG_HOST: ${{ vars.POSTGRES_PG_HOST }}
-          PG_PORT: ${{ vars.POSTGRES_PG_PORT || '5432' }}
-          PG_USER: ${{ secrets.POSTGRES_PG_USER }}
-          PG_PASSWORD: ${{ secrets.POSTGRES_PG_PASSWORD }}
-          PG_DATABASE: ${{ vars.POSTGRES_PG_DATABASE }}
           EC2_SUBNET_ID: ${{ vars.EC2_SUBNET_ID }}
           EC2_SECURITY_GROUP_ID: ${{ vars.EC2_SECURITY_GROUP_ID }}
           EC2_AMI_ID: ${{ vars.EC2_AMI_ID }}
@@ -355,14 +350,14 @@ jobs:
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
             case "${SYSTEM_UNDER_TEST}" in
-              postgres-cdc-duckdb) PG_ACCELERATION="duckdb" ;;
-              *)                   PG_ACCELERATION="cayenne" ;;
+              postgres-cdc-duckdb) SPICE_ACCELERATION="duckdb" ;;
+              *)                   SPICE_ACCELERATION="cayenne" ;;
             esac
             ADAPTER_CMD="docker"
-            ADAPTER_DOCKER_OPTS="run -i -e PG_HOST -e PG_PORT -e PG_USER -e PG_PASSWORD -e PG_DATABASE -e PG_ACCELERATION=${PG_ACCELERATION} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --deployment-mode single-node --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage postgres --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           else
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
