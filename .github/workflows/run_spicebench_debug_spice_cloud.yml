@@ -262,6 +262,7 @@ jobs:
             NO_TEARDOWN_ARG="--no-teardown"
           fi
 
+          set -x
           ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
@@ -274,4 +275,5 @@ jobs:
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
             ${SCHEDULER_STATE_ADAPTER_ENV} \
-            ${NO_TEARDOWN_ARG} \
+            ${NO_TEARDOWN_ARG}
+          set +x
