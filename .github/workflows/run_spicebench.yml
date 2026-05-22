@@ -1,5 +1,5 @@
 name: Run
-run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.etl_type}}
 
 on:
   schedule:
@@ -118,9 +118,6 @@ jobs:
           DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
           DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-          PG_HOST: ${{ vars.POSTGRES_PG_HOST }}
-          PG_USER: ${{ secrets.POSTGRES_PG_USER }}
-          PG_DATABASE: ${{ vars.POSTGRES_PG_DATABASE }}
         run: |
           set -euo pipefail
           SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
@@ -175,13 +172,30 @@ jobs:
               ;;
 
             postgres)
-              for required_var in PG_HOST PG_USER PG_DATABASE; do
-                if [ -z "${!required_var:-}" ]; then
-                  echo "${required_var} must be set for postgres adapter mode"
-                  exit 1
-                fi
-              done
+              if ! command -v docker >/dev/null 2>&1; then
+                echo "docker is required for postgres mode"
+                exit 1
+              fi
 
+              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
+                echo "spidapter docker image not found locally; pull step may have failed"
+                exit 1
+              }
+              ;;
+
+            mongodb)
+              if ! command -v docker >/dev/null 2>&1; then
+                echo "docker is required for postgres mode"
+                exit 1
+              fi
+
+              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
+                echo "spidapter docker image not found locally; pull step may have failed"
+                exit 1
+              }
+              ;;
+
+            dynamodb)
               if ! command -v docker >/dev/null 2>&1; then
                 echo "docker is required for postgres mode"
                 exit 1
