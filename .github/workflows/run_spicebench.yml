@@ -282,7 +282,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
-            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug,etl::sink::adbc=debug''
+            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug,etl::sink::adbc=debug'
           else
             export RUST_LOG='info'
           fi
