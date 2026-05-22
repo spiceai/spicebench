@@ -282,9 +282,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
-            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug,etl::sink::adbc=debug'
+            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug'
           else
-            export RUST_LOG='info'
+            export RUST_LOG='info,etl::sink::adbc=debug'
           fi
 
           TABLE_FORMAT="parquet"
@@ -383,6 +383,7 @@ jobs:
             ADAPTER_ENVS=""
           fi
 
+          set -x
           ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
@@ -394,4 +395,5 @@ jobs:
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             ${ADAPTER_ENVS} \
-            ${SCHEDULER_STATE_ADAPTER_ENV} \
+            ${SCHEDULER_STATE_ADAPTER_ENV}
+          set +x
