@@ -41,6 +41,7 @@ const DEFAULT_POOL_SIZE: u32 = 10;
 pub struct AdbcConnectionManager {
     database: Arc<ManagedDatabase>,
     downcast_utf8view: bool,
+    downcast_decimal: bool,
     resolve_opaque_numerics: bool,
 }
 
@@ -49,11 +50,13 @@ impl AdbcConnectionManager {
     pub fn new(
         database: ManagedDatabase,
         downcast_utf8view: bool,
+        downcast_decimal: bool,
         resolve_opaque_numerics: bool,
     ) -> Self {
         Self {
             database: Arc::new(database),
             downcast_utf8view,
+            downcast_decimal,
             resolve_opaque_numerics,
         }
     }
@@ -90,6 +93,7 @@ impl r2d2::ManageConnection for AdbcConnectionManager {
         Ok(AdbcConnection::new(
             conn,
             self.downcast_utf8view,
+            self.downcast_decimal,
             self.resolve_opaque_numerics,
         ))
     }
@@ -149,6 +153,7 @@ pub fn create_pool(
     let manager = AdbcConnectionManager::new(
         db,
         driver_name == "databricks",
+        driver_name == "postgresql",
         driver_name == "postgresql" || driver_name == "databricks",
     );
 
