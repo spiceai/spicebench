@@ -963,7 +963,7 @@ pub(crate) async fn run(
                                         checkpoint_idx,
                                         common_args.concurrency,
                                         Duration::from_secs(common_args.checkpoint_validation_period),
-                                        Duration::from_secs(600),
+                                        Duration::from_secs(common_args.checkpoint_validation_timeout),
                                         checkpoint_pause_time,
                                         query_catalog_namespace.as_deref(),
                                     )
@@ -1046,7 +1046,7 @@ pub(crate) async fn run(
                                         checkpoint_idx,
                                         common_args.concurrency,
                                         Duration::from_secs(common_args.checkpoint_validation_period),
-                                        Duration::from_secs(600),
+                                        Duration::from_secs(common_args.checkpoint_validation_timeout),
                                         checkpoint_pause_time,
                                         query_catalog_namespace.as_deref(),
                                     )

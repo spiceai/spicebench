@@ -20,7 +20,10 @@ arrow-cast = "57"
 async-trait.workspace = true
 chrono.workspace = true
 data-generation = { path = "../data-generation" }
+aws-config = { workspace = true, optional = true }
+aws-sdk-dynamodb = { workspace = true, optional = true }
 duckdb = { workspace = true, optional = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
+mongodb = { workspace = true, optional = true }
 indexmap = { workspace = true }
 object_store = { workspace = true }
 serde_json.workspace = true
@@ -34,4 +37,6 @@ uuid.workspace = true
 
 [features]
 default = []
+dynamodb = ["dep:aws-config", "dep:aws-sdk-dynamodb"]
 duckdb = ["dep:duckdb"]
+mongodb = ["dep:mongodb"]

@@ -24,24 +24,16 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
 };
 
-/// Result type for client operations
 pub type Result<T> = std::result::Result<T, ClientError>;
 
-/// Errors that can occur during client operations
 #[derive(Debug)]
 pub enum ClientError {
-    /// JSON-RPC error returned by the server
     JsonRpc(JsonRpcError),
-    /// I/O error during communication
     Io(std::io::Error),
-    /// JSON serialization/deserialization error
     Json(serde_json::Error),
-    /// HTTP transport error
     #[cfg(feature = "client")]
     Http(reqwest::Error),
-    /// Invalid response format
     InvalidResponse(String),
-    /// Transport-specific error
     Transport(String),
 }
 
@@ -80,15 +72,12 @@ impl From<reqwest::Error> for ClientError {
     }
 }
 
-/// System adapter client for JSON-RPC communication
 pub enum Client {
-    /// Stdio transport - communicate via stdin/stdout with a child process
     Stdio {
         _child: Box<Child>,
         stdin: ChildStdin,
         stdout: BufReader<ChildStdout>,
     },
-    /// HTTP transport - communicate via HTTP POST requests
     #[cfg(feature = "client")]
     Http {
         client: reqwest::Client,
@@ -97,7 +86,6 @@ pub enum Client {
 }
 
 impl Client {
-    /// Create a client using stdio transport by spawning a command
     pub fn stdio(
         command: impl AsRef<str>,
         args: Vec<String>,
@@ -115,8 +103,6 @@ impl Client {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit());
 
-        // Place the child in its own process group so it doesn't receive
-        // SIGINT when the user presses ctrl+c, allowing orderly teardown.
         #[cfg(unix)]
         cmd.process_group(0);
 
@@ -142,7 +128,6 @@ impl Client {
         })
     }
 
-    /// Create a client using HTTP transport
     #[cfg(feature = "client")]
     pub fn http(endpoint: impl Into<String>) -> Self {
         Self::Http {
@@ -151,7 +136,6 @@ impl Client {
         }
     }
 
-    /// Get the transport name
     pub fn transport_name(&self) -> &'static str {
         match self {
             Self::Stdio { .. } => "stdio",
@@ -160,7 +144,6 @@ impl Client {
         }
     }
 
-    /// Query available RPC methods from the server
     pub async fn rpc_methods(&mut self) -> Result<Vec<String>> {
         let request = JsonRpcRequest::new(1, methods::RPC_METHODS, serde_json::json!({}));
         let response: JsonRpcResponse<serde_json::Value> = self.call_typed(request).await?;
@@ -180,21 +163,18 @@ impl Client {
         Ok(methods)
     }
 
-    /// Setup a benchmark run
+    /// Set up a benchmark run. Creates tables/collections, starts spiced, and returns
+    /// both write-side sink config and read-side connection info in one call.
     pub async fn setup(
         &mut self,
         run_id: uuid::Uuid,
-        metadata: std::collections::HashMap<String, serde_json::Value>,
-        datasets: std::collections::HashMap<String, crate::DatasetConfig>,
-        etl_sink_type: Option<crate::EtlSinkType>,
-        seed_data: std::collections::HashMap<String, String>,
+        metadata: HashMap<String, serde_json::Value>,
+        datasets: HashMap<String, crate::DatasetConfig>,
     ) -> Result<crate::SetupResponse> {
         let request = crate::SetupRequest {
             run_id,
             metadata,
             datasets,
-            etl_sink_type,
-            seed_data,
         };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::SETUP, request);
         let response = self.call_typed(rpc_request).await?;
@@ -203,7 +183,6 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
-    /// Teardown a benchmark run
     pub async fn teardown(&mut self, run_id: uuid::Uuid) -> Result<crate::TeardownResponse> {
         let request = crate::TeardownRequest { run_id };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::TEARDOWN, request);
@@ -213,7 +192,6 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
-    /// Collect current metrics from the system under test
     pub async fn metrics(
         &mut self,
         run_id: uuid::Uuid,
@@ -232,9 +210,8 @@ impl Client {
 
     /// Create a staging table for MERGE-based updates.
     ///
-    /// If the remote adapter does not support this method (returns
-    /// `METHOD_NOT_FOUND`), the call is treated as a successful no-op so that
-    /// newer spicebench versions work against older adapters.
+    /// If the remote adapter does not support this method, the call is treated as a
+    /// successful no-op so that newer spicebench versions work against older adapters.
     pub async fn create_staging_table(
         &mut self,
         run_id: uuid::Uuid,
@@ -264,7 +241,6 @@ impl Client {
         }
     }
 
-    /// Make a typed JSON-RPC call with request and response types
     async fn call_typed<Req: Serialize, Resp: DeserializeOwned>(
         &mut self,
         request: JsonRpcRequest<Req>,
@@ -275,7 +251,6 @@ impl Client {
         Ok(response)
     }
 
-    /// Make a raw JSON-RPC call with serde_json::Value
     async fn call_raw(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
         match self {
             Self::Stdio {
@@ -331,7 +306,6 @@ impl Client {
     }
 }
 
-/// Builder for creating a `Client` with various configuration options
 pub struct ClientBuilder {
     transport: TransportConfig,
 }
@@ -347,7 +321,6 @@ enum TransportConfig {
 }
 
 impl ClientBuilder {
-    /// Create a builder for stdio transport
     pub fn stdio(command: impl Into<String>) -> Self {
         Self {
             transport: TransportConfig::Stdio {
@@ -358,7 +331,6 @@ impl ClientBuilder {
         }
     }
 
-    /// Create a builder for HTTP transport
     #[cfg(feature = "client")]
     pub fn http(endpoint: impl Into<String>) -> Self {
         Self {
@@ -368,7 +340,6 @@ impl ClientBuilder {
         }
     }
 
-    /// Add command-line arguments (stdio only)
     pub fn with_args(mut self, args: Vec<String>) -> Self {
         if let TransportConfig::Stdio {
             args: ref mut a, ..
@@ -379,7 +350,6 @@ impl ClientBuilder {
         self
     }
 
-    /// Add environment variables (stdio only)
     pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
         if let TransportConfig::Stdio { env: ref mut e, .. } = self.transport {
             *e = env;
@@ -387,7 +357,6 @@ impl ClientBuilder {
         self
     }
 
-    /// Build the client
     pub fn build(self) -> Result<Client> {
         match self.transport {
             TransportConfig::Stdio { command, args, env } => Client::stdio(command, args, env),

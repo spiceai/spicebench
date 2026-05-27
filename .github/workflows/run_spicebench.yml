@@ -254,6 +254,11 @@ jobs:
               ;;
 
             mongodb)
+              if [ -z "${SPICEAI_API_KEY:-}" ]; then
+                echo "SPICEAI_API_KEY must be set for mongodb"
+                exit 1
+              fi
+
               if [ ! -f /usr/local/lib/libmongodb.so ]; then
                 echo "MongoDB ADBC driver not found at /usr/local/lib/libmongodb.so; build step may have failed"
                 exit 1
@@ -261,6 +266,11 @@ jobs:
               ;;
 
             dynamodb)
+              if [ -z "${SPICEAI_API_KEY:-}" ]; then
+                echo "SPICEAI_API_KEY must be set for dynamodb"
+                exit 1
+              fi
+
               if [ ! -f /usr/local/lib/libdynamodb.so ]; then
                 echo "DynamoDB ADBC driver not found at /usr/local/lib/libdynamodb.so; build step may have failed"
                 exit 1

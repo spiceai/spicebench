@@ -23,6 +23,12 @@ pub mod null;
 #[cfg(feature = "duckdb")]
 pub mod duckdb;
 
+#[cfg(feature = "dynamodb")]
+pub mod dynamodb;
+
+#[cfg(feature = "mongodb")]
+pub mod mongodb;
+
 #[derive(Debug, Clone)]
 pub enum InsertOp {
     Insert,
@@ -50,3 +56,4 @@ pub trait Sink: Send + Sync + 'static {
         Ok(())
     }
 }
+

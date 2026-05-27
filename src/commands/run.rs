@@ -25,8 +25,11 @@ use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
 use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
+use etl::sink::{dynamodb::DynamoDbSink, mongodb::MongoDbSink};
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
+use system_adapter_protocol::SinkConfig;
 use test_framework::anyhow;
+
 use tokio::sync::Mutex;
 
 use crate::args::RunArgs;
@@ -115,15 +118,12 @@ async fn run_benchmark(
     let mutations = version_metadata.mutation_config();
     let data_source: Arc<dyn DataStorage> = file_storage.clone();
 
-    let etl_sink_type = system_adapter_protocol::EtlSinkType::Adbc;
-    let target_config = None;
-
     let mut datasets = ETLPipeline::create_tables_request_datasets(
         dataset_source.clone(),
         &generation_config,
         Arc::clone(&data_source),
         &mutations,
-        target_config.clone(),
+        None,
     )?;
 
     // When using the staging_table update strategy, tables must NOT have
@@ -142,89 +142,93 @@ async fn run_benchmark(
             config.primary_key_columns.clear();
         }
     }
-    let seed_data = generate_seed_data(&datasets, 5)?;
-    let (setup_response, mut pipeline) = {
-        let setup_response = system_adapter_client
-            .lock()
-            .await
-            .setup(
-                run_id,
-                setup_metadata.clone(),
-                setup_datasets,
-                Some(etl_sink_type),
-                seed_data,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
 
-        let driver_name = setup_response.driver.to_string();
-        let mut db_kwargs = setup_response.db_kwargs.clone();
-        if driver_name.eq_ignore_ascii_case("flightsql") {
-            db_kwargs
-                .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
-                .or_insert_with(|| {
-                    serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
-                });
+    // --- Step 1: setup — create tables/collections, start spiced, get write + read config ---
+    let setup_response = system_adapter_client
+        .lock()
+        .await
+        .setup(run_id, setup_metadata.clone(), setup_datasets)
+        .await
+        .map_err(|e| anyhow::anyhow!("setup failed: {e}"))?;
+
+    tracing::info!(sink_type = ?setup_response.sink, "Setup complete");
+
+    // --- Step 2: build the write sink from SinkConfig ---
+    let target_sink: Arc<dyn Sink> = match setup_response.sink {
+        SinkConfig::Adbc { driver, mut db_kwargs } => {
+            let driver_name = driver.to_string();
+            if driver_name.eq_ignore_ascii_case("flightsql") {
+                db_kwargs
+                    .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
+                    .or_insert_with(|| {
+                        serde_json::Value::String(
+                            DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string(),
+                        )
+                    });
+            }
+
+            let write_schema = db_kwargs
+                .remove("spicebench.write_schema")
+                .and_then(|v| v.as_str().map(str::to_string));
+
+            let (target_db_catalog, target_db_schema) =
+                infer_adbc_target_namespace(write_schema.as_deref());
+
+            Arc::new(AdbcSink::new(
+                &driver_name,
+                db_kwargs,
+                target_db_catalog,
+                target_db_schema,
+                Some((Arc::clone(&system_adapter_client), run_id)),
+                HashMap::new(),
+            )?)
         }
-
-        let write_schema = db_kwargs
-            .remove("spicebench.write_schema")
-            .and_then(|v| v.as_str().map(str::to_string));
-        let (target_db_catalog, target_db_schema) = infer_adbc_target_namespace(
-            write_schema
-                .as_deref()
-                .or(setup_response.catalog_namespace.as_deref()),
-        );
-
-        let target_sink: Arc<dyn Sink> = Arc::new(AdbcSink::new(
-            &driver_name,
-            db_kwargs,
-            target_db_catalog,
-            target_db_schema,
-            Some((Arc::clone(&system_adapter_client), run_id)),
-            setup_response.table_name_map.clone(),
-        )?);
-
-        let mut pipeline = ETLPipeline::new(
-            dataset_source,
-            &generation_config,
-            Arc::clone(&data_source),
-            target_sink,
-            &mutations,
-        )?;
-
-        pipeline.initialize().await?;
-
-        (setup_response, pipeline)
+        SinkConfig::DynamoDb {
+            region,
+            access_key_id,
+            secret_access_key,
+            session_token,
+        } => Arc::new(
+            DynamoDbSink::new(
+                region,
+                access_key_id,
+                secret_access_key,
+                session_token,
+                setup_response.catalog_namespace.clone(),
+            )
+            .await,
+        ),
+        SinkConfig::MongoDb { uri } => Arc::new(
+            MongoDbSink::new(&uri)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create MongoDB sink: {e}"))?,
+        ),
     };
 
-    let driver_name = setup_response.driver.to_string();
-    let mut db_kwargs = setup_response.db_kwargs.clone();
-    let query_catalog_namespace = setup_response.catalog_namespace.clone();
-    let read_driver = setup_response.read_driver.clone();
+    // --- Step 3: initialize ETL pipeline (writes batch 0 via the write sink) ---
+    let mut pipeline = ETLPipeline::new(
+        dataset_source,
+        &generation_config,
+        Arc::clone(&data_source),
+        target_sink,
+        &mutations,
+    )?;
+    pipeline.initialize().await?;
 
-    if driver_name.eq_ignore_ascii_case("flightsql") {
-        db_kwargs
+    let read_driver_name = setup_response.read_driver.to_string();
+    let mut read_db_kwargs = setup_response.read_db_kwargs;
+    let query_catalog_namespace = setup_response.catalog_namespace;
+
+    if read_driver_name.eq_ignore_ascii_case("flightsql") {
+        read_db_kwargs
             .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
             .or_insert_with(|| {
                 serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
             });
     }
 
-    // Allow system adapter to optionally provide read connection different from the write connection.
-    // If not specified - use the same connection as the write connection.
-    let (read_driver_name, read_db_kwargs) = match read_driver {
-        None => (driver_name.clone(), db_kwargs.clone()),
-        Some((read_driver, read_db_kwargs)) => (read_driver.to_string(), read_db_kwargs.clone()),
-    };
-
     // Size the read pool to accommodate both the test workers and the
-    // checkpoint validation executor running concurrently.  Each test worker
-    // holds one connection for the duration of a query, and during checkpoint
-    // validation `validate_full_query_set` runs up to `concurrency` queries
-    // in parallel via a *separate* executor backed by the same pool.  Without
-    // enough headroom the excess `pool.get()` calls block and eventually hit
-    // r2d2's 30-second connection timeout ("timed out waiting for connection").
+    // checkpoint validation executor running concurrently.
     let read_pool_size: u32 = (common.concurrency * 2 + 1).try_into().unwrap_or(u32::MAX);
     let read_pool =
         match adbc_client::create_pool(&read_driver_name, read_db_kwargs, Some(read_pool_size)) {
@@ -390,101 +394,4 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     }
 
     result
-}
-
-/// Generate a base64-encoded Arrow IPC stream for each dataset containing
-/// `n_rows` zero-value rows. Used to bootstrap schema inference in adapters
-/// (e.g. DynamoDB, MongoDB) that require pre-existing records before the
-/// system under test can start.
-fn generate_seed_data(
-    datasets: &HashMap<String, system_adapter_protocol::DatasetConfig>,
-    n_rows: usize,
-) -> anyhow::Result<HashMap<String, String>> {
-    use base64::Engine as _;
-    datasets
-        .iter()
-        .map(|(name, config)| {
-            let batch = make_zero_batch(&config.schema, n_rows)?;
-            let ipc_bytes = batch_to_ipc_bytes(&batch)?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&ipc_bytes);
-            Ok((name.clone(), encoded))
-        })
-        .collect()
-}
-
-fn make_zero_batch(
-    schema: &arrow_schema::SchemaRef,
-    n_rows: usize,
-) -> anyhow::Result<arrow::record_batch::RecordBatch> {
-    use arrow::array::*;
-    use arrow::datatypes::DataType;
-    use std::sync::Arc;
-
-    let arrays = schema
-        .fields()
-        .iter()
-        .map(|field| -> anyhow::Result<arrow::array::ArrayRef> {
-            let arr: ArrayRef = match field.data_type() {
-                DataType::Boolean => Arc::new(BooleanArray::from(vec![false; n_rows])),
-                DataType::Int8 => Arc::new(Int8Array::from(vec![0i8; n_rows])),
-                DataType::Int16 => Arc::new(Int16Array::from(vec![0i16; n_rows])),
-                DataType::Int32 => Arc::new(Int32Array::from(vec![0i32; n_rows])),
-                DataType::Int64 => Arc::new(Int64Array::from(vec![0i64; n_rows])),
-                DataType::UInt8 => Arc::new(UInt8Array::from(vec![0u8; n_rows])),
-                DataType::UInt16 => Arc::new(UInt16Array::from(vec![0u16; n_rows])),
-                DataType::UInt32 => Arc::new(UInt32Array::from(vec![0u32; n_rows])),
-                DataType::UInt64 => Arc::new(UInt64Array::from(vec![0u64; n_rows])),
-                DataType::Float32 => Arc::new(Float32Array::from(vec![0.0f32; n_rows])),
-                DataType::Float64 => Arc::new(Float64Array::from(vec![0.0f64; n_rows])),
-                DataType::Utf8 => Arc::new(StringArray::from(vec![""; n_rows])),
-                DataType::LargeUtf8 => Arc::new(LargeStringArray::from(vec![""; n_rows])),
-                DataType::Utf8View => Arc::new(StringViewArray::from(vec![""; n_rows])),
-                DataType::Date32 => Arc::new(Date32Array::from(vec![0i32; n_rows])),
-                DataType::Date64 => Arc::new(Date64Array::from(vec![0i64; n_rows])),
-                DataType::Timestamp(unit, tz) => {
-                    use arrow::datatypes::TimeUnit;
-                    let arr: ArrayRef = match unit {
-                        TimeUnit::Second => Arc::new(
-                            arrow::array::TimestampSecondArray::from(vec![0i64; n_rows])
-                                .with_timezone_opt(tz.clone()),
-                        ),
-                        TimeUnit::Millisecond => Arc::new(
-                            arrow::array::TimestampMillisecondArray::from(vec![0i64; n_rows])
-                                .with_timezone_opt(tz.clone()),
-                        ),
-                        TimeUnit::Microsecond => Arc::new(
-                            arrow::array::TimestampMicrosecondArray::from(vec![0i64; n_rows])
-                                .with_timezone_opt(tz.clone()),
-                        ),
-                        TimeUnit::Nanosecond => Arc::new(
-                            arrow::array::TimestampNanosecondArray::from(vec![0i64; n_rows])
-                                .with_timezone_opt(tz.clone()),
-                        ),
-                    };
-                    arr
-                }
-                DataType::Decimal128(p, s) => Arc::new(
-                    Decimal128Array::from(vec![0i128; n_rows])
-                        .with_precision_and_scale(*p, *s)
-                        .map_err(|e| anyhow::anyhow!("invalid decimal128 precision/scale: {e}"))?,
-                ),
-                dt => anyhow::bail!("unsupported data type in seed batch: {dt}"),
-            };
-            Ok(arr)
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
-    Ok(arrow::record_batch::RecordBatch::try_new(
-        Arc::clone(schema),
-        arrays,
-    )?)
-}
-
-fn batch_to_ipc_bytes(batch: &arrow::record_batch::RecordBatch) -> anyhow::Result<Vec<u8>> {
-    use arrow_ipc::writer::StreamWriter;
-    let mut buf = Vec::new();
-    let mut writer = StreamWriter::try_new(&mut buf, &batch.schema())?;
-    writer.write(batch)?;
-    writer.finish()?;
-    Ok(buf)
 }
