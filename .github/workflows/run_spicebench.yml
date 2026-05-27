@@ -24,8 +24,8 @@ on:
           - databricks-lakebase
           - postgres-cdc-cayenne
           - postgres-cdc-duckdb
-          - mongodb-cdc-cayenne
-          - mongodb-cdc-duckdb
+          - postgres-debezium-cayenne
+          - postgres-debezium-duckdb
           - dynamodb-cdc-cayenne
           - dynamodb-cdc-duckdb
       etl_type:
@@ -63,14 +63,14 @@ jobs:
       - uses: ./.github/actions/setup-cc
 
       - uses: ./.github/actions/management-login
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
         with:
           token-url: https://spice.ai/api/oauth/token
           client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
 
       - name: Log in to GHCR
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -78,7 +78,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: pull spidapter image
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
       - uses: ./.github/actions/build-spicebench
@@ -107,76 +107,6 @@ jobs:
         with:
           path: ~/.spice/bin/databricks-system-adapter
           key: databricks-system-adapter-${{ runner.os }}-${{ hashFiles('system-adapters/databricks/Cargo.toml', 'system-adapters/databricks/Cargo.lock', 'system-adapters/databricks/src/**/*.rs', 'crates/system-adapter-protocol/Cargo.toml', 'crates/system-adapter-protocol/src/**/*.rs') }}
-
-      - name: Restore adbc-mongodb cache
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') }}
-        id: cache-adbc-mongodb
-        uses: actions/cache/restore@v4
-        with:
-          path: adbc-drivers/mongodb/rust/target/release/libadbc_mongodb.so
-          key: adbc-mongodb-${{ runner.os }}-${{ hashFiles('adbc-drivers/mongodb/rust/Cargo.lock') }}
-          restore-keys: |
-            adbc-mongodb-${{ runner.os }}-
-
-      - name: Install Rust 1.94.1 for adbc-mongodb
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.cache-adbc-mongodb.outputs.cache-hit != 'true' }}
-        run: rustup toolchain install 1.94.1 --no-self-update
-
-      - name: Build adbc-mongodb Rust driver
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.cache-adbc-mongodb.outputs.cache-hit != 'true' }}
-        id: build-adbc-mongodb
-        working-directory: adbc-drivers/mongodb/rust
-        env:
-          RUSTUP_TOOLCHAIN: "1.94.1"
-        run: cargo build --release
-
-      - name: Save adbc-mongodb cache
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') && steps.build-adbc-mongodb.outcome == 'success' }}
-        uses: actions/cache/save@v4
-        with:
-          path: adbc-drivers/mongodb/rust/target/release/libadbc_mongodb.so
-          key: adbc-mongodb-${{ runner.os }}-${{ hashFiles('adbc-drivers/mongodb/rust/Cargo.lock') }}
-
-      - name: Install adbc-mongodb Rust driver
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'mongodb') }}
-        run: |
-          sudo install -m 755 adbc-drivers/mongodb/rust/target/release/libadbc_mongodb.so /usr/local/lib/libmongodb.so
-          sudo ldconfig
-
-      - name: Restore adbc-dynamodb cache
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') }}
-        id: cache-adbc-dynamodb
-        uses: actions/cache/restore@v4
-        with:
-          path: adbc-drivers/dynamodb/rust/target/release/libadbc_dynamodb.so
-          key: adbc-dynamodb-${{ runner.os }}-${{ hashFiles('adbc-drivers/dynamodb/rust/Cargo.lock') }}
-          restore-keys: |
-            adbc-dynamodb-${{ runner.os }}-
-
-      - name: Install Rust 1.94.1 for adbc-dynamodb
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.cache-adbc-dynamodb.outputs.cache-hit != 'true' }}
-        run: rustup toolchain install 1.94.1 --no-self-update
-
-      - name: Build adbc-dynamodb Rust driver
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.cache-adbc-dynamodb.outputs.cache-hit != 'true' }}
-        id: build-adbc-dynamodb
-        working-directory: adbc-drivers/dynamodb/rust
-        env:
-          RUSTUP_TOOLCHAIN: "1.94.1"
-        run: cargo build --release
-
-      - name: Save adbc-dynamodb cache
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') && steps.build-adbc-dynamodb.outcome == 'success' }}
-        uses: actions/cache/save@v4
-        with:
-          path: adbc-drivers/dynamodb/rust/target/release/libadbc_dynamodb.so
-          key: adbc-dynamodb-${{ runner.os }}-${{ hashFiles('adbc-drivers/dynamodb/rust/Cargo.lock') }}
-
-      - name: Install adbc-dynamodb Rust driver
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb') }}
-        run: |
-          sudo install -m 755 adbc-drivers/dynamodb/rust/target/release/libadbc_dynamodb.so /usr/local/lib/libdynamodb.so
-          sudo ldconfig
 
       - name: Validate adapter configuration
         env:
@@ -253,24 +183,7 @@ jobs:
               }
               ;;
 
-            mongodb)
-              if [ -z "${SPICEAI_API_KEY:-}" ]; then
-                echo "SPICEAI_API_KEY must be set for mongodb"
-                exit 1
-              fi
-
-              if [ ! -f /usr/local/lib/libmongodb.so ]; then
-                echo "MongoDB ADBC driver not found at /usr/local/lib/libmongodb.so; build step may have failed"
-                exit 1
-              fi
-              ;;
-
             dynamodb)
-              if [ -z "${SPICEAI_API_KEY:-}" ]; then
-                echo "SPICEAI_API_KEY must be set for dynamodb"
-                exit 1
-              fi
-
               if [ ! -f /usr/local/lib/libdynamodb.so ]; then
                 echo "DynamoDB ADBC driver not found at /usr/local/lib/libdynamodb.so; build step may have failed"
                 exit 1
@@ -433,7 +346,7 @@ jobs:
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PROJECT=${LAKEBASE_PROJECT}"
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
             fi
-          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "postgres" ]; then
+          elif [[ "${SYSTEM_UNDER_TEST}" == postgres-cdc-* ]]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
@@ -446,6 +359,21 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage postgres --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ENVS=""
+          elif [[ "${SYSTEM_UNDER_TEST}" == postgres-debezium-* ]]; then
+            export SPICEBENCH_TARGET_BATCH_ROWS=50000
+            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
+            case "${SYSTEM_UNDER_TEST}" in
+              postgres-debezium-duckdb) SPICE_ACCELERATION="duckdb" ;;
+              *)                        SPICE_ACCELERATION="cayenne" ;;
+            esac
+            ADAPTER_CMD="docker"
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage postgres-debezium --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -463,8 +391,6 @@ jobs:
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
-            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
-            export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
             case "${SYSTEM_UNDER_TEST}" in
               dynamodb-cdc-duckdb) SPICE_ACCELERATION="duckdb" ;;
               *)                   SPICE_ACCELERATION="cayenne" ;;
