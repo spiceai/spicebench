@@ -56,4 +56,3 @@ pub trait Sink: Send + Sync + 'static {
         Ok(())
     }
 }
-

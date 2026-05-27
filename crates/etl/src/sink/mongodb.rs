@@ -57,21 +57,16 @@ impl Sink for MongoDbSink {
     ) -> anyhow::Result<()> {
         match op {
             InsertOp::Insert => {
-                let collection = self
-                    .db
-                    .collection::<Document>(table_name);
+                let collection = self.db.collection::<Document>(table_name);
                 let docs = batch_to_docs(&batch)?;
                 if !docs.is_empty() {
-                    collection
-                        .insert_many(docs)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("MongoDB insert_many failed for '{table_name}': {e}"))?;
+                    collection.insert_many(docs).await.map_err(|e| {
+                        anyhow::anyhow!("MongoDB insert_many failed for '{table_name}': {e}")
+                    })?;
                 }
             }
             InsertOp::Update { key_columns } => {
-                let collection = self
-                    .db
-                    .collection::<Document>(table_name);
+                let collection = self.db.collection::<Document>(table_name);
                 let schema = batch.schema();
 
                 for row in 0..batch.num_rows() {
@@ -88,7 +83,8 @@ impl Sink for MongoDbSink {
                     for (col_idx, field) in schema.fields().iter().enumerate() {
                         let col = batch.column(col_idx);
                         if !col.is_null(row) {
-                            replacement.insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
+                            replacement
+                                .insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
                         }
                     }
 
@@ -97,14 +93,14 @@ impl Sink for MongoDbSink {
                         .with_options(ReplaceOptions::builder().upsert(true).build())
                         .await
                         .map_err(|e| {
-                            anyhow::anyhow!("MongoDB replace_one (upsert) failed for '{table_name}': {e}")
+                            anyhow::anyhow!(
+                                "MongoDB replace_one (upsert) failed for '{table_name}': {e}"
+                            )
                         })?;
                 }
             }
             InsertOp::Delete { key_columns } => {
-                let collection = self
-                    .db
-                    .collection::<Document>(table_name);
+                let collection = self.db.collection::<Document>(table_name);
                 let schema = batch.schema();
 
                 for row in 0..batch.num_rows() {
@@ -244,8 +240,8 @@ fn arrow_col_to_bson(col: &dyn Array, row: usize) -> Bson {
                 .value(row);
             Bson::DateTime(mongodb::bson::DateTime::from_millis(nanos / 1_000_000))
         }
-        _ => Bson::String(
-            arrow::util::display::array_value_to_string(col, row).unwrap_or_default(),
-        ),
+        _ => {
+            Bson::String(arrow::util::display::array_value_to_string(col, row).unwrap_or_default())
+        }
     }
 }

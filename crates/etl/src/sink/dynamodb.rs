@@ -108,8 +108,7 @@ impl DynamoDbSink {
         op_label: &'static str,
     ) -> anyhow::Result<()> {
         let sem = Arc::new(Semaphore::new(parallelism));
-        let mut join_set: tokio::task::JoinSet<anyhow::Result<()>> =
-            tokio::task::JoinSet::new();
+        let mut join_set: tokio::task::JoinSet<anyhow::Result<()>> = tokio::task::JoinSet::new();
 
         for chunk in chunks {
             let client = self.client.clone();
@@ -125,7 +124,9 @@ impl DynamoDbSink {
                     .request_items(physical, chunk)
                     .send()
                     .await
-                    .map_err(|e| anyhow::anyhow!("DynamoDB BatchWriteItem ({op_label}) failed: {e}"))?;
+                    .map_err(|e| {
+                        anyhow::anyhow!("DynamoDB BatchWriteItem ({op_label}) failed: {e}")
+                    })?;
                 Ok(())
             });
         }
@@ -263,7 +264,10 @@ impl DynamoDbSink {
                 for (pk_col, &col_idx) in pk_columns.iter().zip(&pk_col_indices) {
                     let col = batch.column(col_idx);
                     if !col.is_null(row) {
-                        key.insert(pk_col.clone(), arrow_col_to_attribute_value(col.as_ref(), row));
+                        key.insert(
+                            pk_col.clone(),
+                            arrow_col_to_attribute_value(col.as_ref(), row),
+                        );
                     }
                 }
                 requests.push(
