@@ -155,15 +155,16 @@ async fn run_benchmark(
 
     // --- Step 2: build the write sink from SinkConfig ---
     let target_sink: Arc<dyn Sink> = match setup_response.sink {
-        SinkConfig::Adbc { driver, mut db_kwargs } => {
+        SinkConfig::Adbc {
+            driver,
+            mut db_kwargs,
+        } => {
             let driver_name = driver.to_string();
             if driver_name.eq_ignore_ascii_case("flightsql") {
                 db_kwargs
                     .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
                     .or_insert_with(|| {
-                        serde_json::Value::String(
-                            DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string(),
-                        )
+                        serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
                     });
             }
 
