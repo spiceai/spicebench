@@ -41,7 +41,6 @@ use test_framework::{
     telemetry::SutMetricsPipeline,
     telemetry::streaming::StreamingOtlpExporter,
 };
-use tokio::signal;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -474,6 +473,7 @@ async fn probe_until_pass(
     ticker: &mut tokio::time::Interval,
     deadline: tokio::time::Instant,
     probe_count: &mut u64,
+    shutdown: &CancellationToken,
 ) -> ProbeOutcome {
     let mut in_flight: Vec<ProbeFlight> = Vec::new();
 
@@ -484,7 +484,7 @@ async fn probe_until_pass(
 
         tokio::select! {
             biased;
-            _ = signal::ctrl_c() => return ProbeOutcome::Interrupted,
+            _ = shutdown.cancelled() => return ProbeOutcome::Interrupted,
             _ = ticker.tick() => {}
         };
 
@@ -640,6 +640,7 @@ async fn run_checkpoint_validation(
     max_wait: Duration,
     checkpoint_pause_time: std::time::Instant,
     query_catalog_namespace: Option<&str>,
+    shutdown: &CancellationToken,
 ) -> CheckpointValidationResult {
     let deadline = tokio::time::Instant::now() + max_wait;
 
@@ -671,7 +672,7 @@ async fn run_checkpoint_validation(
 
             tokio::select! {
                 biased;
-                _ = signal::ctrl_c() => return CheckpointValidationResult::Interrupted,
+                _ = shutdown.cancelled() => return CheckpointValidationResult::Interrupted,
                 _ = row_count_ticker.tick() => {}
             };
 
@@ -712,6 +713,7 @@ async fn run_checkpoint_validation(
             &mut ticker,
             deadline,
             &mut probe_count,
+            shutdown,
         )
         .await
         {
@@ -768,6 +770,7 @@ pub(crate) async fn run(
     checkpoint_steps: Option<usize>,
     checkpoint_dir: Option<&Path>,
     query_catalog_namespace: Option<String>,
+    shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let metric_attributes = run_metric_attributes(common_args, run_id, version_metadata.etl_type());
 
@@ -966,6 +969,7 @@ pub(crate) async fn run(
                                         Duration::from_secs(common_args.checkpoint_validation_timeout),
                                         checkpoint_pause_time,
                                         query_catalog_namespace.as_deref(),
+                                        &shutdown,
                                     )
                                     .await;
 
@@ -1049,6 +1053,7 @@ pub(crate) async fn run(
                                         Duration::from_secs(common_args.checkpoint_validation_timeout),
                                         checkpoint_pause_time,
                                         query_catalog_namespace.as_deref(),
+                                        &shutdown,
                                     )
                                     .await;
 
@@ -1104,7 +1109,10 @@ pub(crate) async fn run(
                                     );
                                     break;
                                 }
-                                tokio::time::sleep(POLL_INTERVAL).await;
+                                tokio::select! {
+                                    _ = tokio::time::sleep(POLL_INTERVAL) => {}
+                                    _ = shutdown.cancelled() => break,
+                                }
                             }
                         }
 
@@ -1125,8 +1133,8 @@ pub(crate) async fn run(
                     _ => { /* still running, keep waiting */ }
                 }
             }
-            // ctrl-c: stop everything
-            _ = signal::ctrl_c() => {
+            // SIGINT/SIGTERM: stop everything
+            _ = shutdown.cancelled() => {
                 println!("Interrupt received, stopping benchmark...");
                 shutdown_token.cancel();
                 etl_pipeline.cancel();

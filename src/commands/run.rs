@@ -31,6 +31,7 @@ use system_adapter_protocol::SinkConfig;
 use test_framework::anyhow;
 
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::args::RunArgs;
 use crate::commands::connect_system_adapter;
@@ -59,6 +60,7 @@ async fn run_benchmark(
     setup_metadata: HashMap<String, serde_json::Value>,
     version_metadata: &VersionMetadata,
     file_storage: Arc<FileStorage>,
+    shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     // --- Download checkpoints from S3 ---
     let scenario_name = common.scenario.to_string();
@@ -214,7 +216,13 @@ async fn run_benchmark(
         target_sink,
         &mutations,
     )?;
-    pipeline.initialize().await?;
+    tokio::select! {
+        r = pipeline.initialize() => r?,
+        _ = shutdown.cancelled() => {
+            pipeline.cancel();
+            return Err(anyhow::anyhow!("Interrupted during ETL initialization"));
+        }
+    }
 
     let read_driver_name = setup_response.read_driver.to_string();
     let mut read_db_kwargs = setup_response.read_db_kwargs;
@@ -256,6 +264,7 @@ async fn run_benchmark(
         checkpoint_steps,
         Some(checkpoint_dir.path()),
         query_catalog_namespace,
+        shutdown,
     )
     .await?;
 
@@ -376,6 +385,27 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     }
 
     let system_adapter_client = Arc::new(Mutex::new(system_adapter_client));
+
+    let shutdown = CancellationToken::new();
+    {
+        let token = shutdown.clone();
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigterm =
+                    signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = sigterm.recv() => {},
+                }
+            }
+            #[cfg(not(unix))]
+            tokio::signal::ctrl_c().await.ok();
+            token.cancel();
+        });
+    }
+
     let result = run_benchmark(
         args,
         Arc::clone(&system_adapter_client),
@@ -383,6 +413,7 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
         setup_metadata,
         &version_metadata,
         file_storage,
+        shutdown,
     )
     .await;
 
