@@ -132,7 +132,10 @@ impl DynamoDbSink {
                             let is_throttle = e
                                 .as_service_error()
                                 .and_then(|se| se.meta().code())
-                                .map(|code| code.contains("Throttling") || code.contains("ProvisionedThroughputExceeded"))
+                                .map(|code| {
+                                    code.contains("Throttling")
+                                        || code.contains("ProvisionedThroughputExceeded")
+                                })
                                 .unwrap_or(false);
                             if is_throttle && attempt < MAX_RETRIES {
                                 tracing::warn!(
