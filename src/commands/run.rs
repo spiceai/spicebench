@@ -406,16 +406,33 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
         });
     }
 
-    let result = run_benchmark(
-        args,
-        Arc::clone(&system_adapter_client),
-        run_id,
-        setup_metadata,
-        &version_metadata,
-        file_storage,
-        shutdown,
-    )
-    .await;
+    // Wrap run_benchmark in a select so that SIGTERM/SIGINT during any blocking
+    // call inside it (setup, sink creation, pool creation) cancels cleanly and
+    // teardown still runs.  The token is also passed into run_benchmark so that
+    // initialize() and load::run() can cancel themselves from within.
+    let result = tokio::select! {
+        r = run_benchmark(
+            args,
+            Arc::clone(&system_adapter_client),
+            run_id,
+            setup_metadata,
+            &version_metadata,
+            file_storage,
+            shutdown.clone(),
+        ) => r,
+        _ = shutdown.cancelled() => {
+            Err(anyhow::anyhow!("Interrupted"))
+        }
+    };
+
+    // If we were interrupted, forward SIGINT to the spidapter child process so
+    // it drops any in-flight setup() future and runs its RAII cleanup (Ec2Guard,
+    // DynamoDbGuard) before exiting.  Teardown is attempted afterwards but may
+    // fail if spidapter has already exited — that is acceptable because the
+    // guards handle the actual resource cleanup.
+    if shutdown.is_cancelled() {
+        interrupt_child(&system_adapter_client).await;
+    }
 
     // After successful setup, always teardown even if there are errors in between,
     // unless --no-teardown was requested (e.g. to inspect cloud state after a run).
@@ -426,4 +443,20 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     }
 
     result
+}
+
+/// Send SIGINT to the spidapter child process (stdio transport only).
+async fn interrupt_child(client: &Arc<Mutex<system_adapter_protocol::Client>>) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        if let Some(pid) = client.lock().await.child_pid() {
+            tracing::info!(pid, "Sending SIGINT to spidapter child for cleanup");
+            if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGINT) {
+                tracing::warn!(pid, error = %e, "Failed to send SIGINT to spidapter child");
+            }
+        }
+    }
 }

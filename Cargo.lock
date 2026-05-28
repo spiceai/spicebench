@@ -4586,6 +4586,7 @@ dependencies = [
  "data-generation",
  "etl",
  "futures",
+ "nix 0.30.1",
  "parquet",
  "serde",
  "serde_json",
