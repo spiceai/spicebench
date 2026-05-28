@@ -18,7 +18,7 @@ limitations under the License.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arrow::array::{Array, AsArray, RecordBatch};
 use arrow::datatypes::{DataType, Float64Type, Int64Type};
@@ -41,11 +41,10 @@ pub struct DynamoDbSink {
 }
 
 /// Per-table write parallelism (max concurrent `BatchWriteItem` calls).
-/// Matches the values previously configured on the DynamoDB ADBC driver.
 fn write_parallelism(table_name: &str) -> usize {
     match table_name {
-        "lineitem" => 30,
-        "orders" => 20,
+        "lineitem" => 10,
+        "orders" => 10,
         _ => DEFAULT_PARALLELISM,
     }
 }
@@ -119,15 +118,39 @@ impl DynamoDbSink {
                 .expect("semaphore closed");
             join_set.spawn(async move {
                 let _permit = permit;
-                client
-                    .batch_write_item()
-                    .request_items(physical, chunk)
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!("DynamoDB BatchWriteItem ({op_label}) failed: {e}")
-                    })?;
-                Ok(())
+                let mut backoff = Duration::from_secs(1);
+                const MAX_RETRIES: u32 = 6;
+                for attempt in 0..=MAX_RETRIES {
+                    match client
+                        .batch_write_item()
+                        .request_items(physical.clone(), chunk.clone())
+                        .send()
+                        .await
+                    {
+                        Ok(_) => return Ok(()),
+                        Err(e) => {
+                            let is_throttle = e
+                                .as_service_error()
+                                .and_then(|se| se.meta().code())
+                                .map(|code| code.contains("Throttling") || code.contains("ProvisionedThroughputExceeded"))
+                                .unwrap_or(false);
+                            if is_throttle && attempt < MAX_RETRIES {
+                                tracing::warn!(
+                                    attempt,
+                                    backoff_ms = backoff.as_millis(),
+                                    "DynamoDB throttled, retrying"
+                                );
+                                tokio::time::sleep(backoff).await;
+                                backoff = (backoff * 2).min(Duration::from_secs(30));
+                            } else {
+                                return Err(anyhow::anyhow!(
+                                    "DynamoDB BatchWriteItem ({op_label}) failed: {e:#?}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                unreachable!()
             });
         }
 
