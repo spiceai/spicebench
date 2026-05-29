@@ -41,6 +41,16 @@ pub struct DynamoDbSink {
 }
 
 /// Per-table write parallelism (max concurrent `BatchWriteItem` calls).
+/// Full-jitter backoff: sleep for a random duration in `[0, base]`.
+///
+/// Uses `jitter_seed` (subsecond nanos at task spawn) XORed with `attempt` so
+/// concurrent chunks spawned at the same instant still spread out.
+fn jittered(base: Duration, jitter_seed: u32, attempt: u32) -> Duration {
+    let mix = jitter_seed.wrapping_add(attempt.wrapping_mul(2_654_435_761));
+    let fraction = (mix >> 1) as f64 / (u32::MAX >> 1) as f64; // [0, 1)
+    base.mul_f64(fraction)
+}
+
 fn write_parallelism(table_name: &str) -> usize {
     match table_name {
         "lineitem" => 10,
@@ -120,6 +130,12 @@ impl DynamoDbSink {
                 let _permit = permit;
                 let mut backoff = Duration::from_secs(1);
                 const MAX_RETRIES: u32 = 6;
+                // Jitter seed from subsecond nanos of the current time so concurrent
+                // chunks don't all retry at the same instant (thundering herd).
+                let jitter_seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_nanos();
                 // current_chunk may shrink to just the unprocessed items on retry
                 let mut current_chunk = chunk;
                 for attempt in 0..=MAX_RETRIES {
@@ -140,13 +156,6 @@ impl DynamoDbSink {
                             if unprocessed.is_empty() {
                                 return Ok(());
                             }
-                            tracing::warn!(
-                                attempt,
-                                unprocessed_count = unprocessed.len(),
-                                backoff_ms = backoff.as_millis(),
-                                table = %physical,
-                                "DynamoDB BatchWriteItem returned unprocessed items, retrying"
-                            );
                             current_chunk = unprocessed;
                             if attempt >= MAX_RETRIES {
                                 return Err(anyhow::anyhow!(
@@ -154,7 +163,7 @@ impl DynamoDbSink {
                                     n = current_chunk.len()
                                 ));
                             }
-                            tokio::time::sleep(backoff).await;
+                            tokio::time::sleep(jittered(backoff, jitter_seed, attempt)).await;
                             backoff = (backoff * 2).min(Duration::from_secs(30));
                         }
                         Err(e) => {
@@ -168,12 +177,7 @@ impl DynamoDbSink {
                                 })
                                 .unwrap_or(false);
                             if is_throttle && attempt < MAX_RETRIES {
-                                tracing::warn!(
-                                    attempt,
-                                    backoff_ms = backoff.as_millis(),
-                                    "DynamoDB throttled, retrying"
-                                );
-                                tokio::time::sleep(backoff).await;
+                                tokio::time::sleep(jittered(backoff, jitter_seed, attempt)).await;
                                 backoff = (backoff * 2).min(Duration::from_secs(30));
                             } else {
                                 return Err(anyhow::anyhow!(
