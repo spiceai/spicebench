@@ -120,14 +120,43 @@ impl DynamoDbSink {
                 let _permit = permit;
                 let mut backoff = Duration::from_secs(1);
                 const MAX_RETRIES: u32 = 6;
+                // current_chunk may shrink to just the unprocessed items on retry
+                let mut current_chunk = chunk;
                 for attempt in 0..=MAX_RETRIES {
                     match client
                         .batch_write_item()
-                        .request_items(physical.clone(), chunk.clone())
+                        .request_items(physical.clone(), current_chunk.clone())
                         .send()
                         .await
                     {
-                        Ok(_) => return Ok(()),
+                        Ok(output) => {
+                            // DynamoDB may partially succeed and return unprocessed items.
+                            // Retry those with backoff instead of silently dropping them.
+                            let unprocessed = output
+                                .unprocessed_items()
+                                .get(physical.as_str())
+                                .cloned()
+                                .unwrap_or_default();
+                            if unprocessed.is_empty() {
+                                return Ok(());
+                            }
+                            tracing::warn!(
+                                attempt,
+                                unprocessed_count = unprocessed.len(),
+                                backoff_ms = backoff.as_millis(),
+                                table = %physical,
+                                "DynamoDB BatchWriteItem returned unprocessed items, retrying"
+                            );
+                            current_chunk = unprocessed;
+                            if attempt >= MAX_RETRIES {
+                                return Err(anyhow::anyhow!(
+                                    "DynamoDB BatchWriteItem ({op_label}): {n} items remained unprocessed after {MAX_RETRIES} retries",
+                                    n = current_chunk.len()
+                                ));
+                            }
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(Duration::from_secs(30));
+                        }
                         Err(e) => {
                             let is_throttle = e
                                 .as_service_error()

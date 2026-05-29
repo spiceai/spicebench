@@ -45,10 +45,11 @@ on:
           - '0.1'
           - '1'
           - '10'
-      image_tag:
-        description: 'Spice Cloud image tag to deploy (e.g. a dev build tag). Leave empty to use the channel default.'
+      spidapter_image_tag:
+        description: 'spidapter Docker image tag to use (e.g. a dev build tag). Defaults to latest.'
         required: false
         type: string
+        default: latest
 
 env:
   SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
@@ -83,7 +84,7 @@ jobs:
 
       - name: pull spidapter image
         if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
-        run: docker pull ghcr.io/spiceai/spidapter:latest
+        run: docker pull ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }}
 
       - uses: ./.github/actions/build-spicebench
 
@@ -143,7 +144,7 @@ jobs:
                 exit 1
               fi
 
-              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
+              docker image inspect ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} >/dev/null 2>&1 || {
                 echo "spidapter docker image not found locally; pull step may have failed"
                 exit 1
               }
@@ -181,7 +182,7 @@ jobs:
                 exit 1
               fi
 
-              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
+              docker image inspect ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} >/dev/null 2>&1 || {
                 echo "spidapter docker image not found locally; pull step may have failed"
                 exit 1
               }
@@ -358,7 +359,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage postgres --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage postgres --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [[ "${SYSTEM_UNDER_TEST}" == postgres-debezium-* ]]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -373,7 +374,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage postgres-debezium --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage postgres-debezium --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -387,7 +388,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage mongo --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage mongo --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -399,7 +400,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute cloud --storage dynamodb --verbose --channel nightly"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage dynamodb --verbose --channel nightly"
             ADAPTER_ENVS=""
           else
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
@@ -416,12 +417,8 @@ jobs:
               ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3 -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2 -e SPIDAPTER_CAYENNE_DATA_DIR=/data/data -e SPIDAPTER_CAYENNE_METADATA_DIR=/data/metadata"
             fi
 
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
-          fi
-
-          if [ -n "${{ inputs.image_tag }}" ] && [ "${ADAPTER_CMD}" = "docker" ]; then
-            ADAPTER_ARGS="${ADAPTER_ARGS} --image-tag '${{ inputs.image_tag }}'"
           fi
 
           set -x
