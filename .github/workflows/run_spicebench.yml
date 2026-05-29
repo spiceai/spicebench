@@ -375,22 +375,8 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=64Gi"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=20"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=20Gi"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage postgres-debezium --verbose --channel nightly --ec2-associate-public-ip"
-            ADAPTER_ENVS=""
-          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
-            export SPICEBENCH_TARGET_BATCH_ROWS=50000
-            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
-            export SPICEBENCH_ADBC_UPDATE_STRATEGY=statement
-            case "${SYSTEM_UNDER_TEST}" in
-              mongodb-cdc-duckdb) SPICE_ACCELERATION="duckdb" ;;
-              *)                  SPICE_ACCELERATION="cayenne" ;;
-            esac
-            ADAPTER_CMD="docker"
-            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage mongo --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -403,7 +389,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=64Gi"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=20"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=20Gi"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage dynamodb --verbose --channel nightly"
             ADAPTER_ENVS=""
           else
