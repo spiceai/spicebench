@@ -45,6 +45,10 @@ on:
           - '0.1'
           - '1'
           - '10'
+      image_tag:
+        description: 'Spice Cloud image tag to deploy (e.g. a dev build tag). Leave empty to use the channel default.'
+        required: false
+        type: string
 
 env:
   SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
@@ -414,6 +418,10 @@ jobs:
 
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
+          fi
+
+          if [ -n "${{ inputs.image_tag }}" ] && [ "${ADAPTER_CMD}" = "docker" ]; then
+            ADAPTER_ARGS="${ADAPTER_ARGS} --image-tag '${{ inputs.image_tag }}'"
           fi
 
           set -x

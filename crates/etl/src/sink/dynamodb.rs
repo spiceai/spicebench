@@ -135,6 +135,7 @@ impl DynamoDbSink {
                                 .map(|code| {
                                     code.contains("Throttling")
                                         || code.contains("ProvisionedThroughputExceeded")
+                                        || code.contains("ResourceInUseException")
                                 })
                                 .unwrap_or(false);
                             if is_throttle && attempt < MAX_RETRIES {
