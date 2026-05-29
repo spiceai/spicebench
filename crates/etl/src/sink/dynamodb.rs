@@ -134,7 +134,7 @@ impl DynamoDbSink {
                             // Retry those with backoff instead of silently dropping them.
                             let unprocessed = output
                                 .unprocessed_items()
-                                .get(physical.as_str())
+                                .and_then(|m| m.get(physical.as_str()))
                                 .cloned()
                                 .unwrap_or_default();
                             if unprocessed.is_empty() {
