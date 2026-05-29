@@ -53,8 +53,8 @@ fn jittered(base: Duration, jitter_seed: u32, attempt: u32) -> Duration {
 
 fn write_parallelism(table_name: &str) -> usize {
     match table_name {
-        "lineitem" => 10,
-        "orders" => 10,
+        "lineitem" => 30,
+        "orders" => 15,
         _ => DEFAULT_PARALLELISM,
     }
 }
