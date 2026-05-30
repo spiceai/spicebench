@@ -1,5 +1,5 @@
 name: Run
-run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.etl_type}}
+run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.etl_type}} - ${{ github.event.inputs.scale_factor}}
 
 on:
   schedule:
