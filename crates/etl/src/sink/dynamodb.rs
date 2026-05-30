@@ -167,16 +167,18 @@ impl DynamoDbSink {
                             backoff = (backoff * 2).min(Duration::from_secs(30));
                         }
                         Err(e) => {
-                            let is_throttle = e
+                            let is_retryable = e
                                 .as_service_error()
                                 .and_then(|se| se.meta().code())
                                 .map(|code| {
                                     code.contains("Throttling")
                                         || code.contains("ProvisionedThroughputExceeded")
                                         || code.contains("ResourceInUseException")
+                                        || code.contains("InternalServerError")
+                                        || code.contains("ServiceUnavailable")
                                 })
                                 .unwrap_or(false);
-                            if is_throttle && attempt < MAX_RETRIES {
+                            if is_retryable && attempt < MAX_RETRIES {
                                 tokio::time::sleep(jittered(backoff, jitter_seed, attempt)).await;
                                 backoff = (backoff * 2).min(Duration::from_secs(30));
                             } else {
