@@ -185,6 +185,13 @@ fn spawn_sut_metrics_scraper(
     attributes: Arc<std::sync::RwLock<Vec<KeyValue>>>,
     instruments: SutInstruments,
 ) -> tokio::task::JoinHandle<Option<MetricsResponse>> {
+    // Bound every scrape so a wedged adapter call can neither hold the adapter
+    // lock indefinitely nor stop this task from observing shutdown. A periodic
+    // scrape should be quick; the final scrape may legitimately run a Query
+    // History marker-wait before summing I/O, so it gets a larger budget.
+    const PERIODIC_SCRAPE_TIMEOUT: Duration = Duration::from_secs(180);
+    const FINAL_SCRAPE_TIMEOUT: Duration = Duration::from_secs(780);
+
     tokio::spawn(async move {
         let mut last_response: Option<MetricsResponse> = None;
         let mut prev_disk_read_bytes: Option<u64> = None;
@@ -198,9 +205,13 @@ fn spawn_sut_metrics_scraper(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let metrics_result = adapter.lock().await.metrics(run_id, false).await;
+                    let metrics_result = tokio::time::timeout(
+                        PERIODIC_SCRAPE_TIMEOUT,
+                        async { adapter.lock().await.metrics(run_id, false).await },
+                    )
+                    .await;
                     match metrics_result {
-                        Ok(resp) => {
+                        Ok(Ok(resp)) => {
                             let attrs = attributes.read().expect("SUT attributes lock poisoned");
                             log_sut_metrics_snapshot(&resp);
                             record_sut_metrics(
@@ -217,29 +228,52 @@ fn spawn_sut_metrics_scraper(
                             );
                             last_response = Some(resp);
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             eprintln!("SUT metrics scrape failed: {e}");
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "SUT metrics scrape timed out after {}s, skipping",
+                                PERIODIC_SCRAPE_TIMEOUT.as_secs()
+                            );
                         }
                     }
                 }
                 () = token.cancelled() => {
-                    // Final scrape before exiting
-                    if let Ok(resp) = adapter.lock().await.metrics(run_id, true).await {
-                        let attrs = attributes.read().expect("SUT attributes lock poisoned");
-                        log_sut_metrics_snapshot(&resp);
-                        record_sut_metrics(
-                            &resp,
-                            &instruments,
-                            &attrs,
-                            &mut prev_cpu_usage_seconds,
-                            &mut prev_disk_read_bytes,
-                            &mut prev_disk_write_bytes,
-                            &mut prev_disk_read_iops,
-                            &mut prev_disk_write_iops,
-                            &mut prev_rows_ingested,
-                            &mut last_scrape_time,
-                        );
-                        last_response = Some(resp);
+                    // Final scrape before exiting. Bounded so cancellation can
+                    // never leave this task (and the shutdown join) hanging.
+                    let final_result = tokio::time::timeout(
+                        FINAL_SCRAPE_TIMEOUT,
+                        async { adapter.lock().await.metrics(run_id, true).await },
+                    )
+                    .await;
+                    match final_result {
+                        Ok(Ok(resp)) => {
+                            let attrs = attributes.read().expect("SUT attributes lock poisoned");
+                            log_sut_metrics_snapshot(&resp);
+                            record_sut_metrics(
+                                &resp,
+                                &instruments,
+                                &attrs,
+                                &mut prev_cpu_usage_seconds,
+                                &mut prev_disk_read_bytes,
+                                &mut prev_disk_write_bytes,
+                                &mut prev_disk_read_iops,
+                                &mut prev_disk_write_iops,
+                                &mut prev_rows_ingested,
+                                &mut last_scrape_time,
+                            );
+                            last_response = Some(resp);
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("Final SUT metrics scrape failed: {e}");
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "Final SUT metrics scrape timed out after {}s, abandoning",
+                                FINAL_SCRAPE_TIMEOUT.as_secs()
+                            );
+                        }
                     }
                     break;
                 }
@@ -1227,18 +1261,33 @@ pub(crate) async fn run(
             .expect("SUT attributes lock poisoned")
             .push(KeyValue::new("outcome", outcome.as_str()));
     }
-    // Stop SUT metrics scraper and flush its pipeline
+    // Stop SUT metrics scraper and flush its pipeline. The scraper runs a final
+    // (bounded) scrape on cancellation, but shutdown must never hang waiting for
+    // it: if the join overruns, abort the task and continue without final SUT
+    // metrics rather than wedging the whole run.
     sut_scraper_token.cancel();
-    if let Some(handle) = sut_scraper_handle
-        && let Ok(Some(last_sut_metrics)) = handle.await
-    {
-        println!(
-            "Final SUT metrics: cpu_sec={:?}, mem={:?}B, ingested_rows={:?}, ingested_bytes={:?}",
-            last_sut_metrics.resource.cpu_usage_percent,
-            last_sut_metrics.resource.memory_usage_bytes,
-            last_sut_metrics.ingestion.rows_ingested,
-            last_sut_metrics.ingestion.bytes_ingested,
-        );
+    if let Some(mut handle) = sut_scraper_handle {
+        const SCRAPER_JOIN_TIMEOUT: Duration = Duration::from_secs(840);
+        match tokio::time::timeout(SCRAPER_JOIN_TIMEOUT, &mut handle).await {
+            Ok(Ok(Some(last_sut_metrics))) => {
+                println!(
+                    "Final SUT metrics: cpu_sec={:?}, mem={:?}B, ingested_rows={:?}, ingested_bytes={:?}",
+                    last_sut_metrics.resource.cpu_usage_percent,
+                    last_sut_metrics.resource.memory_usage_bytes,
+                    last_sut_metrics.ingestion.rows_ingested,
+                    last_sut_metrics.ingestion.bytes_ingested,
+                );
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(e)) => eprintln!("SUT metrics scraper task failed: {e}"),
+            Err(_) => {
+                eprintln!(
+                    "SUT metrics scraper did not finish within {}s; aborting it and continuing shutdown",
+                    SCRAPER_JOIN_TIMEOUT.as_secs()
+                );
+                handle.abort();
+            }
+        }
     }
     if let Some(pipeline) = sut_pipeline {
         pipeline.shutdown();
