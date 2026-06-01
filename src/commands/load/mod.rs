@@ -191,6 +191,12 @@ fn spawn_sut_metrics_scraper(
     // History marker-wait before summing I/O, so it gets a larger budget.
     const PERIODIC_SCRAPE_TIMEOUT: Duration = Duration::from_secs(180);
     const FINAL_SCRAPE_TIMEOUT: Duration = Duration::from_secs(780);
+    // A periodic scrape slower than this holds the shared adapter connection long
+    // enough to perturb ingest; treat it as "slow" and back off (below).
+    const SLOW_SCRAPE_THRESHOLD: Duration = Duration::from_millis(500);
+    // Cap the Fibonacci backoff so SUT metrics never go dark for more than this
+    // many ticks between samples.
+    const MAX_BACKOFF_TICKS: u64 = 13;
 
     tokio::spawn(async move {
         let mut last_response: Option<MetricsResponse> = None;
@@ -202,9 +208,21 @@ fn spawn_sut_metrics_scraper(
         let mut prev_rows_ingested: Option<u64> = None;
         let mut last_scrape_time: Option<std::time::Instant> = None;
         let mut ticker = tokio::time::interval(interval);
+        // Fibonacci backoff state: after a slow scrape, skip an increasing number
+        // of ticks (fib_a) before scraping again; a fast scrape resets it.
+        let mut fib_a: u64 = 1;
+        let mut fib_b: u64 = 1;
+        let mut skip_remaining: u64 = 0;
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                    if skip_remaining > 0 {
+                        // Backing off after a slow scrape — skip this tick so
+                        // metrics collection stops adding latency to the run.
+                        skip_remaining -= 1;
+                        continue;
+                    }
+                    let scrape_started = std::time::Instant::now();
                     let metrics_result = tokio::time::timeout(
                         PERIODIC_SCRAPE_TIMEOUT,
                         async { adapter.lock().await.metrics(run_id, false).await },
@@ -237,6 +255,19 @@ fn spawn_sut_metrics_scraper(
                                 PERIODIC_SCRAPE_TIMEOUT.as_secs()
                             );
                         }
+                    }
+                    // A slow scrape holds the adapter connection the whole time,
+                    // adding latency to ingest. Skip an increasing (Fibonacci)
+                    // number of subsequent ticks before scraping again; a fast
+                    // scrape resets the backoff.
+                    if scrape_started.elapsed() > SLOW_SCRAPE_THRESHOLD {
+                        skip_remaining = fib_a;
+                        let next = fib_a.saturating_add(fib_b).min(MAX_BACKOFF_TICKS);
+                        fib_a = fib_b;
+                        fib_b = next;
+                    } else {
+                        fib_a = 1;
+                        fib_b = 1;
                     }
                 }
                 () = token.cancelled() => {
