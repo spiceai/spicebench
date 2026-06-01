@@ -1185,6 +1185,17 @@ impl AdbcSink {
             );
         }
 
+        // Diagnostic: cumulative per-phase wall-clock across all
+        // staging_merge_update calls, so a changes run shows where the
+        // per-segment time actually goes. `ingest` includes the implicit
+        // staging-table CREATE (ADBC CreateAppend); `drop` isolates the DROP
+        // DDL; `create` is the (no-op) adapter RPC.
+        static STG_CALLS: AtomicU64 = AtomicU64::new(0);
+        static STG_CREATE_US: AtomicU64 = AtomicU64::new(0);
+        static STG_INGEST_US: AtomicU64 = AtomicU64::new(0);
+        static STG_MERGE_US: AtomicU64 = AtomicU64::new(0);
+        static STG_DROP_US: AtomicU64 = AtomicU64::new(0);
+
         // Generate a unique staging table name.
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1193,6 +1204,7 @@ impl AdbcSink {
         let staging_table = format!("_spicebench_stg_{table_name}_{ts}");
 
         // 1. Create the staging table via the system adapter (if available).
+        let create_start = Instant::now();
         if let Some((client, run_id)) = &self.staging_adapter {
             client
                 .lock()
@@ -1205,8 +1217,10 @@ impl AdbcSink {
                     )
                 })?;
         }
+        let create_us = create_start.elapsed().as_micros() as u64;
 
         // 2. Bulk-ingest batch into the staging table.
+        let ingest_start = Instant::now();
         if let Err(e) = self.ingest_insert_batch(conn, &staging_table, batch) {
             self.drop_staging_table_best_effort(conn, &staging_table)
                 .await;
@@ -1214,8 +1228,10 @@ impl AdbcSink {
                 "Failed to ingest update data into staging table '{staging_table}'"
             )));
         }
+        let ingest_us = ingest_start.elapsed().as_micros() as u64;
 
         // 3. MERGE INTO target from staging.
+        let merge_start = Instant::now();
         let merge_sql = Self::build_staging_merge_sql(
             &self.target_table_identifier(table_name),
             &self.target_table_identifier(&staging_table),
@@ -1226,10 +1242,41 @@ impl AdbcSink {
         let merge_result = conn
             .execute_update(&merge_sql)
             .map_err(|e| anyhow::anyhow!("MERGE INTO update failed for '{table_name}': {e}"));
+        let merge_us = merge_start.elapsed().as_micros() as u64;
 
         // 4. Drop staging table (always, even on merge failure).
+        let drop_start = Instant::now();
         self.drop_staging_table_best_effort(conn, &staging_table)
             .await;
+        let drop_us = drop_start.elapsed().as_micros() as u64;
+
+        // Accumulate and periodically report the cumulative phase breakdown.
+        let calls = STG_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+        let cum_create = STG_CREATE_US.fetch_add(create_us, Ordering::Relaxed) + create_us;
+        let cum_ingest = STG_INGEST_US.fetch_add(ingest_us, Ordering::Relaxed) + ingest_us;
+        let cum_merge = STG_MERGE_US.fetch_add(merge_us, Ordering::Relaxed) + merge_us;
+        let cum_drop = STG_DROP_US.fetch_add(drop_us, Ordering::Relaxed) + drop_us;
+        if calls <= 5 || calls.is_multiple_of(50) {
+            let cum_total = (cum_create + cum_ingest + cum_merge + cum_drop).max(1);
+            tracing::info!(
+                table = %table_name,
+                calls,
+                rows,
+                create_ms = create_us / 1000,
+                ingest_ms = ingest_us / 1000,
+                merge_ms = merge_us / 1000,
+                drop_ms = drop_us / 1000,
+                cum_create_ms = cum_create / 1000,
+                cum_ingest_ms = cum_ingest / 1000,
+                cum_merge_ms = cum_merge / 1000,
+                cum_drop_ms = cum_drop / 1000,
+                merge_pct = cum_merge * 100 / cum_total,
+                ingest_pct = cum_ingest * 100 / cum_total,
+                drop_pct = cum_drop * 100 / cum_total,
+                create_pct = cum_create * 100 / cum_total,
+                "staging_merge_update phase timing"
+            );
+        }
 
         merge_result?;
         tracing::debug!(
