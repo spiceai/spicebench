@@ -2360,22 +2360,50 @@ impl Handler for DatabricksAdapter {
                 }
 
                 // Sum read_bytes and (write_remote_bytes + spill_to_disk_bytes) from all
-                // queries since the run started. On periodic scrapes this is best-effort
-                // (Query History has ~5 min lag). On final scrape the marker wait above
-                // ensures completeness.
-                match self.sum_query_history_io(started_at_ms).await {
-                    Ok((total_read, total_write)) => {
+                // queries since the run started. This walks the Query History API and can
+                // take many seconds on a warehouse with deep history.
+                //
+                // The metrics scrape shares the adapter's stdio connection (and its lock)
+                // with the benchmark's ingest path, so a slow scrape blocks ingestion.
+                // Metrics are best-effort observability and must never perturb the
+                // benchmark, so on periodic scrapes we bound this walk to 500ms and skip
+                // it if it overruns — ingest can then resume immediately. Cancelling here
+                // only aborts the adapter's own outbound HTTP request (safe), unlike a
+                // client-side timeout which would cancel the stdio read mid-response and
+                // desync the protocol. The final scrape runs at shutdown (no ingest
+                // contention) and is left unbounded for accurate totals.
+                let io_sum = if final_scrape {
+                    Some(self.sum_query_history_io(started_at_ms).await)
+                } else {
+                    match tokio::time::timeout(
+                        Duration::from_millis(500),
+                        self.sum_query_history_io(started_at_ms),
+                    )
+                    .await
+                    {
+                        Ok(result) => Some(result),
+                        Err(_) => {
+                            eprintln!(
+                                "[databricks-adapter] periodic query history I/O sum exceeded 500ms budget; skipping so ingest is not blocked"
+                            );
+                            None
+                        }
+                    }
+                };
+                match io_sum {
+                    Some(Ok((total_read, total_write))) => {
                         eprintln!(
                             "[databricks-adapter] query history totals: read_bytes={total_read} write_bytes={total_write}"
                         );
                         resource.disk_read_bytes = Some(total_read);
                         resource.disk_write_bytes = Some(total_write);
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         eprintln!(
                             "[databricks-adapter] warning: query history I/O sum failed: {e}"
                         );
                     }
+                    None => {}
                 }
 
                 Ok(MetricsResponse {
