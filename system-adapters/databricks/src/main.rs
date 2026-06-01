@@ -1016,6 +1016,15 @@ impl DatabricksAdapter {
         );
         let deadline = std::time::Instant::now() + IO_SUM_DEADLINE;
 
+        // Upper bound for the Query History window. Queries can't start in the
+        // future, so [start_time_ms, now] scopes the sum to this run on this
+        // warehouse. A start-only range is not honored by the API (it returns the
+        // warehouse's entire history), so the range must have both bounds.
+        let end_time_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         let mut total_read_bytes: u64 = 0;
         let mut total_read_remote_bytes: u64 = 0;
         let mut total_read_cache_bytes: u64 = 0;
@@ -1049,7 +1058,8 @@ impl DatabricksAdapter {
                     "filter_by": {
                         "warehouse_ids": [self.config.warehouse_id],
                         "query_start_time_range": {
-                            "start_time_ms": start_time_ms
+                            "start_time_ms": start_time_ms,
+                            "end_time_ms": end_time_ms
                         },
                         "statuses": ["FINISHED"]
                     },
