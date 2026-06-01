@@ -22,12 +22,12 @@ on:
           - spice_cloud
           - databricks-sql
           - databricks-lakebase
-          - postgres-cdc-cayenne
-          - postgres-cdc-duckdb
-          - postgres-debezium-cayenne
-          - postgres-debezium-duckdb
-          - dynamodb-cdc-cayenne
-          - dynamodb-cdc-duckdb
+          - postgres-wal-cayenne
+          - postgres-wal-duckdb
+          - dynamodb-streams-cayenne
+          - dynamodb-streams-duckdb
+          - mongodb-streams-cayenne
+          - mongodb-streams-duckdb
       etl_type:
         description: 'ETL type'
         required: true
@@ -50,6 +50,11 @@ on:
         required: false
         type: string
         default: latest
+      custom_image_tag:
+        description: 'Custom runtime container image tag from ghcr.io/spiceai/spiceai-dev (e.g. spicebench-sf10). Uses internal channel when set.'
+        required: false
+        default: ''
+        type: string
 
 env:
   SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
@@ -68,14 +73,14 @@ jobs:
       - uses: ./.github/actions/setup-cc
 
       - uses: ./.github/actions/management-login
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') }}
         with:
           token-url: https://spice.ai/api/oauth/token
           client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
 
       - name: Log in to GHCR
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -83,7 +88,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: pull spidapter image
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') }}
         run: docker pull ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }}
 
       - uses: ./.github/actions/build-spicebench
@@ -191,6 +196,9 @@ jobs:
             dynamodb)
               ;;
 
+            mongodb)
+              ;;
+
             *)
               echo "Unsupported system_under_test value: ${SYSTEM_UNDER_TEST}"
               exit 1
@@ -276,6 +284,7 @@ jobs:
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB: '256Gi'
           ENABLE_PVC: 'false'
+          CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -394,6 +403,22 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=10Gi"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage dynamodb --verbose --channel nightly --auto-load-complete"
             ADAPTER_ENVS=""
+          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
+            export SPICEBENCH_TARGET_BATCH_ROWS=50000
+            case "${SYSTEM_UNDER_TEST}" in
+              mongodb-cdc-duckdb) SPICE_ACCELERATION="duckdb" ;;
+              *)                  SPICE_ACCELERATION="cayenne" ;;
+            esac
+            ADAPTER_CMD="docker"
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=64Gi"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=10Gi"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage mongodb --verbose --channel nightly --ec2-associate-public-ip --auto-load-complete"
+            ADAPTER_ENVS=""
           else
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
             export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
@@ -411,6 +436,15 @@ jobs:
 
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
+          fi
+
+          # Inject custom image tag if provided: passes --image-tag to spidapter so it
+          # deploys ghcr.io/spiceai/spiceai-dev:<tag> instead of the nightly image,
+          # and replaces --channel nightly with --channel internal.
+          if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
+            echo "Custom image tag: ${CUSTOM_IMAGE_TAG} (switching to internal channel)"
+            ADAPTER_ARGS="${ADAPTER_ARGS/--channel nightly/--channel internal}"
+            ADAPTER_ARGS="${ADAPTER_ARGS} --image-tag ${CUSTOM_IMAGE_TAG}"
           fi
 
           set -x
