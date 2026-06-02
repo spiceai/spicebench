@@ -77,9 +77,9 @@ impl MongoDbSink {
         let parts: Vec<String> = pk_cols
             .iter()
             .map(|pk| {
-                let idx = schema
-                    .index_of(pk)
-                    .map_err(|_| anyhow::anyhow!("PK column '{pk}' not in schema for '{table_name}'"))?;
+                let idx = schema.index_of(pk).map_err(|_| {
+                    anyhow::anyhow!("PK column '{pk}' not in schema for '{table_name}'")
+                })?;
                 let col = batch.column(idx);
                 Ok(bson_to_string(&arrow_col_to_bson(col.as_ref(), row)))
             })
@@ -156,11 +156,15 @@ impl Sink for MongoDbSink {
                                         .unwrap_or_default();
                                     collection
                                         .replace_one(filter, doc.clone())
-                                        .with_options(ReplaceOptions::builder().upsert(true).build())
+                                        .with_options(
+                                            ReplaceOptions::builder().upsert(true).build(),
+                                        )
                                         .await
-                                        .map_err(|e| anyhow::anyhow!(
-                                            "MongoDB upsert failed for '{table_name}': {e}"
-                                        ))?;
+                                        .map_err(|e| {
+                                            anyhow::anyhow!(
+                                                "MongoDB upsert failed for '{table_name}': {e}"
+                                            )
+                                        })?;
                                 }
                             } else {
                                 return Err(anyhow::anyhow!(
