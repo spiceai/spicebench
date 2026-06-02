@@ -151,15 +151,6 @@ impl Client {
         }
     }
 
-    /// Returns the OS PID of the child process, if this is a stdio client.
-    pub fn child_pid(&self) -> Option<u32> {
-        match self {
-            Self::Stdio { _child, .. } => _child.id(),
-            #[cfg(feature = "client")]
-            Self::Http { .. } => None,
-        }
-    }
-
     pub fn transport_name(&self) -> &'static str {
         match self {
             Self::Stdio { .. } => "stdio",

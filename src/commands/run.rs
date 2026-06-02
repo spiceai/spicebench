@@ -430,15 +430,6 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
         }
     };
 
-    // If we were interrupted, forward SIGINT to the spidapter child process so
-    // it drops any in-flight setup() future and runs its RAII cleanup (Ec2Guard,
-    // DynamoDbGuard) before exiting.  Teardown is attempted afterwards but may
-    // fail if spidapter has already exited — that is acceptable because the
-    // guards handle the actual resource cleanup.
-    if shutdown.is_cancelled() {
-        interrupt_child(&system_adapter_client).await;
-    }
-
     // After successful setup, always teardown even if there are errors in between,
     // unless --no-teardown was requested (e.g. to inspect cloud state after a run).
     if args.no_teardown {
@@ -448,20 +439,4 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     }
 
     result
-}
-
-/// Send SIGINT to the spidapter child process (stdio transport only).
-async fn interrupt_child(client: &Arc<Mutex<system_adapter_protocol::Client>>) {
-    #[cfg(unix)]
-    {
-        use nix::sys::signal::{Signal, kill};
-        use nix::unistd::Pid;
-
-        if let Some(pid) = client.lock().await.child_pid() {
-            tracing::info!(pid, "Sending SIGINT to spidapter child for cleanup");
-            if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGINT) {
-                tracing::warn!(pid, error = %e, "Failed to send SIGINT to spidapter child");
-            }
-        }
-    }
 }

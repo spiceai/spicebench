@@ -137,7 +137,6 @@ etl = { path = "crates/etl", features = ["dynamodb", "mongodb"] }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-nix = { workspace = true }
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }
 tempfile.workspace = true
 test-framework = { path = "crates/test-framework" }
