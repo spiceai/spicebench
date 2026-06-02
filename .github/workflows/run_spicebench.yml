@@ -302,10 +302,10 @@ jobs:
 
           # Scale ephemeral storage for streaming scenarios based on scale factor.
           case "${SCALE_FACTOR}" in
-            0.1) STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=1 ;;
-            1)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10 ;;
-            10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=100 ;;
-            *)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10 ;;
+            0.1) STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=1Gi ;;
+            1)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10Gi ;;
+            10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=100Gi ;;
+            *)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10Gi ;;
           esac
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"
           if [ -n "${ETL_PREFIX}" ]; then
