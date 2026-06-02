@@ -465,6 +465,7 @@ const MAX_PROBE_IN_FLIGHT: usize = 5;
 /// because we won't dispatch past the cap.
 ///
 /// `probe_count` is carried across retries so log output is monotonic.
+#[expect(clippy::too_many_arguments)]
 async fn probe_until_pass(
     executor: &dyn QueryExecutor,
     probe_query: &test_framework::queries::Query,
