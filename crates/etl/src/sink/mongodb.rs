@@ -196,7 +196,9 @@ impl Sink for MongoDbSink {
 
                 if !models.is_empty() {
                     self.db.client().bulk_write(models).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB bulk_write (update) failed for '{table_name}': {e}")
+                        anyhow::anyhow!(
+                            "MongoDB bulk_write (update) failed for '{table_name}': {e}"
+                        )
                     })?;
                 }
             }
