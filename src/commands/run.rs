@@ -183,7 +183,6 @@ async fn run_benchmark(
                 target_db_catalog,
                 target_db_schema,
                 Some((Arc::clone(&system_adapter_client), run_id)),
-                HashMap::new(),
             )?)
         }
         SinkConfig::DynamoDb {

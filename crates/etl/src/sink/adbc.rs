@@ -178,10 +178,6 @@ pub struct AdbcSink {
     bulk_ingest_stream_buffer: usize,
     /// Optional system adapter client for staging table creation.
     staging_adapter: Option<(Arc<Mutex<SystemAdapterClient>>, Uuid)>,
-    /// Optional mapping from logical dataset name to physical table name.
-    /// When set, overrides the table name used for ADBC bulk ingest so the
-    /// sink writes to the correct physical table (e.g. DynamoDB prefixed names).
-    table_name_map: HashMap<String, String>,
 }
 
 impl AdbcSink {
@@ -247,7 +243,6 @@ impl AdbcSink {
         target_db_catalog: Option<String>,
         target_db_schema: Option<String>,
         staging_adapter: Option<(Arc<Mutex<SystemAdapterClient>>, Uuid)>,
-        table_name_map: HashMap<String, String>,
     ) -> anyhow::Result<Self> {
         let update_strategy = UpdateStrategy::from_env()?;
         let pool_size = Self::pool_size();
@@ -283,7 +278,6 @@ impl AdbcSink {
             flush_stream_before_upsert,
             bulk_ingest_stream_buffer,
             staging_adapter,
-            table_name_map,
         })
     }
 
@@ -557,10 +551,7 @@ impl AdbcSink {
     }
 
     fn target_table_ingest_name(&self, table_name: &str) -> String {
-        self.table_name_map
-            .get(table_name)
-            .cloned()
-            .unwrap_or_else(|| table_name.to_string())
+        table_name.to_string()
     }
 
     fn create_table_sql(

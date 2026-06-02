@@ -24,16 +24,24 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
 };
 
+/// Result type for client operations
 pub type Result<T> = std::result::Result<T, ClientError>;
 
+/// Errors that can occur during client operations
 #[derive(Debug)]
 pub enum ClientError {
+    /// JSON-RPC error returned by the server
     JsonRpc(JsonRpcError),
+    /// I/O error during communication
     Io(std::io::Error),
+    /// HTTP transport error
     Json(serde_json::Error),
+    /// HTTP transport error
     #[cfg(feature = "client")]
     Http(reqwest::Error),
+    /// Invalid response format
     InvalidResponse(String),
+    /// Transport-specific error
     Transport(String),
 }
 
@@ -72,12 +80,15 @@ impl From<reqwest::Error> for ClientError {
     }
 }
 
+/// System adapter client for JSON-RPC communication
 pub enum Client {
+    /// Stdio transport - communicate via stdin/stdout with a child process
     Stdio {
         _child: Box<Child>,
         stdin: ChildStdin,
         stdout: BufReader<ChildStdout>,
     },
+    /// HTTP transport - communicate via HTTP POST requests
     #[cfg(feature = "client")]
     Http {
         client: reqwest::Client,
@@ -86,6 +97,7 @@ pub enum Client {
 }
 
 impl Client {
+    /// HTTP transport - communicate via HTTP POST requests
     pub fn stdio(
         command: impl AsRef<str>,
         args: Vec<String>,
@@ -103,6 +115,8 @@ impl Client {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit());
 
+        // Place the child in its own process group so it doesn't receive
+        // SIGINT when the user presses ctrl+c, allowing orderly teardown.
         #[cfg(unix)]
         cmd.process_group(0);
 
@@ -128,6 +142,7 @@ impl Client {
         })
     }
 
+    /// Create a client using HTTP transport
     #[cfg(feature = "client")]
     pub fn http(endpoint: impl Into<String>) -> Self {
         Self::Http {
@@ -153,6 +168,7 @@ impl Client {
         }
     }
 
+    /// Query available RPC methods from the server
     pub async fn rpc_methods(&mut self) -> Result<Vec<String>> {
         let request = JsonRpcRequest::new(1, methods::RPC_METHODS, serde_json::json!({}));
         let response: JsonRpcResponse<serde_json::Value> = self.call_typed(request).await?;
@@ -172,8 +188,7 @@ impl Client {
         Ok(methods)
     }
 
-    /// Set up a benchmark run. Creates tables/collections, starts spiced, and returns
-    /// both write-side sink config and read-side connection info in one call.
+    /// Setup a benchmark run
     pub async fn setup(
         &mut self,
         run_id: uuid::Uuid,
