@@ -97,7 +97,7 @@ pub enum Client {
 }
 
 impl Client {
-    /// HTTP transport - communicate via HTTP POST requests
+    /// Create a client using stdio transport by spawning a command
     pub fn stdio(
         command: impl AsRef<str>,
         args: Vec<String>,
@@ -207,6 +207,7 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
+    /// Teardown a benchmark run
     pub async fn teardown(&mut self, run_id: uuid::Uuid) -> Result<crate::TeardownResponse> {
         let request = crate::TeardownRequest { run_id };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::TEARDOWN, request);
@@ -216,6 +217,7 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
+    /// Collect current metrics from the system under test
     pub async fn metrics(
         &mut self,
         run_id: uuid::Uuid,

@@ -263,22 +263,21 @@ pub struct MetricsRequest {
 pub struct ResourceMetrics {
     /// Cumulative CPU seconds used
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Resident memory usage in bytes
     pub cpu_usage_percent: Option<f64>,
+    /// Resident memory usage in bytes
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Cumulative disk bytes read
     pub memory_usage_bytes: Option<u64>,
+    /// Cumulative disk bytes read
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Cumulative disk bytes written
     pub disk_read_bytes: Option<u64>,
+    /// Cumulative disk bytes written
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Cumulative disk read operations
     pub disk_write_bytes: Option<u64>,
+    /// Cumulative disk read operations
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Cumulative disk write operations
     pub disk_read_iops: Option<u64>,
+    /// Cumulative disk write operations
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Number of active compute nodes / clusters backing the SUT
     pub disk_write_iops: Option<u64>,
     /// Number of active compute nodes / clusters backing the SUT
     #[serde(skip_serializing_if = "Option::is_none")]
