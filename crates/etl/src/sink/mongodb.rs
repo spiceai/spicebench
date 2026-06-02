@@ -24,7 +24,7 @@ use arrow::array::{Array, AsArray, RecordBatch};
 use arrow::datatypes::{DataType, Float64Type, Int64Type, TimeUnit};
 use async_trait::async_trait;
 use mongodb::bson::{Bson, Document};
-use mongodb::options::ReplaceOptions;
+use mongodb::options::{ReplaceOneModel, WriteModel};
 
 use super::{InsertOp, Sink};
 
@@ -156,56 +156,25 @@ impl Sink for MongoDbSink {
                     docs.push(doc);
                 }
                 if !docs.is_empty() {
-                    // insert_many is fast (single round trip); duplicate-key errors mean
-                    // the doc already exists with the same _id — treat as success.
-                    match collection.insert_many(&docs).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            // If bulk insert fails due to duplicates, fall back to individual upserts
-                            let is_dup = e.to_string().contains("E11000");
-                            if is_dup {
-                                for doc in &docs {
-                                    let filter = doc
-                                        .get("_id")
-                                        .map(|id| mongodb::bson::doc! { "_id": id.clone() })
-                                        .unwrap_or_default();
-                                    collection
-                                        .replace_one(filter, doc.clone())
-                                        .with_options(
-                                            ReplaceOptions::builder().upsert(true).build(),
-                                        )
-                                        .await
-                                        .map_err(|e| {
-                                            anyhow::anyhow!(
-                                                "MongoDB upsert failed for '{table_name}': {e}"
-                                            )
-                                        })?;
-                                }
-                            } else {
-                                return Err(anyhow::anyhow!(
-                                    "MongoDB insert_many failed for '{table_name}': {e}"
-                                ));
-                            }
-                        }
-                    }
+                    collection.insert_many(&docs).await.map_err(|e| {
+                        anyhow::anyhow!("MongoDB insert_many failed for '{table_name}': {e}")
+                    })?;
                 }
             }
             InsertOp::Update { .. } => {
-                // Batch updates as delete-then-insert: collect all _id values, issue one
-                // delete_many($in) + one insert_many. This is 2 round trips instead of N,
-                // giving the same upsert-replace semantics required by the CDC sink.
+                // Single round trip using Client::bulk_write (requires MongoDB 8.0+).
+                // Each row becomes a ReplaceOne(upsert=true) model, so the entire batch
+                // lands in one server round trip.
                 let collection = self.db.collection::<Document>(table_name);
+                let namespace = collection.namespace();
                 let schema = batch.schema();
 
-                let mut ids = Vec::with_capacity(batch.num_rows());
-                let mut docs = Vec::with_capacity(batch.num_rows());
-
+                let mut models: Vec<WriteModel> = Vec::with_capacity(batch.num_rows());
                 for row in 0..batch.num_rows() {
                     let id = self.compute_id(table_name, &batch, row)?;
                     let mut doc = Document::new();
                     if id != Bson::Null {
                         doc.insert("_id", id.clone());
-                        ids.push(id);
                     }
                     for (col_idx, field) in schema.fields().iter().enumerate() {
                         let col = batch.column(col_idx);
@@ -213,18 +182,21 @@ impl Sink for MongoDbSink {
                             doc.insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
                         }
                     }
-                    docs.push(doc);
+                    let filter = mongodb::bson::doc! { "_id": id };
+                    models.push(
+                        ReplaceOneModel::builder()
+                            .namespace(namespace.clone())
+                            .filter(filter)
+                            .replacement(doc)
+                            .upsert(true)
+                            .build()
+                            .into(),
+                    );
                 }
 
-                if !ids.is_empty() {
-                    let filter = mongodb::bson::doc! { "_id": { "$in": ids } };
-                    collection.delete_many(filter).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB delete_many (update phase) failed for '{table_name}': {e}")
-                    })?;
-                }
-                if !docs.is_empty() {
-                    collection.insert_many(&docs).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB insert_many (update phase) failed for '{table_name}': {e}")
+                if !models.is_empty() {
+                    self.db.client().bulk_write(models).await.map_err(|e| {
+                        anyhow::anyhow!("MongoDB bulk_write (update) failed for '{table_name}': {e}")
                     })?;
                 }
             }
