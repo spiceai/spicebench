@@ -219,12 +219,16 @@ impl Sink for MongoDbSink {
                 if !ids.is_empty() {
                     let filter = mongodb::bson::doc! { "_id": { "$in": ids } };
                     collection.delete_many(filter).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB delete_many (update phase) failed for '{table_name}': {e}")
+                        anyhow::anyhow!(
+                            "MongoDB delete_many (update phase) failed for '{table_name}': {e}"
+                        )
                     })?;
                 }
                 if !docs.is_empty() {
                     collection.insert_many(&docs).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB insert_many (update phase) failed for '{table_name}': {e}")
+                        anyhow::anyhow!(
+                            "MongoDB insert_many (update phase) failed for '{table_name}': {e}"
+                        )
                     })?;
                 }
             }
