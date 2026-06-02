@@ -201,11 +201,17 @@ async fn run_benchmark(
             )
             .await,
         ),
-        SinkConfig::MongoDb { uri } => Arc::new(
-            MongoDbSink::new(&uri)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create MongoDB sink: {e}"))?,
-        ),
+        SinkConfig::MongoDb { uri } => {
+            let pk_cols = datasets
+                .iter()
+                .map(|(name, cfg)| (name.clone(), cfg.primary_key_columns.clone()))
+                .collect();
+            Arc::new(
+                MongoDbSink::new(&uri, pk_cols)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to create MongoDB sink: {e}"))?,
+            )
+        }
     };
 
     // --- Step 3: initialize ETL pipeline (writes batch 0 via the write sink) ---

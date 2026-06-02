@@ -370,7 +370,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=64Gi"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=10Gi"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage postgres --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute cloud --storage postgres-wal --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [[ "${SYSTEM_UNDER_TEST}" == postgres-debezium-* ]]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
