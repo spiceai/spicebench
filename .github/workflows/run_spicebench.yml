@@ -371,7 +371,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute scp --storage postgres-wal --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [[ "${SYSTEM_UNDER_TEST}" == postgres-debezium-* ]]; then
@@ -389,7 +389,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute scp --storage postgres-debezium --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
@@ -404,7 +404,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute scp --storage dynamodb-streams --verbose --channel nightly"
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
@@ -420,7 +420,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute scp --storage mongodb-changes-stream --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           else
