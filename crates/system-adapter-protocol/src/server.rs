@@ -148,7 +148,9 @@ impl<H: Handler> Server<H> {
         loop {
             line.clear();
             let bytes_read = reader.read_line(&mut line).await?;
+
             if bytes_read == 0 {
+                // EOF reached
                 break;
             }
 
@@ -164,6 +166,7 @@ impl<H: Handler> Server<H> {
 
     /// Handle a single JSON-RPC request
     async fn handle_request(&mut self, request_str: &str) -> serde_json::Value {
+        // Parse the request
         let request: serde_json::Value = match serde_json::from_str(request_str) {
             Ok(req) => req,
             Err(e) => {
@@ -190,7 +193,8 @@ impl<H: Handler> Server<H> {
             }
         };
 
-        match method {
+        // Dispatch to appropriate handler
+        let result = match method {
             methods::SETUP => self.handle_setup(&request, id.clone()).await,
             methods::TEARDOWN => self.handle_teardown(&request, id.clone()).await,
             methods::METRICS => self.handle_metrics(&request, id.clone()).await,
@@ -203,7 +207,9 @@ impl<H: Handler> Server<H> {
                 JsonRpcError::new(error_codes::METHOD_NOT_FOUND, "Method not found"),
             ))
             .unwrap_or(serde_json::json!({})),
-        }
+        };
+
+        result
     }
 
     /// Parse and deserialize the `params` field from a JSON-RPC request.
