@@ -15,6 +15,88 @@ limitations under the License.
 */
 
 //! JSON-RPC protocol definitions for system adapter communication.
+//!
+//! This crate defines the request/response types for the system adapter
+//! JSON-RPC protocol, which allows spicebench to communicate with external
+//! benchmark execution environments.
+//!
+//! # Features
+//!
+//! - **Protocol types**: Request/response types for setup, teardown, and metrics
+//! - **Client**: Ready-to-use client with Stdio and HTTP transports (requires `client` feature)
+//! - **Server**: Easy server implementation via Handler trait (requires `server` feature)
+//! - **JSON-RPC**: Standard JSON-RPC 2.0 envelope types
+//!
+//! # Client Example
+//!
+//! ```no_run
+//! # #[cfg(feature = "client")]
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! use system_adapter_protocol::Client;
+//! use std::collections::HashMap;
+//! use uuid::Uuid;
+//!
+//! // Create an HTTP client
+//! let mut client = Client::http("http://localhost:8080");
+//!
+//! // Setup a benchmark run
+//! let run_id = Uuid::new_v4();
+//! let setup_response = client
+//!     .setup(run_id, HashMap::new(), HashMap::new(), None)
+//!     .await?;
+//!
+//! println!("Driver: {:?}", setup_response.driver);
+//!
+//! // Teardown the run
+//! let teardown_response = client.teardown(run_id).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Server Example
+//!
+//! ```no_run
+//! # #[cfg(feature = "server")]
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! use system_adapter_protocol::{
+//!     AdbcDriver, DatasetConfig, EtlSinkType, Handler, Server, SetupResponse, TeardownResponse,
+//! };
+//! use async_trait::async_trait;
+//! use std::collections::HashMap;
+//! use uuid::Uuid;
+//!
+//! struct MyHandler;
+//!
+//! #[async_trait]
+//! impl Handler for MyHandler {
+//!     async fn setup(
+//!         &mut self,
+//!         run_id: Uuid,
+//!         metadata: HashMap<String, serde_json::Value>,
+//!         datasets: HashMap<String, DatasetConfig>,
+//!         etl_sink_type: Option<EtlSinkType>,
+//!     ) -> Result<SetupResponse, String> {
+//!         let _ = (metadata, datasets, etl_sink_type);
+//!         Ok(SetupResponse {
+//!             driver: AdbcDriver::Flightsql,
+//!             db_kwargs: HashMap::new(),
+//!             catalog_namespace: None,
+//!             read_driver: None,
+//!             endpoints: HashMap::new(),
+//!         })
+//!     }
+//!
+//!     async fn teardown(&mut self, run_id: Uuid) -> Result<TeardownResponse, String> {
+//!         Ok(TeardownResponse { ok: true })
+//!     }
+//! }
+//!
+//! // Run the server on stdio
+//! let mut server = Server::new(MyHandler);
+//! server.run_stdio().await?;
+//! # Ok(())
+//! # }
+//! ```
 
 use arrow_schema::SchemaRef;
 use serde::{Deserialize, Serialize};
@@ -123,15 +205,25 @@ pub struct SetupRequest {
 pub struct SetupResponse {
     /// Write-side sink configuration
     pub sink: SinkConfig,
-    /// ADBC driver to use for reading query results
-    pub read_driver: AdbcDriver,
-    /// Driver-specific connection parameters for the read driver
-    pub read_db_kwargs: HashMap<String, serde_json::Value>,
     /// Optional catalog/namespace path where benchmark tables were created
     /// (e.g. "catalog.schema").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalog_namespace: Option<String>,
-    /// Additional non-ADBC transports the SUT exposes, keyed by transport identifier.
+    /// ADBC driver to use for reading query results
+    pub read_driver: AdbcDriver,
+    /// Driver-specific connection parameters for the read driver
+    pub read_db_kwargs: HashMap<String, serde_json::Value>,
+    /// Additional non-ADBC transports the SUT exposes, keyed by transport
+    /// identifier. Each value is a free-form kwargs map (mirroring `db_kwargs`
+    /// in shape) whose keys are interpreted by the consumer based on the
+    /// transport identifier. Lets adapters expose endpoints that aren't
+    /// reachable through an ADBC driver (e.g. Spice-specific HTTP APIs)
+    /// without growing the protocol every time a new field is needed.
+    ///
+    /// Well-known transport keys and their kwargs:
+    /// - `spice.http.v1.queries` — Spice's async query API
+    ///   (`POST /v1/queries`). Kwargs: `url` (required), `authorization_header`
+    ///   (optional). Used to benchmark the distributed (Ballista) query path.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub endpoints: HashMap<String, HashMap<String, serde_json::Value>>,
 }
@@ -169,18 +261,26 @@ pub struct MetricsRequest {
 /// Resource utilization snapshot from the system under test
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ResourceMetrics {
+    /// Cumulative CPU seconds used
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Resident memory usage in bytes
     pub cpu_usage_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Cumulative disk bytes read
     pub memory_usage_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Cumulative disk bytes written
     pub disk_read_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Cumulative disk read operations
     pub disk_write_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Cumulative disk write operations
     pub disk_read_iops: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Number of active compute nodes / clusters backing the SUT
     pub disk_write_iops: Option<u64>,
+    /// Number of active compute nodes / clusters backing the SUT
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_compute_nodes: Option<u64>,
 }
@@ -188,12 +288,16 @@ pub struct ResourceMetrics {
 /// Ingestion progress snapshot from the system under test
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct IngestionMetrics {
+    /// Total rows ingested so far
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_ingested: Option<u64>,
+    /// Total bytes ingested so far
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes_ingested: Option<u64>,
+    /// Current ingestion throughput in rows/sec
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_per_sec: Option<f64>,
+    /// Number of active connections / clients
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_connections: Option<u64>,
 }
@@ -201,7 +305,9 @@ pub struct IngestionMetrics {
 /// Response containing current SUT metrics
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct MetricsResponse {
+    /// Resource utilization metrics (CPU, memory, disk, IOPS)
     pub resource: ResourceMetrics,
+    /// Ingestion progress metrics
     pub ingestion: IngestionMetrics,
 }
 
@@ -215,6 +321,7 @@ pub struct JsonRpcRequest<T> {
 }
 
 impl<T> JsonRpcRequest<T> {
+    /// Create a new JSON-RPC 2.0 request
     pub fn new(id: impl Into<serde_json::Value>, method: impl Into<String>, params: T) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -237,6 +344,7 @@ pub struct JsonRpcResponse<T> {
 }
 
 impl<T> JsonRpcResponse<T> {
+    /// Create a successful response
     pub fn success(id: impl Into<serde_json::Value>, result: T) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -246,6 +354,7 @@ impl<T> JsonRpcResponse<T> {
         }
     }
 
+    /// Create an error response
     pub fn error(id: impl Into<serde_json::Value>, error: JsonRpcError) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -266,6 +375,7 @@ pub struct JsonRpcError {
 }
 
 impl JsonRpcError {
+    /// Create a new error
     pub fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -274,6 +384,7 @@ impl JsonRpcError {
         }
     }
 
+    /// Create an error with additional data
     pub fn with_data(
         code: i32,
         message: impl Into<String>,
@@ -301,14 +412,18 @@ pub mod error_codes {
 /// JSON-RPC method: `create_staging_table`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateStagingTableRequest {
+    /// Unique identifier for the benchmark run
     pub run_id: Uuid,
+    /// Name of the source dataset this staging table is based on
     pub source_dataset: String,
+    /// Name to use for the staging table
     pub staging_table_name: String,
 }
 
 /// Response from create staging table request
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateStagingTableResponse {
+    /// Indicates if the staging table was created successfully
     pub ok: bool,
 }
 

@@ -27,10 +27,14 @@ use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
+/// Error type for server operations
 #[derive(Debug)]
 pub enum ServerError {
+    /// I/O error
     Io(std::io::Error),
+    /// JSON serialization/deserialization error
     Json(serde_json::Error),
+    /// Handler returned an error
     Handler(String),
 }
 
@@ -58,13 +62,16 @@ impl From<serde_json::Error> for ServerError {
     }
 }
 
+/// Result type for server operations
 pub type Result<T> = std::result::Result<T, ServerError>;
 
-/// Handler trait for implementing system adapter logic.
+/// Handler trait for implementing system adapter logic
+///
+/// Implement this trait to define how your system adapter handles
+/// setup, teardown, and metrics requests.
 #[async_trait]
 pub trait Handler: Send + Sync {
-    /// Set up a benchmark run. Creates tables/collections, starts spiced, and returns
-    /// both write-side sink config and read-side connection info.
+    /// Setup a benchmark run
     async fn setup(
         &mut self,
         run_id: Uuid,
@@ -72,10 +79,16 @@ pub trait Handler: Send + Sync {
         datasets: HashMap<String, DatasetConfig>,
     ) -> std::result::Result<SetupResponse, String>;
 
-    /// Teardown a benchmark run.
+    /// Teardown a benchmark run
     async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String>;
 
-    /// Collect current metrics from the system under test.
+    /// Collect current metrics from the system under test
+    ///
+    /// Called periodically by spicebench when `--scrape-sut-metrics` is enabled.
+    /// Returns a snapshot of resource utilization and ingestion progress.
+    /// When `final_scrape` is true, the benchmark run has finished and the
+    /// adapter may perform heavier queries (e.g. Query History aggregation).
+    /// Default implementation returns empty metrics.
     async fn metrics(
         &mut self,
         run_id: Uuid,
@@ -85,6 +98,9 @@ pub trait Handler: Send + Sync {
         Ok(MetricsResponse::default())
     }
 
+    /// List available RPC methods
+    ///
+    /// Override this if you want to add custom methods beyond the standard ones.
     fn rpc_methods(&self) -> Vec<String> {
         vec![
             methods::SETUP.to_string(),
@@ -95,6 +111,12 @@ pub trait Handler: Send + Sync {
         ]
     }
 
+    /// Create a staging table for MERGE-based updates.
+    ///
+    /// The staging table should have the same schema and partitioning as the
+    /// source dataset but with the given staging table name. Adapters that
+    /// handle staging table creation implicitly (e.g. via bulk ingest) can
+    /// leave the default no-op implementation.
     async fn create_staging_table(
         &mut self,
         _run_id: Uuid,
@@ -105,15 +127,18 @@ pub trait Handler: Send + Sync {
     }
 }
 
+/// System adapter server
 pub struct Server<H: Handler> {
     handler: H,
 }
 
 impl<H: Handler> Server<H> {
+    /// Create a new server with the given handler
     pub fn new(handler: H) -> Self {
         Self { handler }
     }
 
+    /// Run the server on stdio (reads from stdin, writes to stdout)
     pub async fn run_stdio(&mut self) -> Result<()> {
         let stdin = tokio::io::stdin();
         let mut stdout = tokio::io::stdout();
@@ -137,6 +162,7 @@ impl<H: Handler> Server<H> {
         Ok(())
     }
 
+    /// Handle a single JSON-RPC request
     async fn handle_request(&mut self, request_str: &str) -> serde_json::Value {
         let request: serde_json::Value = match serde_json::from_str(request_str) {
             Ok(req) => req,
@@ -180,6 +206,7 @@ impl<H: Handler> Server<H> {
         }
     }
 
+    /// Parse and deserialize the `params` field from a JSON-RPC request.
     fn parse_params<T: DeserializeOwned>(
         request: &serde_json::Value,
         id: &serde_json::Value,
@@ -201,6 +228,7 @@ impl<H: Handler> Server<H> {
         })
     }
 
+    /// Convert a handler result into a JSON-RPC response value.
     fn handler_response<T: serde::Serialize>(
         result: std::result::Result<T, String>,
         id: serde_json::Value,

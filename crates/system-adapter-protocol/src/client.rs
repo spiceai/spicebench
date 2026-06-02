@@ -34,7 +34,7 @@ pub enum ClientError {
     JsonRpc(JsonRpcError),
     /// I/O error during communication
     Io(std::io::Error),
-    /// HTTP transport error
+    /// JSON serialization/deserialization error
     Json(serde_json::Error),
     /// HTTP transport error
     #[cfg(feature = "client")]
@@ -234,8 +234,9 @@ impl Client {
 
     /// Create a staging table for MERGE-based updates.
     ///
-    /// If the remote adapter does not support this method, the call is treated as a
-    /// successful no-op so that newer spicebench versions work against older adapters.
+    /// If the remote adapter does not support this method (returns
+    /// `METHOD_NOT_FOUND`), the call is treated as a successful no-op so that
+    /// newer spicebench versions work against older adapters.
     pub async fn create_staging_table(
         &mut self,
         run_id: uuid::Uuid,
@@ -265,6 +266,7 @@ impl Client {
         }
     }
 
+    /// Make a typed JSON-RPC call with request and response types
     async fn call_typed<Req: Serialize, Resp: DeserializeOwned>(
         &mut self,
         request: JsonRpcRequest<Req>,
@@ -275,6 +277,7 @@ impl Client {
         Ok(response)
     }
 
+    /// Make a raw JSON-RPC call with serde_json::Value
     async fn call_raw(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
         match self {
             Self::Stdio {
@@ -330,6 +333,7 @@ impl Client {
     }
 }
 
+/// Builder for creating a `Client` with various configuration options
 pub struct ClientBuilder {
     transport: TransportConfig,
 }
@@ -345,6 +349,7 @@ enum TransportConfig {
 }
 
 impl ClientBuilder {
+    /// Create a builder for stdio transport
     pub fn stdio(command: impl Into<String>) -> Self {
         Self {
             transport: TransportConfig::Stdio {
@@ -355,6 +360,7 @@ impl ClientBuilder {
         }
     }
 
+    /// Create a builder for HTTP transport
     #[cfg(feature = "client")]
     pub fn http(endpoint: impl Into<String>) -> Self {
         Self {
@@ -364,6 +370,7 @@ impl ClientBuilder {
         }
     }
 
+    /// Add command-line arguments (stdio only)
     pub fn with_args(mut self, args: Vec<String>) -> Self {
         if let TransportConfig::Stdio {
             args: ref mut a, ..
@@ -374,6 +381,7 @@ impl ClientBuilder {
         self
     }
 
+    /// Add environment variables (stdio only)
     pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
         if let TransportConfig::Stdio { env: ref mut e, .. } = self.transport {
             *e = env;
@@ -381,6 +389,7 @@ impl ClientBuilder {
         self
     }
 
+    /// Build the client
     pub fn build(self) -> Result<Client> {
         match self.transport {
             TransportConfig::Stdio { command, args, env } => Client::stdio(command, args, env),
