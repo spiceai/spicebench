@@ -94,6 +94,11 @@ on:
         required: false
         default: ''
         type: string
+      use_private_cluster:
+        description: 'Run on the private (dedicated) cluster by tagging apps with the spicehq organization for node affinity'
+        required: false
+        default: false
+        type: boolean
 jobs:
   run-spicebench:
     name: Run spicebench
@@ -186,6 +191,7 @@ jobs:
           SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '16Gi' }}
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ github.event.inputs.executor_memory_limit || '16Gi' }}
           CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
+          USE_PRIVATE_CLUSTER: ${{ github.event.inputs.use_private_cluster || 'false' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -237,6 +243,13 @@ jobs:
 
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
+
+          # Optionally pin the apps to the private (dedicated) cluster via node affinity.
+          if [ "${USE_PRIVATE_CLUSTER}" = "true" ]; then
+            echo "Private cluster enabled: tagging apps with organization 'spicehq' for node affinity"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+          fi
+
           # Optional custom image from ghcr.io/spiceai/spiceai-dev
           if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
             echo "Custom image tag: tag=${CUSTOM_IMAGE_TAG}"

@@ -1002,10 +1002,28 @@ impl DatabricksAdapter {
     /// REST path: paginate through `/api/2.0/sql/history/queries` and sum
     /// per-query `metrics.read_bytes` and `metrics.write_remote_bytes + spill_to_disk_bytes`.
     async fn sum_query_history_io_rest(&self, start_time_ms: u64) -> Result<(u64, u64)> {
+        // Hard bounds on pagination. This sum is best-effort telemetry, so we
+        // would rather degrade to a partial/failed scrape than walk the API
+        // forever: a missing/empty `next_page_token` while `has_next_page` is
+        // true, or re-sending `filter_by` on continuation pages, can otherwise
+        // make the API restart from page one and never terminate.
+        const IO_SUM_DEADLINE: Duration = Duration::from_secs(120);
+        const MAX_PAGES: usize = 100;
+
         let history_url = format!(
             "https://{}/api/2.0/sql/history/queries",
             self.config.endpoint
         );
+        let deadline = std::time::Instant::now() + IO_SUM_DEADLINE;
+
+        // Upper bound for the Query History window. Queries can't start in the
+        // future, so [start_time_ms, now] scopes the sum to this run on this
+        // warehouse. A start-only range is not honored by the API (it returns the
+        // warehouse's entire history), so the range must have both bounds.
+        let end_time_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
 
         let mut total_read_bytes: u64 = 0;
         let mut total_read_remote_bytes: u64 = 0;
@@ -1013,23 +1031,42 @@ impl DatabricksAdapter {
         let mut total_write_remote_bytes: u64 = 0;
         let mut total_spill_to_disk_bytes: u64 = 0;
         let mut page_token: Option<String> = None;
+        let mut pages: usize = 0;
 
         loop {
-            let mut filter = json!({
-                "filter_by": {
-                    "warehouse_ids": [self.config.warehouse_id],
-                    "query_start_time_range": {
-                        "start_time_ms": start_time_ms
-                    },
-                    "statuses": ["FINISHED"]
-                },
-                "include_metrics": true,
-                "max_results": 100
-            });
-
-            if let Some(ref token) = page_token {
-                filter["page_token"] = json!(token);
+            if std::time::Instant::now() > deadline {
+                return Err(anyhow!(
+                    "Timed out ({}s) summing Query History I/O after {pages} page(s)",
+                    IO_SUM_DEADLINE.as_secs()
+                ));
             }
+            if pages >= MAX_PAGES {
+                return Err(anyhow!(
+                    "Query History I/O sum exceeded {MAX_PAGES} pages; aborting pagination"
+                ));
+            }
+            pages += 1;
+
+            // Build the request body. On the first page we send the full
+            // filter; on continuation pages the Query History API derives the
+            // filter from `page_token`, so we send *only* the token. Re-sending
+            // `filter_by` alongside `page_token` can reset pagination back to
+            // page one, causing an unbounded loop.
+            let filter = match page_token {
+                Some(ref token) => json!({ "page_token": token }),
+                None => json!({
+                    "filter_by": {
+                        "warehouse_ids": [self.config.warehouse_id],
+                        "query_start_time_range": {
+                            "start_time_ms": start_time_ms,
+                            "end_time_ms": end_time_ms
+                        },
+                        "statuses": ["FINISHED"]
+                    },
+                    "include_metrics": true,
+                    "max_results": 100
+                }),
+            };
 
             let response = self
                 .client
@@ -1057,10 +1094,12 @@ impl DatabricksAdapter {
                 }
             }
 
-            if body.has_next_page {
-                page_token = body.next_page_token;
-            } else {
-                break;
+            // Only continue when the API both reports another page *and* hands
+            // back a token to fetch it. `has_next_page == true` with no token
+            // would otherwise reset us to page one and loop forever.
+            match (body.has_next_page, body.next_page_token) {
+                (true, Some(token)) => page_token = Some(token),
+                _ => break,
             }
         }
 
@@ -2334,22 +2373,50 @@ impl Handler for DatabricksAdapter {
                 }
 
                 // Sum read_bytes and (write_remote_bytes + spill_to_disk_bytes) from all
-                // queries since the run started. On periodic scrapes this is best-effort
-                // (Query History has ~5 min lag). On final scrape the marker wait above
-                // ensures completeness.
-                match self.sum_query_history_io(started_at_ms).await {
-                    Ok((total_read, total_write)) => {
+                // queries since the run started. This walks the Query History API and can
+                // take many seconds on a warehouse with deep history.
+                //
+                // The metrics scrape shares the adapter's stdio connection (and its lock)
+                // with the benchmark's ingest path, so a slow scrape blocks ingestion.
+                // Metrics are best-effort observability and must never perturb the
+                // benchmark, so on periodic scrapes we bound this walk to 500ms and skip
+                // it if it overruns — ingest can then resume immediately. Cancelling here
+                // only aborts the adapter's own outbound HTTP request (safe), unlike a
+                // client-side timeout which would cancel the stdio read mid-response and
+                // desync the protocol. The final scrape runs at shutdown (no ingest
+                // contention) and is left unbounded for accurate totals.
+                let io_sum = if final_scrape {
+                    Some(self.sum_query_history_io(started_at_ms).await)
+                } else {
+                    match tokio::time::timeout(
+                        Duration::from_millis(500),
+                        self.sum_query_history_io(started_at_ms),
+                    )
+                    .await
+                    {
+                        Ok(result) => Some(result),
+                        Err(_) => {
+                            eprintln!(
+                                "[databricks-adapter] periodic query history I/O sum exceeded 500ms budget; skipping so ingest is not blocked"
+                            );
+                            None
+                        }
+                    }
+                };
+                match io_sum {
+                    Some(Ok((total_read, total_write))) => {
                         eprintln!(
                             "[databricks-adapter] query history totals: read_bytes={total_read} write_bytes={total_write}"
                         );
                         resource.disk_read_bytes = Some(total_read);
                         resource.disk_write_bytes = Some(total_write);
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         eprintln!(
                             "[databricks-adapter] warning: query history I/O sum failed: {e}"
                         );
                     }
+                    None => {}
                 }
 
                 Ok(MetricsResponse {
