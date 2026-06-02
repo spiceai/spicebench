@@ -17,6 +17,7 @@ limitations under the License.
 //! Native MongoDB sink using the mongodb crate directly.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use arrow::array::{Array, AsArray, RecordBatch};
@@ -32,6 +33,8 @@ pub struct MongoDbSink {
     /// Primary key columns per table, used to compute `_id` for each document.
     /// Change stream delete events only carry `_id`, so we store the PK as `_id`.
     primary_key_columns: HashMap<String, Vec<String>>,
+    /// Running row counts per table, updated after each write.
+    row_counts: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl MongoDbSink {
@@ -51,7 +54,19 @@ impl MongoDbSink {
         Ok(Self {
             db: client.database(&db_name),
             primary_key_columns,
+            row_counts: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    fn update_row_count(&self, table_name: &str, op_label: &str, rows: u64) -> u64 {
+        let mut counts = self.row_counts.lock().expect("row_counts lock poisoned");
+        let count = counts.entry(table_name.to_string()).or_insert(0);
+        match op_label {
+            "insert" => *count = count.saturating_add(rows),
+            "delete" => *count = count.saturating_sub(rows),
+            _ => {} // update: row count unchanged
+        }
+        *count
     }
 
     /// Compute the `_id` for a row as a colon-joined string of primary key values.
@@ -176,59 +191,64 @@ impl Sink for MongoDbSink {
                 }
             }
             InsertOp::Update { .. } => {
-                // Updates are treated as upserts: compute _id and replace the document.
+                // Batch updates as delete-then-insert: collect all _id values, issue one
+                // delete_many($in) + one insert_many. This is 2 round trips instead of N,
+                // giving the same upsert-replace semantics required by the CDC sink.
                 let collection = self.db.collection::<Document>(table_name);
                 let schema = batch.schema();
 
+                let mut ids = Vec::with_capacity(batch.num_rows());
+                let mut docs = Vec::with_capacity(batch.num_rows());
+
                 for row in 0..batch.num_rows() {
                     let id = self.compute_id(table_name, &batch, row)?;
-                    let filter = if id != Bson::Null {
-                        mongodb::bson::doc! { "_id": id.clone() }
-                    } else {
-                        Document::new()
-                    };
-
-                    let mut replacement = Document::new();
+                    let mut doc = Document::new();
                     if id != Bson::Null {
-                        replacement.insert("_id", id);
+                        doc.insert("_id", id.clone());
+                        ids.push(id);
                     }
                     for (col_idx, field) in schema.fields().iter().enumerate() {
                         let col = batch.column(col_idx);
                         if !col.is_null(row) {
-                            replacement
-                                .insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
+                            doc.insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
                         }
                     }
+                    docs.push(doc);
+                }
 
-                    collection
-                        .replace_one(filter, replacement)
-                        .with_options(ReplaceOptions::builder().upsert(true).build())
-                        .await
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "MongoDB replace_one (upsert) failed for '{table_name}': {e}"
-                            )
-                        })?;
+                if !ids.is_empty() {
+                    let filter = mongodb::bson::doc! { "_id": { "$in": ids } };
+                    collection.delete_many(filter).await.map_err(|e| {
+                        anyhow::anyhow!("MongoDB delete_many (update phase) failed for '{table_name}': {e}")
+                    })?;
+                }
+                if !docs.is_empty() {
+                    collection.insert_many(&docs).await.map_err(|e| {
+                        anyhow::anyhow!("MongoDB insert_many (update phase) failed for '{table_name}': {e}")
+                    })?;
                 }
             }
             InsertOp::Delete { .. } => {
-                // Delete by _id computed from primary key columns.
+                // Batch all deletes into a single delete_many($in) — 1 round trip.
                 let collection = self.db.collection::<Document>(table_name);
 
+                let mut ids = Vec::with_capacity(batch.num_rows());
                 for row in 0..batch.num_rows() {
                     let id = self.compute_id(table_name, &batch, row)?;
-                    let filter = if id != Bson::Null {
-                        mongodb::bson::doc! { "_id": id }
-                    } else {
-                        Document::new()
-                    };
-                    collection.delete_one(filter).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB delete_one failed for '{table_name}': {e}")
+                    if id != Bson::Null {
+                        ids.push(id);
+                    }
+                }
+                if !ids.is_empty() {
+                    let filter = mongodb::bson::doc! { "_id": { "$in": ids } };
+                    collection.delete_many(filter).await.map_err(|e| {
+                        anyhow::anyhow!("MongoDB delete_many failed for '{table_name}': {e}")
                     })?;
                 }
             }
         }
 
+        let rows_total = self.update_row_count(table_name, op_label, rows as u64);
         let elapsed = write_start.elapsed();
         let rows_per_sec = if elapsed.as_secs_f64() > 0.0 {
             rows as f64 / elapsed.as_secs_f64()
@@ -239,6 +259,7 @@ impl Sink for MongoDbSink {
             table = %table_name,
             op = %op_label,
             rows,
+            rows_total,
             elapsed_ms = elapsed.as_millis(),
             rows_per_sec = format!("{rows_per_sec:.1}"),
             "Sink::write completed"
