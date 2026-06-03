@@ -56,6 +56,7 @@ struct SutInstruments {
     ingestion_rows_total: Gauge<u64>,
     ingestion_bytes_total: Gauge<u64>,
     ingestion_rows_per_sec: Gauge<f64>,
+    active_connections: Gauge<u64>,
 }
 
 fn run_metric_attributes(
@@ -87,6 +88,7 @@ fn record_sut_metrics(
     response: &MetricsResponse,
     instruments: &SutInstruments,
     attributes: &[KeyValue],
+    concurrency: u64,
     prev_cpu_usage_seconds: &mut Option<f64>,
     prev_disk_read_bytes: &mut Option<u64>,
     prev_disk_write_bytes: &mut Option<u64>,
@@ -165,9 +167,12 @@ fn record_sut_metrics(
         *prev_rows_ingested = Some(v);
     }
     *last_scrape_time = Some(std::time::Instant::now());
-    if let Some(v) = response.ingestion.active_connections {
-        crate::metrics::ACTIVE_CONNECTIONS.record(v, attributes);
-    }
+    // Active clients = the offered concurrency the benchmark drives. Stateless
+    // transports (e.g. the Databricks SQL Statement Execution API) hold no
+    // persistent sessions for the SUT to observe, so report it from the harness
+    // on every scrape so the dashboard sees a continuous series rather than the
+    // adapter's (often zero) session count.
+    instruments.active_connections.record(concurrency, attributes);
     if let Some(v) = response.resource.num_compute_nodes {
         crate::metrics::NUM_COMPUTE_NODES.record(v, attributes);
     }
@@ -182,6 +187,7 @@ fn spawn_sut_metrics_scraper(
     run_id: uuid::Uuid,
     token: CancellationToken,
     interval: Duration,
+    concurrency: u64,
     attributes: Arc<std::sync::RwLock<Vec<KeyValue>>>,
     instruments: SutInstruments,
 ) -> tokio::task::JoinHandle<Option<MetricsResponse>> {
@@ -236,6 +242,7 @@ fn spawn_sut_metrics_scraper(
                                 &resp,
                                 &instruments,
                                 &attrs,
+                                concurrency,
                                 &mut prev_cpu_usage_seconds,
                                 &mut prev_disk_read_bytes,
                                 &mut prev_disk_write_bytes,
@@ -286,6 +293,7 @@ fn spawn_sut_metrics_scraper(
                                 &resp,
                                 &instruments,
                                 &attrs,
+                                concurrency,
                                 &mut prev_cpu_usage_seconds,
                                 &mut prev_disk_read_bytes,
                                 &mut prev_disk_write_bytes,
@@ -898,6 +906,10 @@ pub(crate) async fn run(
             ingestion_rows_total: m.u64_gauge("ingestion_rows_total").build(),
             ingestion_bytes_total: m.u64_gauge("ingestion_bytes_total").build(),
             ingestion_rows_per_sec: m.f64_gauge("ingestion_rows_per_sec").build(),
+            active_connections: m
+                .u64_gauge("active_connections")
+                .with_description("Number of concurrent query clients the benchmark is driving.")
+                .build(),
         };
         let sut_attributes = Arc::new(std::sync::RwLock::new(metric_attributes.clone()));
         println!("SUT metrics scraping enabled (run_id={run_id})");
@@ -907,6 +919,7 @@ pub(crate) async fn run(
                 run_id,
                 sut_scraper_token.clone(),
                 Duration::from_secs(5),
+                common_args.concurrency as u64,
                 Arc::clone(&sut_attributes),
                 instruments,
             )),
@@ -916,8 +929,6 @@ pub(crate) async fn run(
     } else {
         (None, None, None)
     };
-
-    // ACTIVE_CONNECTIONS is recorded post-loop so it carries the `outcome` dimension.
 
     let mut test_builder = NotStarted::new()
         .with_parallel_count(common_args.concurrency)
@@ -1221,10 +1232,6 @@ pub(crate) async fn run(
     metric_attributes.push(KeyValue::new("outcome", outcome.as_str()));
 
     // Record deferred metrics now that outcome is available.
-    crate::metrics::ACTIVE_CONNECTIONS.record(
-        common_args.concurrency.try_into().unwrap_or(0),
-        &metric_attributes,
-    );
     for sample in &checkpoint_e2e_latency_samples {
         crate::metrics::E2E_LATENCY_MS.record(*sample, &metric_attributes);
     }
