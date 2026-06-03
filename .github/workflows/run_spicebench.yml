@@ -304,7 +304,7 @@ jobs:
           case "${SCALE_FACTOR}" in
             0.1) STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=1Gi ;;
             1)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10Gi ;;
-            10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=256Gi ;;
+            10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=400Gi ;;
             *)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10Gi ;;
           esac
           ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"
