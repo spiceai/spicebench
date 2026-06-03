@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::{collections::HashMap, time::Duration};
 use system_adapter_protocol::{
-    AdbcDriver, DatasetConfig, EtlSinkType, Handler, IngestionMetrics, MetricsResponse,
-    ResourceMetrics, Server, SetupResponse, TeardownResponse,
+    AdbcDriver, DatasetConfig, Handler, IngestionMetrics, MetricsResponse, ResourceMetrics,
+    Server, SetupResponse, SinkConfig, TeardownResponse,
 };
 use uuid::Uuid;
 
@@ -1955,10 +1955,7 @@ impl Handler for DatabricksAdapter {
         run_id: Uuid,
         metadata: HashMap<String, Value>,
         datasets: HashMap<String, DatasetConfig>,
-        etl_sink_type: Option<EtlSinkType>,
-        _seed_data: HashMap<String, String>,
     ) -> std::result::Result<SetupResponse, String> {
-        let _ = etl_sink_type;
         eprintln!("[databricks-adapter] setup: run_id={run_id}");
         eprintln!("[databricks-adapter] endpoint={}", self.config.endpoint);
 
@@ -2165,6 +2162,25 @@ impl Handler for DatabricksAdapter {
                     .await
                     .map_err(|e| format!("Failed to build Lakebase PostgreSQL URI: {e}"))?;
                 Ok(SetupResponse {
+                    sink: SinkConfig::Adbc {
+                        driver: AdbcDriver::Databricks,
+                        db_kwargs: HashMap::from([
+                            ("uri".to_string(), Value::String(self.databricks_uri())),
+                            (
+                                "databricks.staging.volume_path".to_string(),
+                                Value::String(self.config.staging_volume_path.clone()),
+                            ),
+                        ]),
+                    },
+                    catalog_namespace: None,
+                    read_driver: AdbcDriver::Postgresql,
+                    read_db_kwargs: HashMap::from([("uri".to_string(), Value::String(pg_uri))]),
+                    endpoints: HashMap::new(),
+                })
+            }
+            // For other variants, return a single Databricks ADBC driver.
+            _ => Ok(SetupResponse {
+                sink: SinkConfig::Adbc {
                     driver: AdbcDriver::Databricks,
                     db_kwargs: HashMap::from([
                         ("uri".to_string(), Value::String(self.databricks_uri())),
@@ -2173,29 +2189,17 @@ impl Handler for DatabricksAdapter {
                             Value::String(self.config.staging_volume_path.clone()),
                         ),
                     ]),
-                    catalog_namespace: None,
-                    read_driver: Some((
-                        AdbcDriver::Postgresql,
-                        HashMap::from([("uri".to_string(), Value::String(pg_uri))]),
-                    )),
-                    endpoints: HashMap::new(),
-                    table_name_map: HashMap::new(),
-                })
-            }
-            // For other variants, return a single Databricks ADBC driver.
-            _ => Ok(SetupResponse {
-                driver: AdbcDriver::Databricks,
-                db_kwargs: HashMap::from([
+                },
+                catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
+                read_driver: AdbcDriver::Databricks,
+                read_db_kwargs: HashMap::from([
                     ("uri".to_string(), Value::String(self.databricks_uri())),
                     (
                         "databricks.staging.volume_path".to_string(),
                         Value::String(self.config.staging_volume_path.clone()),
                     ),
                 ]),
-                catalog_namespace: Some(format!("{}.{}", self.config.catalog, self.config.schema)),
-                read_driver: None,
                 endpoints: HashMap::new(),
-                table_name_map: HashMap::new(),
             }),
         }
     }
