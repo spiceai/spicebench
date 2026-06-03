@@ -172,7 +172,9 @@ fn record_sut_metrics(
     // persistent sessions for the SUT to observe, so report it from the harness
     // on every scrape so the dashboard sees a continuous series rather than the
     // adapter's (often zero) session count.
-    instruments.active_connections.record(concurrency, attributes);
+    instruments
+        .active_connections
+        .record(concurrency, attributes);
     if let Some(v) = response.resource.num_compute_nodes {
         crate::metrics::NUM_COMPUTE_NODES.record(v, attributes);
     }
