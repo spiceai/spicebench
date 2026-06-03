@@ -118,15 +118,11 @@ pub static QUERIES_PER_SEC: LazyLock<Gauge<f64>> = LazyLock::new(|| {
         .build()
 });
 
-// --- Connections ---
-
-pub static ACTIVE_CONNECTIONS: LazyLock<Gauge<u64>> = LazyLock::new(|| {
-    meter()
-        .u64_gauge("active_connections")
-        .with_description("Number of concurrent connections / clients maintained.")
-        .with_unit("connections")
-        .build()
-});
+// --- Compute ---
+//
+// `active_connections` (offered query-client concurrency) is recorded on the
+// periodic SUT metrics pipeline in `commands::load`, not here, so it forms a
+// time series instead of a single end-of-run point.
 
 pub static NUM_COMPUTE_NODES: LazyLock<Gauge<u64>> = LazyLock::new(|| {
     meter()
