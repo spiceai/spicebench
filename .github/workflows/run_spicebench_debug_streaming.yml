@@ -237,7 +237,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}Gi"
-            SPIDAPTER_EXTRA_ARGS="--compute scp --storage postgres-debezium --storage-compute ec2 --ec2-associate-public-ip --auto-load-complete"
+            SPIDAPTER_EXTRA_ARGS="--compute scp --storage postgres-debezium --storage-compute ec2 --ec2-associate-public-ip"
 
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -246,7 +246,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}Gi"
-            SPIDAPTER_EXTRA_ARGS="--compute scp --storage dynamodb-streams --auto-load-complete"
+            SPIDAPTER_EXTRA_ARGS="--compute scp --storage dynamodb-streams"
 
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -256,7 +256,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}Gi"
-            SPIDAPTER_EXTRA_ARGS="--compute scp --storage mongodb-changes-stream --storage-compute ec2 --ec2-associate-public-ip --auto-load-complete"
+            SPIDAPTER_EXTRA_ARGS="--compute scp --storage mongodb-changes-stream --storage-compute ec2 --ec2-associate-public-ip"
 
           else
             echo "Unsupported system_under_test: ${SYSTEM_UNDER_TEST}"
