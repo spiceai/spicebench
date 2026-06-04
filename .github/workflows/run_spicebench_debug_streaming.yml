@@ -42,7 +42,7 @@ on:
       scale_factor:
         description: 'Scale Factor'
         required: true
-        default: '0.1'
+        default: '1'
         type: choice
         options:
           - '0.1'
