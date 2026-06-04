@@ -20,8 +20,6 @@ on:
         options:
           - postgres-wal-cayenne
           - postgres-wal-duckdb
-          - postgres-debezium-cayenne
-          - postgres-debezium-duckdb
           - dynamodb-streams-cayenne
           - dynamodb-streams-duckdb
           - mongodb-streams-cayenne
