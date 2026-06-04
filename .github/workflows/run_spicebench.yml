@@ -292,7 +292,7 @@ jobs:
           # Scale ephemeral storage for streaming scenarios based on scale factor.
           case "${SCALE_FACTOR}" in
             0.1) STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=1Gi ;;
-            1)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10Gi ;;
+            1)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=20Gi ;;
             10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=400Gi ;;
             *)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10Gi ;;
           esac
