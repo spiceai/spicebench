@@ -99,6 +99,11 @@ on:
         required: false
         default: false
         type: boolean
+      cayenne_params:
+        description: 'Extra cayenne catalog params as comma-separated key=value pairs (e.g. cayenne_write_concurrency=1). Requires a spidapter image with SPIDAPTER_CAYENNE_PARAMS support.'
+        required: false
+        default: ''
+        type: string
 jobs:
   run-spicebench:
     name: Run spicebench
@@ -192,6 +197,7 @@ jobs:
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ github.event.inputs.executor_memory_limit || '16Gi' }}
           CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
           USE_PRIVATE_CLUSTER: ${{ github.event.inputs.use_private_cluster || 'false' }}
+          CAYENNE_PARAMS: ${{ github.event.inputs.cayenne_params || '' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -248,6 +254,12 @@ jobs:
           if [ "${USE_PRIVATE_CLUSTER}" = "true" ]; then
             echo "Private cluster enabled: tagging apps with organization 'spicehq' for node affinity"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+          fi
+
+          # Optional extra cayenne catalog params (no spaces allowed in the value).
+          if [ -n "${CAYENNE_PARAMS}" ]; then
+            echo "Cayenne params: ${CAYENNE_PARAMS}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CAYENNE_PARAMS=${CAYENNE_PARAMS}"
           fi
 
           # Optional custom image from ghcr.io/spiceai/spiceai-dev
