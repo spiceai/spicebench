@@ -1,0 +1,282 @@
+name: Run (Debug - Streaming)
+run-name: Run (Debug Streaming) - ${{ github.event.inputs.system_under_test }} - SF${{ github.event.inputs.scale_factor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      system_under_test:
+        description: 'Streaming backend to test'
+        required: true
+        default: postgres-wal-cayenne
+        type: choice
+        options:
+          - postgres-wal-cayenne
+          - postgres-wal-duckdb
+          - postgres-debezium-cayenne
+          - postgres-debezium-duckdb
+          - dynamodb-streams-cayenne
+          - dynamodb-streams-duckdb
+          - mongodb-streams-cayenne
+          - mongodb-streams-duckdb
+      scenario:
+        description: 'Scenario/query set to run (e.g. tpch)'
+        required: true
+        default: 'tpch'
+        type: string
+      etl_type:
+        description: 'ETL type'
+        required: true
+        default: 'changes'
+        type: choice
+        options:
+          - events
+          - changes
+      scale_factor:
+        description: 'Scale Factor'
+        required: true
+        default: '0.1'
+        type: choice
+        options:
+          - '0.1'
+          - '1'
+          - '10'
+      spidapter_image_tag:
+        description: 'Spidapter Docker image tag (e.g. latest, viktor)'
+        required: false
+        default: 'latest'
+        type: string
+      num_query_clients:
+        description: 'Number of concurrent query clients'
+        required: false
+        default: '2'
+        type: string
+      enable_module_debug_logging:
+        description: 'Enable debug logs'
+        required: false
+        default: false
+        type: boolean
+      disable_teardown:
+        description: 'Skip teardown — keeps EC2 instances and SCP app alive for inspection'
+        required: false
+        default: false
+        type: boolean
+      ec2_instance_type:
+        description: 'EC2 instance type override (e.g. m5.large, m5.2xlarge, r5.2xlarge)'
+        required: false
+        default: ''
+        type: string
+      app_memory_limit:
+        description: 'Memory limit for the SCP pod (e.g. 64Gi)'
+        required: false
+        default: '64Gi'
+        type: string
+      custom_image_tag:
+        description: 'Custom runtime container image tag from ghcr.io/spiceai/spiceai-dev (uses internal channel)'
+        required: false
+        default: ''
+        type: string
+      use_private_cluster:
+        description: 'Pin SCP app to the private cluster (spicehq org tag)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  run-spicebench:
+    name: Run spicebench
+    runs-on: spiceai-dev-runners
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-cc
+
+      - uses: ./.github/actions/management-login
+        with:
+          token-url: https://spice.ai/api/oauth/token
+          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
+          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull spidapter image
+        run: docker pull ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_image_tag || 'latest' }}
+
+      - uses: ./.github/actions/build-spicebench
+
+      - name: Install ADBC Postgres driver
+        if: ${{ startsWith(github.event.inputs.system_under_test, 'postgres-') }}
+        uses: columnar-tech/setup-dbc@v1
+        with:
+          drivers: postgresql
+
+      - name: Run spicebench
+        env:
+          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          SPICE_CLOUD_API_URL: https://api.spice.ai
+          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
+          SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test }}
+          NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '2' }}
+          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '0.1' }}
+          ETL_BUCKET: spicebench
+          ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
+          ETL_REGION: us-east-1
+          ETL_SINK: adbc
+          SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
+          VALIDATE_CHECKPOINT_RESULTS: 'true'
+          ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
+          SCRAPE_SUT_METRICS: 'true'
+          SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
+          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
+          S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          EC2_SUBNET_ID: ${{ vars.EC2_SUBNET_ID }}
+          EC2_SECURITY_GROUP_ID: ${{ vars.EC2_SECURITY_GROUP_ID }}
+          EC2_AMI_ID: ${{ vars.EC2_AMI_ID }}
+          EC2_INSTANCE_TYPE: ${{ github.event.inputs.ec2_instance_type || vars.EC2_INSTANCE_TYPE }}
+          EC2_IAM_INSTANCE_PROFILE: ${{ vars.EC2_IAM_INSTANCE_PROFILE }}
+          SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '64Gi' }}
+          DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
+          CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
+          USE_PRIVATE_CLUSTER: ${{ github.event.inputs.use_private_cluster || 'true' }}
+        run: |
+          set -euo pipefail
+          if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
+            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug,etl::sink::adbc=debug,etl::sink::dynamodb=debug,etl::sink::mongodb=debug'
+          else
+            export RUST_LOG='info,etl::sink::adbc=debug,etl::sink::dynamodb=debug,etl::sink::mongodb=debug'
+          fi
+
+          EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
+          ETL_ENDPOINT="${MINIO_ENDPOINT}"
+          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
+
+          case "${SCALE_FACTOR}" in
+            0.1) STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=1 ;;
+            1)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10 ;;
+            10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=400 ;;
+            *)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10 ;;
+          esac
+          export EC2_DISK_SIZE_GB="${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
+
+          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"
+          if [ -n "${ETL_PREFIX}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-prefix ${ETL_PREFIX}"
+          fi
+          if [ -n "${ETL_REGION}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"
+          fi
+          if [ -n "${ETL_ENDPOINT:-}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
+          fi
+
+          VALIDATION_ARGS=""
+          if [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ]; then
+            VALIDATION_ARGS="--validate-results"
+          fi
+
+          SUT_METRICS_ARGS=""
+          if [ "${SCRAPE_SUT_METRICS}" = "true" ]; then
+            SUT_METRICS_ARGS="--scrape-sut-metrics"
+          fi
+
+          NO_TEARDOWN_ARG=""
+          if [ "${DISABLE_TEARDOWN}" = "true" ]; then
+            NO_TEARDOWN_ARG="--no-teardown"
+          fi
+
+          SCHEDULER_STATE_ADAPTER_ENV="--system-adapter-env SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}"
+
+          # Determine SPICE_ACCELERATION from system_under_test suffix
+          case "${SYSTEM_UNDER_TEST}" in
+            *-duckdb) SPICE_ACCELERATION="duckdb" ;;
+            *)        SPICE_ACCELERATION="cayenne" ;;
+          esac
+
+          ADAPTER_CMD="docker"
+
+          if [[ "${SYSTEM_UNDER_TEST}" == postgres-wal-* ]]; then
+            export SPICEBENCH_TARGET_BATCH_ROWS=50000
+            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e EC2_DISK_SIZE_GB -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
+            SPIDAPTER_EXTRA_ARGS="--backend scp --storage postgres-wal --storage-compute ec2 --ec2-associate-public-ip"
+
+          elif [[ "${SYSTEM_UNDER_TEST}" == postgres-debezium-* ]]; then
+            export SPICEBENCH_TARGET_BATCH_ROWS=50000
+            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e EC2_DISK_SIZE_GB -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
+            SPIDAPTER_EXTRA_ARGS="--backend scp --storage postgres-debezium --storage-compute ec2 --ec2-associate-public-ip --auto-load-complete"
+
+          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
+            export SPICEBENCH_TARGET_BATCH_ROWS=50000
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
+            SPIDAPTER_EXTRA_ARGS="--backend scp --storage dynamodb-streams --auto-load-complete"
+
+          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
+            export SPICEBENCH_TARGET_BATCH_ROWS=50000
+            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e EC2_DISK_SIZE_GB -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
+            SPIDAPTER_EXTRA_ARGS="--backend scp --storage mongodb-changes-stream --storage-compute ec2 --ec2-associate-public-ip --auto-load-complete"
+
+          else
+            echo "Unsupported system_under_test: ${SYSTEM_UNDER_TEST}"
+            exit 1
+          fi
+
+          if [ "${USE_PRIVATE_CLUSTER}" = "true" ]; then
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+          fi
+
+          # Use internal channel when a custom image is specified.
+          SPIDAPTER_CHANNEL="nightly"
+          if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
+            echo "Custom image tag: ${CUSTOM_IMAGE_TAG} (switching to internal channel)"
+            SPIDAPTER_CHANNEL="internal"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
+          fi
+
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_image_tag || 'latest' }} stdio --verbose --channel ${SPIDAPTER_CHANNEL} ${SPIDAPTER_EXTRA_ARGS}"
+          ADAPTER_ENVS=""
+
+          set -x
+          ~/.spice/bin/spicebench run \
+            --concurrency "${NUM_QUERY_CLIENTS}" \
+            --scenario "${SCENARIO}" \
+            --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
+            ${ETL_ARGS} \
+            --etl-sink "${ETL_SINK}" \
+            --table-format parquet \
+            ${VALIDATION_ARGS} \
+            ${SUT_METRICS_ARGS} \
+            --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
+            --system-adapter-stdio-args "${ADAPTER_ARGS}" \
+            ${ADAPTER_ENVS} \
+            ${SCHEDULER_STATE_ADAPTER_ENV} \
+            ${NO_TEARDOWN_ARG}
