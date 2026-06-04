@@ -358,6 +358,7 @@ jobs:
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
+            export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
             case "${SYSTEM_UNDER_TEST}" in
               postgres-wal-duckdb) SPICE_ACCELERATION="duckdb" ;;
               *)                   SPICE_ACCELERATION="cayenne" ;;
@@ -375,6 +376,7 @@ jobs:
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
+            export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
             case "${SYSTEM_UNDER_TEST}" in
               postgres-debezium-duckdb) SPICE_ACCELERATION="duckdb" ;;
               *)                        SPICE_ACCELERATION="cayenne" ;;
