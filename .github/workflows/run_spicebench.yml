@@ -45,11 +45,6 @@ on:
           - '0.1'
           - '1'
           - '10'
-      custom_image_tag:
-        description: 'Custom runtime container image tag from ghcr.io/spiceai/spiceai-dev (e.g. spicebench-sf10). Uses internal channel when set.'
-        required: false
-        default: ''
-        type: string
 
 env:
   SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
