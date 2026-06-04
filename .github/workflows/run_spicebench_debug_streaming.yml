@@ -11,7 +11,7 @@ on:
         type: choice
         options:
           - dev
-          - prod
+          - production
       system_under_test:
         description: 'Streaming backend to test'
         required: true
