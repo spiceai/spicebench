@@ -99,9 +99,9 @@ jobs:
 
       - uses: ./.github/actions/management-login
         with:
-          token-url: ${{ github.event.inputs.environment == 'prod' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
-          client-id: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+          token-url: ${{ github.event.inputs.environment == 'production' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
+          client-id: ${{ github.event.inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ github.event.inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -129,7 +129,7 @@ jobs:
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '2' }}
