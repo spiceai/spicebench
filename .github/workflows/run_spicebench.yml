@@ -45,11 +45,6 @@ on:
           - '0.1'
           - '1'
           - '10'
-      spidapter_image_tag:
-        description: 'spidapter Docker image tag to use (e.g. a dev build tag). Defaults to latest.'
-        required: false
-        type: string
-        default: latest
       custom_image_tag:
         description: 'Custom runtime container image tag from ghcr.io/spiceai/spiceai-dev (e.g. spicebench-sf10). Uses internal channel when set.'
         required: false
@@ -89,7 +84,7 @@ jobs:
 
       - name: pull spidapter image
         if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') }}
-        run: docker pull ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }}
+        run: docker pull ghcr.io/spiceai/spidapter:latest
 
       - uses: ./.github/actions/build-spicebench
 
@@ -149,7 +144,7 @@ jobs:
                 exit 1
               fi
 
-              docker image inspect ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} >/dev/null 2>&1 || {
+              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
                 echo "spidapter docker image not found locally; pull step may have failed"
                 exit 1
               }
@@ -187,7 +182,7 @@ jobs:
                 exit 1
               fi
 
-              docker image inspect ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} >/dev/null 2>&1 || {
+              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
                 echo "spidapter docker image not found locally; pull step may have failed"
                 exit 1
               }
@@ -285,7 +280,6 @@ jobs:
           SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB: '256Gi'
           SPIDAPTER_ORGANIZATION_TAG: 'spicehq'
           ENABLE_PVC: 'false'
-          CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -380,7 +374,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute scp --storage postgres-wal --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute scp --storage postgres-wal --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [[ "${SYSTEM_UNDER_TEST}" == postgres-debezium-* ]]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -398,7 +392,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute scp --storage postgres-debezium --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute scp --storage postgres-debezium --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -413,7 +407,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute scp --storage dynamodb-streams --verbose --channel nightly"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute scp --storage dynamodb-streams --verbose --channel nightly"
             ADAPTER_ENVS=""
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -429,7 +423,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --compute scp --storage mongodb-changes-stream --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute scp --storage mongodb-changes-stream --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
             ADAPTER_ENVS=""
           else
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
@@ -448,17 +442,8 @@ jobs:
               ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3 -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2 -e SPIDAPTER_CAYENNE_DATA_DIR=/data/data -e SPIDAPTER_CAYENNE_METADATA_DIR=/data/metadata"
             fi
 
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose --channel nightly"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
             ADAPTER_ENVS=""
-          fi
-
-          # Inject custom image tag if provided: passes --image-tag to spidapter so it
-          # deploys ghcr.io/spiceai/spiceai-dev:<tag> instead of the nightly image,
-          # and replaces --channel nightly with --channel internal.
-          if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
-            echo "Custom image tag: ${CUSTOM_IMAGE_TAG} (switching to internal channel)"
-            ADAPTER_ARGS="${ADAPTER_ARGS/--channel nightly/--channel internal}"
-            ADAPTER_ARGS="${ADAPTER_ARGS} --image-tag ${CUSTOM_IMAGE_TAG}"
           fi
 
           set -x
