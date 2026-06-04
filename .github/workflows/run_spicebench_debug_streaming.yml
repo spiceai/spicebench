@@ -4,6 +4,14 @@ run-name: Run (Debug Streaming) - ${{ github.event.inputs.system_under_test }} -
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: 'Target Spice Cloud Environment'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - prod
+          - dev
       system_under_test:
         description: 'Streaming backend to test'
         required: true
@@ -93,9 +101,9 @@ jobs:
 
       - uses: ./.github/actions/management-login
         with:
-          token-url: https://spice.ai/api/oauth/token
-          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
-          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
+          token-url: ${{ github.event.inputs.environment == 'prod' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
+          client-id: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -118,7 +126,7 @@ jobs:
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: https://api.spice.ai
+          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '2' }}
@@ -212,7 +220,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
-            SPIDAPTER_EXTRA_ARGS="--backend scp --storage postgres-wal --storage-compute ec2 --ec2-associate-public-ip"
+            SPIDAPTER_EXTRA_ARGS="--compute scp --storage postgres-wal --storage-compute ec2 --ec2-associate-public-ip"
 
           elif [[ "${SYSTEM_UNDER_TEST}" == postgres-debezium-* ]]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -224,7 +232,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
-            SPIDAPTER_EXTRA_ARGS="--backend scp --storage postgres-debezium --storage-compute ec2 --ec2-associate-public-ip --auto-load-complete"
+            SPIDAPTER_EXTRA_ARGS="--compute scp --storage postgres-debezium --storage-compute ec2 --ec2-associate-public-ip --auto-load-complete"
 
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -233,7 +241,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
-            SPIDAPTER_EXTRA_ARGS="--backend scp --storage dynamodb-streams --auto-load-complete"
+            SPIDAPTER_EXTRA_ARGS="--compute scp --storage dynamodb-streams --auto-load-complete"
 
           elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
             export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -243,7 +251,7 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
-            SPIDAPTER_EXTRA_ARGS="--backend scp --storage mongodb-changes-stream --storage-compute ec2 --ec2-associate-public-ip --auto-load-complete"
+            SPIDAPTER_EXTRA_ARGS="--compute scp --storage mongodb-changes-stream --storage-compute ec2 --ec2-associate-public-ip --auto-load-complete"
 
           else
             echo "Unsupported system_under_test: ${SYSTEM_UNDER_TEST}"
