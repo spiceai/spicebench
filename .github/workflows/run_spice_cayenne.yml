@@ -1,0 +1,48 @@
+name: Run (Spice - Direct Ingest)
+run-name: Run (Spice Direct) - ${{ github.event.inputs.acceleration }} - SF${{ github.event.inputs.scale_factor }}
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily SF1 run
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Scenario/query set to run (e.g. tpch)'
+        required: true
+        default: 'tpch'
+        type: string
+      scale_factor:
+        description: 'Scale Factor'
+        required: true
+        default: '1'
+        type: choice
+        options:
+          - '0.1'
+          - '1'
+          - '10'
+      acceleration:
+        description: 'Acceleration engine'
+        required: true
+        default: cayenne
+        type: choice
+        options:
+          - cayenne
+          - duckdb
+      etl_type:
+        description: 'ETL type'
+        required: true
+        default: 'changes'
+        type: choice
+        options:
+          - events
+          - changes
+
+jobs:
+  run-spicebench:
+    name: Run spicebench (Spice direct ingest)
+    runs-on: spiceai-dev-runners
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-spicebench
+      # TODO: wire up spidapter docker invocation with --scenario cayenne
