@@ -132,6 +132,7 @@ jobs:
           SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test }}
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '2' }}
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '0.1' }}
           ETL_BUCKET: spicebench
