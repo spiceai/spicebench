@@ -1,9 +1,16 @@
 name: Run (Debug - Spice Cloud)
-run-name: Run (Debug) - SF${{ github.event.inputs.scale_factor }} - ${{ github.event.inputs.environment }}
+run-name: Run (Debug) - ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
 
 on:
   workflow_dispatch:
     inputs:
+      system_under_test:
+        description: 'System under test'
+        required: true
+        default: spice_cloud
+        type: choice
+        options:
+          - spice_cloud
       environment:
         description: 'Target Spice Cloud Environment'
         required: true
@@ -13,7 +20,7 @@ on:
           - dev
           - prod
       scenario:
-        description: 'Query scenario to run (e.g. tpch)'
+        description: 'Scenario/query set to run (e.g. tpch)'
         required: true
         default: 'tpch'
         type: string
@@ -35,7 +42,7 @@ on:
           - '1'
           - '10'
       spidapter_version:
-        description: 'Spidapter image tag (e.g. latest, v1.0.0)'
+        description: 'Spidapter image version tag (e.g. latest, v1.0.0)'
         required: false
         default: 'latest'
         type: string
