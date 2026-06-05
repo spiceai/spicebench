@@ -78,6 +78,12 @@ const ADBC_FLUSH_STREAM_BEFORE_UPSERT_ENV: &str = "SPICEBENCH_ADBC_FLUSH_STREAM_
 /// - `bulk_ingest_upsert` — bulk ingest directly into the target table (relies on the
 ///   target system's `on_conflict: upsert` or equivalent to merge)
 const ADBC_UPDATE_STRATEGY_ENV: &str = "SPICEBENCH_ADBC_UPDATE_STRATEGY";
+/// When true, runs `ANALYZE` on the staging table before the `MERGE INTO`
+/// so the planner has accurate statistics and picks an index scan instead of
+/// a full sequential scan on the (potentially large) target table.
+/// Only meaningful for PostgreSQL-compatible targets. Defaults to false.
+const ADBC_ANALYZE_STAGING_BEFORE_MERGE_ENV: &str =
+    "SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE";
 
 /// Strategy for executing UPDATE operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +237,13 @@ impl AdbcSink {
             .and_then(|raw| raw.parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_ADBC_BULK_INGEST_STREAM_BUFFER)
+    }
+
+    fn analyze_staging_before_merge() -> bool {
+        std::env::var(ADBC_ANALYZE_STAGING_BEFORE_MERGE_ENV)
+            .ok()
+            .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
     }
 
     /// Creates a new [`AdbcSink`] backed by a connection pool.
@@ -1236,7 +1249,26 @@ impl AdbcSink {
             )));
         }
 
-        // 3. MERGE INTO target from staging.
+        // 3. Optionally ANALYZE the staging table so the planner has accurate row
+        //    counts and chooses a nested-loop index scan over a full seq scan on
+        //    the target table. PostgreSQL-specific; disabled by default.
+        //    Enable with SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true.
+        if Self::analyze_staging_before_merge() {
+            let analyze_sql = format!(
+                "ANALYZE {}",
+                self.target_table_identifier(&staging_table)
+            );
+            if let Err(e) = conn.execute_update(&analyze_sql) {
+                tracing::warn!(
+                    table = %table_name,
+                    staging = %staging_table,
+                    error = %e,
+                    "ANALYZE on staging table failed (non-fatal, MERGE may be suboptimal)"
+                );
+            }
+        }
+
+        // 4. MERGE INTO target from staging.
         let merge_sql = Self::build_staging_merge_sql(
             &self.target_table_identifier(table_name),
             &self.target_table_identifier(&staging_table),
@@ -1248,7 +1280,7 @@ impl AdbcSink {
             .execute_update(&merge_sql)
             .map_err(|e| anyhow::anyhow!("MERGE INTO update failed for '{table_name}': {e}"));
 
-        // 4. Drop staging table (always, even on merge failure).
+        // 5. Drop staging table (always, even on merge failure).
         self.drop_staging_table_best_effort(conn, &staging_table)
             .await;
 

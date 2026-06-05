@@ -214,6 +214,7 @@ jobs:
               export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
               export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
               export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
+              export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
               ;;
             postgres-debezium)
               USE_EC2=true
@@ -221,6 +222,7 @@ jobs:
               export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
               export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
               export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
+              export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
               ;;
             dynamodb-streams)
               USE_EC2=false

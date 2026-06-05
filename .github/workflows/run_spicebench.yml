@@ -218,6 +218,7 @@ jobs:
             export SPICEBENCH_TARGET_BATCH_ROWS=500000
             export SPICEBENCH_ADBC_MAX_INGEST_BATCH_BYTES=1268435456
             export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
+            export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
 
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
