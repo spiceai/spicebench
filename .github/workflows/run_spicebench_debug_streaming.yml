@@ -61,11 +61,6 @@ on:
         required: false
         default: ''
         type: string
-      enable_spice_debug:
-        description: 'Enable debug mode on the Spice Cloud deployment (SPIDAPTER_SPICE_DEBUG=true)'
-        required: false
-        default: false
-        type: boolean
       num_query_clients:
         description: 'Number of concurrent query clients'
         required: false
@@ -93,6 +88,11 @@ on:
         type: boolean
       enable_module_debug_logging:
         description: 'Enable debug logs'
+        required: false
+        default: false
+        type: boolean
+      enable_spice_debug:
+        description: 'Enable debug mode on the Spice Cloud deployment'
         required: false
         default: false
         type: boolean
