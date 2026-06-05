@@ -82,8 +82,7 @@ const ADBC_UPDATE_STRATEGY_ENV: &str = "SPICEBENCH_ADBC_UPDATE_STRATEGY";
 /// so the planner has accurate statistics and picks an index scan instead of
 /// a full sequential scan on the (potentially large) target table.
 /// Only meaningful for PostgreSQL-compatible targets. Defaults to false.
-const ADBC_ANALYZE_STAGING_BEFORE_MERGE_ENV: &str =
-    "SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE";
+const ADBC_ANALYZE_STAGING_BEFORE_MERGE_ENV: &str = "SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE";
 
 /// Strategy for executing UPDATE operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,7 +241,12 @@ impl AdbcSink {
     fn analyze_staging_before_merge() -> bool {
         std::env::var(ADBC_ANALYZE_STAGING_BEFORE_MERGE_ENV)
             .ok()
-            .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|raw| {
+                matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(false)
     }
 
@@ -1254,10 +1258,7 @@ impl AdbcSink {
         //    the target table. PostgreSQL-specific; disabled by default.
         //    Enable with SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true.
         if Self::analyze_staging_before_merge() {
-            let analyze_sql = format!(
-                "ANALYZE {}",
-                self.target_table_identifier(&staging_table)
-            );
+            let analyze_sql = format!("ANALYZE {}", self.target_table_identifier(&staging_table));
             if let Err(e) = conn.execute_update(&analyze_sql) {
                 tracing::warn!(
                     table = %table_name,
