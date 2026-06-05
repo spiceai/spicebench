@@ -1,5 +1,5 @@
-name: Run (Debug - Streaming)
-run-name: Run (Debug Streaming) - ${{ github.event.inputs.system_under_test }} - ${{ github.event.inputs.etl_type}} - SF${{ github.event.inputs.scale_factor }}
+name: Run - Streaming
+run-name: Run Streaming - ${{ github.event.inputs.system_under_test }} - ${{ github.event.inputs.etl_type}} - SF${{ github.event.inputs.scale_factor }}
 
 on:
   workflow_dispatch:
