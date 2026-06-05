@@ -146,6 +146,7 @@ jobs:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test }}
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test }}
           ACCELERATION: ${{ github.event.inputs.acceleration }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
