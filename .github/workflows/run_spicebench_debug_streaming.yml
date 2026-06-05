@@ -66,6 +66,11 @@ on:
         required: false
         default: false
         type: boolean
+      checkpoint_validation_timeout:
+        description: 'Maximum seconds to wait for a checkpoint to converge before failing (default: 3600)'
+        required: false
+        default: '3600'
+        type: string
       ec2_instance_type:
         description: 'EC2 instance type override (e.g. m5.large, m5.2xlarge, r5.2xlarge)'
         required: false
@@ -141,6 +146,7 @@ jobs:
           ETL_SINK: adbc
           SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
           VALIDATE_CHECKPOINT_RESULTS: 'true'
+          CHECKPOINT_VALIDATION_TIMEOUT: ${{ github.event.inputs.checkpoint_validation_timeout || '3600' }}
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
@@ -191,7 +197,7 @@ jobs:
 
           VALIDATION_ARGS=""
           if [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ]; then
-            VALIDATION_ARGS="--validate-results"
+            VALIDATION_ARGS="--validate-results --checkpoint-validation-timeout ${CHECKPOINT_VALIDATION_TIMEOUT}"
           fi
 
           SUT_METRICS_ARGS=""
