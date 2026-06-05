@@ -241,6 +241,7 @@ jobs:
           ADAPTER_CMD="docker"
           ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=${EXECUTOR_REPLICAS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
 
+          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=cayenne"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
 
@@ -261,13 +262,14 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3 -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2 -e SPIDAPTER_CAYENNE_DATA_DIR=/data/data -e SPIDAPTER_CAYENNE_METADATA_DIR=/data/metadata"
           fi
 
-          # Use internal channel when a custom image is specified, otherwise nightly.
+          # Channel flows into the scenario YAML via SPIDAPTER_CHANNEL env var.
           SPIDAPTER_CHANNEL="nightly"
           if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
             SPIDAPTER_CHANNEL="internal"
           fi
+          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CHANNEL=${SPIDAPTER_CHANNEL}"
 
-          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel ${SPIDAPTER_CHANNEL}"
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose"
           ADAPTER_ENVS=""
 
           NO_TEARDOWN_ARG=""

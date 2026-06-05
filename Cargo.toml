@@ -27,10 +27,13 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1.0.99"
 arrow = { version = "57.0.0", features = ["prettyprint"] }
+aws-config = { version = "1" }
+aws-sdk-dynamodb = { version = "1" }
 arrow-array = "57.0.0"
 arrow-buffer = "57.0.0"
 arrow-cast = "57.0.0"
 arrow-flight = "57.0.0"
+arrow-ipc = "57.0.0"
 arrow-schema = "57.0.0"
 async-trait = "0.1.89"
 base64 = "0.22.1"
@@ -39,6 +42,7 @@ bytes = "1.10.0"
 chrono = "0.4.44"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 duckdb = "1.4.4"
+mongodb = { version = "3.5.2" }
 duration-parse = { path = "crates/duration-parse" }
 tpchgen = "2.0.2"
 tpchgen-arrow = "2.0.2"
@@ -122,12 +126,14 @@ version.workspace = true
 [dependencies]
 adbc_client = { path = "crates/adbc_client" }
 arrow.workspace = true
+arrow-ipc.workspace = true
 arrow-schema.workspace = true
+base64.workspace = true
 async-trait.workspace = true
 checkpointer = { path = "crates/checkpointer" }
 clap.workspace = true
 data-generation = { path = "crates/data-generation" }
-etl = { path = "crates/etl" }
+etl = { path = "crates/etl", features = ["dynamodb", "mongodb"] }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

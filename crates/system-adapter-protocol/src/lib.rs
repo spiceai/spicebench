@@ -131,16 +131,6 @@ pub enum AdbcDriver {
     MongoDB,
 }
 
-/// ETL sink type used by spicebench for this run.
-///
-/// This is provided to adapters in [`SetupRequest`] so they can optionally
-/// adjust setup behavior based on how data is loaded.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EtlSinkType {
-    Adbc,
-}
-
 impl std::fmt::Display for AdbcDriver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -169,11 +159,36 @@ pub struct DatasetConfig {
     pub partition_columns: Vec<String>,
 }
 
-/// Request to setup a benchmark run.
+/// Sink configuration returned by `setup`.
+///
+/// Serialized as a JSON tagged enum so the client can pattern-match on `"type"`
+/// to instantiate the right sink (`AdbcSink`, `DynamoDbSink`, or `MongoDbSink`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum SinkConfig {
+    Adbc {
+        driver: AdbcDriver,
+        db_kwargs: HashMap<String, serde_json::Value>,
+    },
+    DynamoDb {
+        region: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        access_key_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        secret_access_key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_token: Option<String>,
+    },
+    MongoDb {
+        /// MongoDB URI with database name embedded, e.g. `mongodb://host:27017/spicebench`.
+        uri: String,
+    },
+}
+
+/// Request to set up a benchmark run.
 ///
 /// JSON-RPC method: `setup`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SetupRequest {
     /// Unique identifier for this benchmark run
     pub run_id: Uuid,
@@ -182,24 +197,22 @@ pub struct SetupRequest {
     pub metadata: HashMap<String, serde_json::Value>,
     /// Map of dataset name to dataset definition
     pub datasets: HashMap<String, DatasetConfig>,
-    /// Optional ETL sink type selected by spicebench.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub etl_sink_type: Option<EtlSinkType>,
 }
 
-/// Response from setup request containing ADBC connection information
+/// Response from setup. Contains both write-side sink config and read-side
+/// connection info.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SetupResponse {
-    /// ADBC driver to use for database connections
-    pub driver: AdbcDriver,
-    /// Driver-specific connection parameters
-    pub db_kwargs: HashMap<String, serde_json::Value>,
+    /// Write-side sink configuration
+    pub sink: SinkConfig,
     /// Optional catalog/namespace path where benchmark tables were created
     /// (e.g. "catalog.schema").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalog_namespace: Option<String>,
-    /// Optional read driver to use for reading data from the benchmark tables.
-    pub read_driver: Option<(AdbcDriver, HashMap<String, serde_json::Value>)>,
+    /// ADBC driver to use for reading query results
+    pub read_driver: AdbcDriver,
+    /// Driver-specific connection parameters for the read driver
+    pub read_db_kwargs: HashMap<String, serde_json::Value>,
     /// Additional non-ADBC transports the SUT exposes, keyed by transport
     /// identifier. Each value is a free-form kwargs map (mirroring `db_kwargs`
     /// in shape) whose keys are interpreted by the consumer based on the
@@ -214,6 +227,7 @@ pub struct SetupResponse {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub endpoints: HashMap<String, HashMap<String, serde_json::Value>>,
 }
+
 /// Request to teardown a benchmark run
 ///
 /// JSON-RPC method: `teardown`
@@ -221,6 +235,11 @@ pub struct SetupResponse {
 pub struct TeardownRequest {
     /// Unique identifier for the benchmark run to clean up
     pub run_id: Uuid,
+    /// When true, clean up the run state but preserve provisioned cloud resources
+    /// (EC2 instances, DynamoDB tables, SCP app, etc.) for post-run inspection.
+    /// Defaults to false.
+    #[serde(default)]
+    pub preserve_resources: bool,
 }
 
 /// Response from teardown request

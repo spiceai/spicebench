@@ -182,6 +182,11 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 5)]
     pub(crate) checkpoint_validation_period: u64,
 
+    /// Maximum time in seconds to wait for a single checkpoint to converge
+    /// before aborting the run with `validation_timeout`.
+    #[arg(long, default_value_t = 600)]
+    pub(crate) checkpoint_validation_timeout: u64,
+
     /// Skip the teardown RPC call to the system adapter after the benchmark completes.
     ///
     /// Useful when you want to inspect the system state after a run without

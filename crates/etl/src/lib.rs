@@ -917,7 +917,7 @@ async fn write_segments_for_batch(
                     partition_columns,
                 )
                 .await
-                .map_err(|e| format!("write {table_name} batch {batch_id}: {e}"))
+                .map_err(|e| format!("write {table_name} batch {batch_id}: {e:#}"))
         });
     }
 
@@ -1959,28 +1959,49 @@ async fn run_pipeline(
         }
 
         // Collect results from all concurrent table tasks in this step.
+        // Also watch for cancellation so a ctrl-c that arrives while tasks are
+        // blocked in a slow sink write (e.g. DynamoDB ADBC bulk ingest) doesn't
+        // leave the pipeline stuck waiting for the current step to finish.
         let mut step_batch_count: u64 = 0;
         let mut step_rows_count: u64 = 0;
-        while let Some(result) = join_set.join_next().await {
-            match result {
-                Ok(Ok((table_name, is_finished, consumed_work_units, rows_read))) => {
-                    step_batch_count += consumed_work_units;
-                    step_rows_count += rows_read;
-                    if is_finished {
-                        let mut state = work_state.lock().expect("work_state lock poisoned");
-                        state.finished_tables.insert(table_name);
-                        tables_finished_counter.fetch_add(1, Ordering::Relaxed);
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    join_set.abort_all();
+                    progress_logger.abort();
+                    return PipelineState::Stopped(StopReason::Cancelled);
+                }
+                result = join_set.join_next() => {
+                    let Some(result) = result else { break; };
+                    match result {
+                        Ok(Ok((table_name, is_finished, consumed_work_units, rows_read))) => {
+                            step_batch_count += consumed_work_units;
+                            step_rows_count += rows_read;
+                            if is_finished {
+                                let mut state = work_state.lock().expect("work_state lock poisoned");
+                                state.finished_tables.insert(table_name);
+                                tables_finished_counter.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        Ok(Err(err_msg)) => {
+                            progress_logger.abort();
+                            return PipelineState::Stopped(StopReason::Error(err_msg));
+                        }
+                        Err(e) if e.is_cancelled() => {
+                            // Task was aborted (e.g. by abort_all above on a
+                            // concurrent iteration); treat as a soft cancel.
+                            join_set.abort_all();
+                            progress_logger.abort();
+                            return PipelineState::Stopped(StopReason::Cancelled);
+                        }
+                        Err(e) => {
+                            progress_logger.abort();
+                            return PipelineState::Stopped(StopReason::Error(format!(
+                                "Task panicked: {e}"
+                            )));
+                        }
                     }
-                }
-                Ok(Err(err_msg)) => {
-                    progress_logger.abort();
-                    return PipelineState::Stopped(StopReason::Error(err_msg));
-                }
-                Err(e) => {
-                    progress_logger.abort();
-                    return PipelineState::Stopped(StopReason::Error(format!(
-                        "Task panicked: {e}"
-                    )));
                 }
             }
         }

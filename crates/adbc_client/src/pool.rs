@@ -150,9 +150,11 @@ pub fn create_pool(
             reason: e.to_string(),
         })?;
 
+    let downcast_utf8view =
+        driver_name == "databricks" || driver_name.eq_ignore_ascii_case("dynamodb");
     let manager = AdbcConnectionManager::new(
         db,
-        driver_name == "databricks",
+        downcast_utf8view,
         driver_name == "postgresql",
         driver_name == "postgresql" || driver_name == "databricks",
     );

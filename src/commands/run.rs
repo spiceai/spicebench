@@ -25,9 +25,13 @@ use data_generation::storage::s3::S3Storage;
 use data_generation::version::VersionMetadata;
 use etl::sink::Sink;
 use etl::sink::adbc::AdbcSink;
+use etl::sink::{dynamodb::DynamoDbSink, mongodb::MongoDbSink};
 use etl::{DatasetSource, ETLPipeline, PipelineState, StopReason};
+use system_adapter_protocol::SinkConfig;
 use test_framework::anyhow;
+
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::args::RunArgs;
 use crate::commands::connect_system_adapter;
@@ -56,6 +60,7 @@ async fn run_benchmark(
     setup_metadata: HashMap<String, serde_json::Value>,
     version_metadata: &VersionMetadata,
     file_storage: Arc<FileStorage>,
+    shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     // --- Download checkpoints from S3 ---
     let scenario_name = common.scenario.to_string();
@@ -115,15 +120,12 @@ async fn run_benchmark(
     let mutations = version_metadata.mutation_config();
     let data_source: Arc<dyn DataStorage> = file_storage.clone();
 
-    let etl_sink_type = system_adapter_protocol::EtlSinkType::Adbc;
-    let target_config = None;
-
     let mut datasets = ETLPipeline::create_tables_request_datasets(
         dataset_source.clone(),
         &generation_config,
         Arc::clone(&data_source),
         &mutations,
-        target_config.clone(),
+        None,
     )?;
 
     // When using the staging_table update strategy, tables must NOT have
@@ -142,80 +144,105 @@ async fn run_benchmark(
             config.primary_key_columns.clear();
         }
     }
-    let (setup_response, mut pipeline) = {
-        let setup_response = system_adapter_client
-            .lock()
-            .await
-            .setup(
-                run_id,
-                setup_metadata.clone(),
-                setup_datasets,
-                Some(etl_sink_type),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to setup system adapter: {e}"))?;
 
-        let driver_name = setup_response.driver.to_string();
-        let mut db_kwargs = setup_response.db_kwargs.clone();
-        if driver_name.eq_ignore_ascii_case("flightsql") {
-            db_kwargs
-                .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
-                .or_insert_with(|| {
-                    serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
-                });
+    // --- Step 1: setup — create tables/collections, start spiced, get write + read config ---
+    let setup_response = system_adapter_client
+        .lock()
+        .await
+        .setup(run_id, setup_metadata.clone(), setup_datasets)
+        .await
+        .map_err(|e| anyhow::anyhow!("setup failed: {e}"))?;
+
+    tracing::info!(sink_type = ?setup_response.sink, "Setup complete");
+
+    // --- Step 2: build the write sink from SinkConfig ---
+    let target_sink: Arc<dyn Sink> = match setup_response.sink {
+        SinkConfig::Adbc {
+            driver,
+            mut db_kwargs,
+        } => {
+            let driver_name = driver.to_string();
+            if driver_name.eq_ignore_ascii_case("flightsql") {
+                db_kwargs
+                    .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
+                    .or_insert_with(|| {
+                        serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
+                    });
+            }
+
+            let write_schema = db_kwargs
+                .remove("spicebench.write_schema")
+                .and_then(|v| v.as_str().map(str::to_string));
+
+            let (target_db_catalog, target_db_schema) =
+                infer_adbc_target_namespace(write_schema.as_deref());
+
+            Arc::new(AdbcSink::new(
+                &driver_name,
+                db_kwargs,
+                target_db_catalog,
+                target_db_schema,
+                Some((Arc::clone(&system_adapter_client), run_id)),
+            )?)
         }
-
-        let (target_db_catalog, target_db_schema) =
-            infer_adbc_target_namespace(setup_response.catalog_namespace.as_deref());
-
-        let target_sink: Arc<dyn Sink> = Arc::new(AdbcSink::new(
-            &driver_name,
-            db_kwargs,
-            target_db_catalog,
-            target_db_schema,
-            Some((Arc::clone(&system_adapter_client), run_id)),
-        )?);
-
-        let mut pipeline = ETLPipeline::new(
-            dataset_source,
-            &generation_config,
-            Arc::clone(&data_source),
-            target_sink,
-            &mutations,
-        )?;
-
-        pipeline.initialize().await?;
-
-        (setup_response, pipeline)
+        SinkConfig::DynamoDb {
+            region,
+            access_key_id,
+            secret_access_key,
+            session_token,
+        } => Arc::new(
+            DynamoDbSink::new(
+                region,
+                access_key_id,
+                secret_access_key,
+                session_token,
+                setup_response.catalog_namespace.clone(),
+            )
+            .await,
+        ),
+        SinkConfig::MongoDb { uri } => {
+            let pk_cols = datasets
+                .iter()
+                .map(|(name, cfg)| (name.clone(), cfg.primary_key_columns.clone()))
+                .collect();
+            Arc::new(
+                MongoDbSink::new(&uri, pk_cols)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to create MongoDB sink: {e}"))?,
+            )
+        }
     };
 
-    let driver_name = setup_response.driver.to_string();
-    let mut db_kwargs = setup_response.db_kwargs.clone();
-    let query_catalog_namespace = setup_response.catalog_namespace.clone();
-    let read_driver = setup_response.read_driver.clone();
+    // --- Step 3: initialize ETL pipeline (writes batch 0 via the write sink) ---
+    let mut pipeline = ETLPipeline::new(
+        dataset_source,
+        &generation_config,
+        Arc::clone(&data_source),
+        target_sink,
+        &mutations,
+    )?;
+    tokio::select! {
+        r = pipeline.initialize() => r?,
+        _ = shutdown.cancelled() => {
+            pipeline.cancel();
+            return Err(anyhow::anyhow!("Interrupted during ETL initialization"));
+        }
+    }
 
-    if driver_name.eq_ignore_ascii_case("flightsql") {
-        db_kwargs
+    let read_driver_name = setup_response.read_driver.to_string();
+    let mut read_db_kwargs = setup_response.read_db_kwargs;
+    let query_catalog_namespace = setup_response.catalog_namespace;
+
+    if read_driver_name.eq_ignore_ascii_case("flightsql") {
+        read_db_kwargs
             .entry(FLIGHTSQL_MAX_MSG_SIZE_OPTION.to_string())
             .or_insert_with(|| {
                 serde_json::Value::String(DEFAULT_FLIGHTSQL_MAX_MSG_SIZE_BYTES.to_string())
             });
     }
 
-    // Allow system adapter to optionally provide read connection different from the write connection.
-    // If not specified - use the same connection as the write connection.
-    let (read_driver_name, read_db_kwargs) = match read_driver {
-        None => (driver_name.clone(), db_kwargs.clone()),
-        Some((read_driver, read_db_kwargs)) => (read_driver.to_string(), read_db_kwargs.clone()),
-    };
-
     // Size the read pool to accommodate both the test workers and the
-    // checkpoint validation executor running concurrently.  Each test worker
-    // holds one connection for the duration of a query, and during checkpoint
-    // validation `validate_full_query_set` runs up to `concurrency` queries
-    // in parallel via a *separate* executor backed by the same pool.  Without
-    // enough headroom the excess `pool.get()` calls block and eventually hit
-    // r2d2's 30-second connection timeout ("timed out waiting for connection").
+    // checkpoint validation executor running concurrently.
     let read_pool_size: u32 = (common.concurrency * 2 + 1).try_into().unwrap_or(u32::MAX);
     let read_pool =
         match adbc_client::create_pool(&read_driver_name, read_db_kwargs, Some(read_pool_size)) {
@@ -242,6 +269,7 @@ async fn run_benchmark(
         checkpoint_steps,
         Some(checkpoint_dir.path()),
         query_catalog_namespace,
+        shutdown,
     )
     .await?;
 
@@ -362,21 +390,62 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     }
 
     let system_adapter_client = Arc::new(Mutex::new(system_adapter_client));
-    let result = run_benchmark(
-        args,
-        Arc::clone(&system_adapter_client),
-        run_id,
-        setup_metadata,
-        &version_metadata,
-        file_storage,
-    )
-    .await;
 
-    // After successful setup, always teardown even if there are errors in between,
-    // unless --no-teardown was requested (e.g. to inspect cloud state after a run).
-    if args.no_teardown {
-        tracing::info!("Skipping teardown (--no-teardown flag is set).");
-    } else if let Err(e) = system_adapter_client.lock().await.teardown(run_id).await {
+    let shutdown = CancellationToken::new();
+    {
+        let token = shutdown.clone();
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigterm =
+                    signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = sigterm.recv() => {},
+                }
+            }
+            #[cfg(not(unix))]
+            tokio::signal::ctrl_c().await.ok();
+            token.cancel();
+        });
+    }
+
+    // Wrap run_benchmark in a select so that SIGTERM/SIGINT during any blocking
+    // call inside it (setup, sink creation, pool creation) cancels cleanly and
+    // teardown still runs.  The token is also passed into run_benchmark so that
+    // initialize() and load::run() can cancel themselves from within.
+    let result = tokio::select! {
+        r = run_benchmark(
+            args,
+            Arc::clone(&system_adapter_client),
+            run_id,
+            setup_metadata,
+            &version_metadata,
+            file_storage,
+            shutdown.clone(),
+        ) => r,
+        _ = shutdown.cancelled() => {
+            Err(anyhow::anyhow!("Interrupted"))
+        }
+    };
+
+    // Always call teardown so spidapter can clean up its run state and disarm
+    // RAII guards. When --no-teardown is set, pass preserve_resources=true so
+    // provisioned cloud resources (EC2 instances, DynamoDB tables, SCP app) are
+    // kept alive for post-run inspection instead of being deleted.
+    let preserve = args.no_teardown;
+    if preserve {
+        tracing::info!(
+            "--no-teardown: calling teardown with preserve_resources=true to keep cloud resources alive."
+        );
+    }
+    if let Err(e) = system_adapter_client
+        .lock()
+        .await
+        .teardown(run_id, preserve)
+        .await
+    {
         tracing::error!("Failed to teardown system adapter: {e}");
     }
 

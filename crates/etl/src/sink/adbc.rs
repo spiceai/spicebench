@@ -78,6 +78,11 @@ const ADBC_FLUSH_STREAM_BEFORE_UPSERT_ENV: &str = "SPICEBENCH_ADBC_FLUSH_STREAM_
 /// - `bulk_ingest_upsert` — bulk ingest directly into the target table (relies on the
 ///   target system's `on_conflict: upsert` or equivalent to merge)
 const ADBC_UPDATE_STRATEGY_ENV: &str = "SPICEBENCH_ADBC_UPDATE_STRATEGY";
+/// When true, runs `ANALYZE` on the staging table before the `MERGE INTO`
+/// so the planner has accurate statistics and picks an index scan instead of
+/// a full sequential scan on the (potentially large) target table.
+/// Only meaningful for PostgreSQL-compatible targets. Defaults to false.
+const ADBC_ANALYZE_STAGING_BEFORE_MERGE_ENV: &str = "SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE";
 
 /// Strategy for executing UPDATE operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +238,18 @@ impl AdbcSink {
             .unwrap_or(DEFAULT_ADBC_BULK_INGEST_STREAM_BUFFER)
     }
 
+    fn analyze_staging_before_merge() -> bool {
+        std::env::var(ADBC_ANALYZE_STAGING_BEFORE_MERGE_ENV)
+            .ok()
+            .map(|raw| {
+                matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    }
+
     /// Creates a new [`AdbcSink`] backed by a connection pool.
     ///
     /// When a system adapter client and run ID are provided, the `StagingTable`
@@ -386,11 +403,32 @@ impl AdbcSink {
         };
 
         for sub_batch in sub_batches {
-            sender.send(sub_batch).await.map_err(|_| {
-                anyhow::anyhow!(
-                    "Bulk ingest stream for table '{table_name}' is no longer available"
-                )
-            })?;
+            if sender.send(sub_batch).await.is_err() {
+                // Worker exited before receiving this batch. Remove the stream and
+                // await the worker to surface the actual error rather than a generic
+                // "no longer available" message.
+                let stream = {
+                    let mut streams = self.bulk_ingest_streams.write().await;
+                    streams.remove(table_name)
+                };
+                let err = if let Some(stream) = stream {
+                    match stream.worker.await {
+                        Ok(Ok(())) => anyhow::anyhow!(
+                            "Bulk ingest worker for '{table_name}' exited without error but before all data was sent"
+                        ),
+                        Ok(Err(worker_err)) => worker_err
+                            .context(format!("Bulk ingest worker for '{table_name}' failed")),
+                        Err(join_err) => anyhow::anyhow!(
+                            "Bulk ingest worker for '{table_name}' panicked: {join_err}"
+                        ),
+                    }
+                } else {
+                    anyhow::anyhow!(
+                        "Bulk ingest stream for table '{table_name}' is no longer available"
+                    )
+                };
+                return Err(err);
+            }
             batches_sent.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -1215,7 +1253,23 @@ impl AdbcSink {
             )));
         }
 
-        // 3. MERGE INTO target from staging.
+        // 3. Optionally ANALYZE the staging table so the planner has accurate row
+        //    counts and chooses a nested-loop index scan over a full seq scan on
+        //    the target table. PostgreSQL-specific; disabled by default.
+        //    Enable with SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true.
+        if Self::analyze_staging_before_merge() {
+            let analyze_sql = format!("ANALYZE {}", self.target_table_identifier(&staging_table));
+            if let Err(e) = conn.execute_update(&analyze_sql) {
+                tracing::warn!(
+                    table = %table_name,
+                    staging = %staging_table,
+                    error = %e,
+                    "ANALYZE on staging table failed (non-fatal, MERGE may be suboptimal)"
+                );
+            }
+        }
+
+        // 4. MERGE INTO target from staging.
         let merge_sql = Self::build_staging_merge_sql(
             &self.target_table_identifier(table_name),
             &self.target_table_identifier(&staging_table),
@@ -1227,7 +1281,7 @@ impl AdbcSink {
             .execute_update(&merge_sql)
             .map_err(|e| anyhow::anyhow!("MERGE INTO update failed for '{table_name}': {e}"));
 
-        // 4. Drop staging table (always, even on merge failure).
+        // 5. Drop staging table (always, even on merge failure).
         self.drop_staging_table_best_effort(conn, &staging_table)
             .await;
 
@@ -1328,9 +1382,6 @@ impl Sink for AdbcSink {
             InsertOp::Update { .. } => "update",
             InsertOp::Delete { .. } => "delete",
         };
-
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        tracing::debug!("[adbc] {now} | {table_name} | {op_label} | rows: {rows_current}");
 
         if self.reuse_bulk_ingest_streams {
             let should_flush = match &op {
@@ -1491,15 +1542,11 @@ impl Sink for AdbcSink {
             Self::apply_row_count_delta(counter, op_label, rows_current)
         };
 
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
-        tracing::debug!(
-            "[adbc] WRITTEN {now} | {table_name} | {op_label} | rows: {rows_current} | total: {rows_total}"
-        );
-
         tracing::debug!(
             table = %table_name,
             op = op_label,
             rows = rows_current,
+            rows_total = rows_total,
             elapsed_ms = write_start.elapsed().as_millis(),
             "Sink::write completed"
         );

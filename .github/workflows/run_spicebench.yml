@@ -1,5 +1,5 @@
 name: Run
-run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.etl_type }} - SF${{ github.event.inputs.scale_factor }}
 
 on:
   schedule:
@@ -14,7 +14,7 @@ on:
         options:
           - tpch
       system_under_test:
-        description: 'System under test (spice_cloud via spidapter docker image, or local databricks adapter modes)'
+        description: 'System under test'
         required: true
         default: spice_cloud
         type: choice
@@ -71,7 +71,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: pull spidapter image
+      - name: Pull spidapter image
         if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
@@ -101,75 +101,6 @@ jobs:
         with:
           path: ~/.spice/bin/databricks-system-adapter
           key: databricks-system-adapter-${{ runner.os }}-${{ hashFiles('system-adapters/databricks/Cargo.toml', 'system-adapters/databricks/Cargo.lock', 'system-adapters/databricks/src/**/*.rs', 'crates/system-adapter-protocol/Cargo.toml', 'crates/system-adapter-protocol/src/**/*.rs') }}
-
-      - name: Validate adapter configuration
-        env:
-          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: https://api.spice.ai
-          DATABRICKS_ENDPOINT: ${{ secrets.DATABRICKS_ENDPOINT }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
-          DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
-          DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
-          DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-        run: |
-          set -euo pipefail
-          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
-
-          if [ -z "${SCENARIO}" ]; then
-            echo "SCENARIO must not be empty"
-            exit 1
-          fi
-
-          case "${SYSTEM_UNDER_TEST_PREFIX}" in
-            spice_cloud)
-              if [ -z "${SPICEAI_API_KEY:-}" ]; then
-                echo "SPICEAI_API_KEY must be set for spice_cloud"
-                exit 1
-              fi
-
-              if ! command -v docker >/dev/null 2>&1; then
-                echo "docker is required for spice_cloud mode"
-                exit 1
-              fi
-
-              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
-                echo "spidapter docker image not found locally; pull step may have failed"
-                exit 1
-              }
-              ;;
-
-            databricks)
-              for required_var in DATABRICKS_ENDPOINT DATABRICKS_TOKEN DATABRICKS_HTTP_PATH DATABRICKS_SQL_WAREHOUSE_ID; do
-                if [ -z "${!required_var:-}" ]; then
-                  echo "${required_var} must be set for databricks adapter mode"
-                  exit 1
-                fi
-              done
-
-              if echo "${DATABRICKS_ENDPOINT}" | grep -qE '^https?://'; then
-                echo "DATABRICKS_ENDPOINT should be a hostname only (no http/https scheme)"
-                exit 1
-              fi
-
-              if echo "${DATABRICKS_HTTP_PATH}" | grep -qE '^/'; then
-                echo "DATABRICKS_HTTP_PATH should not start with '/'"
-                exit 1
-              fi
-
-              if [ ! -x "${HOME}/.spice/bin/databricks-system-adapter" ]; then
-                echo "Local databricks adapter binary is missing or not executable at ${HOME}/.spice/bin/databricks-system-adapter"
-                exit 1
-              fi
-
-              "${HOME}/.spice/bin/databricks-system-adapter" --help >/dev/null
-              ;;
-
-            *)
-              echo "Unsupported system_under_test value: ${SYSTEM_UNDER_TEST}"
-              exit 1
-              ;;
-          esac
 
       - name: Setup Go
         if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') }}
@@ -202,7 +133,7 @@ jobs:
           drivers: postgresql
 
       - name: Install ADBC FlightSQL driver
-        if: ${{ !startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
         uses: columnar-tech/setup-dbc@v1
         with:
           drivers: flightsql
@@ -218,15 +149,18 @@ jobs:
           DATABRICKS_CATALOG: ${{ vars.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ vars.DATABRICKS_SCHEMA }}
           DATABRICKS_STAGING_VOLUME_PATH: ${{ vars.DATABRICKS_STAGING_VOLUME_PATH }}
-          SYSTEM_ADAPTER: ${{ env.SYSTEM_UNDER_TEST }}
+          LAKEBASE_PG_HOST: ${{ vars.LAKEBASE_PG_HOST }}
+          LAKEBASE_PG_USER: ${{ vars.LAKEBASE_PG_USER }}
+          LAKEBASE_PG_SCHEMA: ${{ vars.LAKEBASE_PG_SCHEMA }}
+          LAKEBASE_PROJECT: ${{ vars.LAKEBASE_PROJECT }}
+          LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
           NUM_QUERY_CLIENTS: '2'
-          ETL_BUCKET: 'spicebench'
+          ETL_BUCKET: spicebench
           ETL_PREFIX: ${{ env.ETL_TYPE == 'changes' && 'data-gen-mutable' || 'data-gen' }}
-          ETL_REGION: 'us-east-1'
-          ETL_SINK: 'adbc'
-          SCHEDULER_STATE_LOCATION: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/'
+          ETL_REGION: us-east-1
+          ETL_SINK: adbc
+          SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
           VALIDATE_CHECKPOINT_RESULTS: 'true'
-          ENABLE_MODULE_DEBUG_LOGGING: 'false'
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
@@ -234,119 +168,89 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          LAKEBASE_PG_HOST: ${{ vars.LAKEBASE_PG_HOST }}
-          LAKEBASE_PG_USER: ${{ vars.LAKEBASE_PG_USER }}
-          LAKEBASE_PG_SCHEMA: ${{ vars.LAKEBASE_PG_SCHEMA }}
-          LAKEBASE_PROJECT: ${{ vars.LAKEBASE_PROJECT }}
-          LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
-          SPIDAPTER_ICEBERG_REGION: us-west-1
-          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           SPIDAPTER_APP_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB: '256Gi'
-          SPIDAPTER_ORGANIZATION_TAG: 'spicehq'
-          ENABLE_PVC: 'false'
+          SPIDAPTER_ORGANIZATION_TAG: spicehq
+          SPIDAPTER_ICEBERG_REGION: us-west-1
+          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
         run: |
           set -euo pipefail
-          if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
-            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug'
-          else
-            export RUST_LOG='info'
-          fi
+          export RUST_LOG='info,etl::sink::adbc=debug'
 
-          TABLE_FORMAT="parquet"
           EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
           ETL_ENDPOINT="${MINIO_ENDPOINT}"
-          DATABRICKS_TABLE_FORMAT="${TABLE_FORMAT}"
-          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
-          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"
-          if [ -n "${ETL_PREFIX}" ]; then
-            ETL_ARGS="${ETL_ARGS} --etl-prefix ${ETL_PREFIX}"
-          fi
-          if [ -n "${ETL_REGION}" ]; then
-            ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"
-          fi
-          if [ -n "${ETL_ENDPOINT:-}" ]; then
-            ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
-          fi
 
-          ETL_SINK_ARGS="--etl-sink ${ETL_SINK} --table-format ${TABLE_FORMAT}"
-          if [ "${ETL_SINK}" = "adbc" ]; then
-            :
-          fi
+          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR} --etl-prefix ${ETL_PREFIX} --etl-region ${ETL_REGION}"
+          [ -n "${ETL_ENDPOINT:-}" ] && ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
 
           VALIDATION_ARGS=""
-          if [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ]; then
-            VALIDATION_ARGS="--validate-results"
-          fi
-
-          SCHEDULER_STATE_ADAPTER_ENV="--system-adapter-env SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}"
+          [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ] && VALIDATION_ARGS="--validate-results"
 
           SUT_METRICS_ARGS=""
-          if [ "${SCRAPE_SUT_METRICS}" = "true" ]; then
-            SUT_METRICS_ARGS="--scrape-sut-metrics"
-          fi
+          [ "${SCRAPE_SUT_METRICS}" = "true" ] && SUT_METRICS_ARGS="--scrape-sut-metrics"
 
-          if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
+          if [ "${SYSTEM_UNDER_TEST}" = "spice_cloud" ]; then
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
+            export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
+            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
+
+            ADAPTER_DOCKER_OPTS="run -i"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=cayenne"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SCHEDULER_STATE_LOCATION"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_REGION"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_CATALOG_FROM"
+
+            ADAPTER_CMD="docker"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            ADAPTER_ENVS="--system-adapter-env SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}"
+
+          else
+            # databricks-sql / databricks-lakebase
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
             export SPICEBENCH_TARGET_BATCH_ROWS=500000
             export SPICEBENCH_ADBC_MAX_INGEST_BATCH_BYTES=1268435456
             export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
+            export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
+
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
-            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
+            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_TABLE_FORMAT=parquet"
+            [ -n "${DATABRICKS_CATALOG:-}" ]             && ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"
+            [ -n "${DATABRICKS_SCHEMA:-}" ]              && ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
+            [ -n "${DATABRICKS_STAGING_VOLUME_PATH:-}" ] && ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STAGING_VOLUME_PATH=${DATABRICKS_STAGING_VOLUME_PATH}"
 
-            if [ -n "${DATABRICKS_CATALOG:-}" ]; then
-              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"
+            if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PROJECT=${LAKEBASE_PROJECT}"
+              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
             fi
-
-            if [ -n "${DATABRICKS_SCHEMA:-}" ]; then
-              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
-            fi
-
-            if [ -n "${DATABRICKS_STAGING_VOLUME_PATH:-}" ]; then
-              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STAGING_VOLUME_PATH=${DATABRICKS_STAGING_VOLUME_PATH}"
-            fi
-          else
-            export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
-            export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
-            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
-            ADAPTER_CMD="docker"
-            ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
-
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-
-            if [ "${ENABLE_PVC}" = "true" ]; then
-              echo "PVC enabled: app=3GB, executor=2GB"
-              ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3 -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2 -e SPIDAPTER_CAYENNE_DATA_DIR=/data/data -e SPIDAPTER_CAYENNE_METADATA_DIR=/data/metadata"
-            fi
-
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
-            ADAPTER_ENVS=""
           fi
 
-          if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_HOST=${LAKEBASE_PG_HOST}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_USER=${LAKEBASE_PG_USER}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PG_SCHEMA=${LAKEBASE_PG_SCHEMA}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PROJECT=${LAKEBASE_PROJECT}"
-            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
-          fi
-
+          set -x
           ~/.spice/bin/spicebench run \
-            --concurrency "${NUM_QUERY_CLIENTS}"  \
+            --concurrency "${NUM_QUERY_CLIENTS}" \
             --scenario "${SCENARIO}" \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
-            ${ETL_SINK_ARGS} \
+            --etl-sink "${ETL_SINK}" \
+            --table-format parquet \
             ${VALIDATION_ARGS} \
             ${SUT_METRICS_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
-            ${ADAPTER_ENVS} \
-            ${SCHEDULER_STATE_ADAPTER_ENV} \
+            ${ADAPTER_ENVS}

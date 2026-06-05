@@ -350,7 +350,7 @@ impl SpiceTestQueryWorker {
                         && !self.end_condition.is_met(&start, query_set_count)
                     {
                         if self.progress_bar.is_none() && self.id == 0 {
-                            println!(
+                            tracing::debug!(
                                 "Worker {} - Query set count: {} - Elapsed time: {:?}",
                                 self.id,
                                 query_set_count,
