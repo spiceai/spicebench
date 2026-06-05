@@ -61,6 +61,11 @@ on:
         required: false
         default: ''
         type: string
+      enable_spice_debug:
+        description: 'Enable debug mode on the Spice Cloud deployment (SPIDAPTER_SPICE_DEBUG=true)'
+        required: false
+        default: false
+        type: boolean
       num_query_clients:
         description: 'Number of concurrent query clients'
         required: false
@@ -244,8 +249,9 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e EC2_DISK_SIZE_GB -e EC2_IAM_INSTANCE_PROFILE -e AWS_REGION=us-west-2"
           fi
 
-          [ "${USE_PRIVATE_CLUSTER}" = "true" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
-          [ -n "${CUSTOM_IMAGE_TAG}" ]           && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
+          [ "${USE_PRIVATE_CLUSTER}" = "true" ]                   && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
+          [ -n "${CUSTOM_IMAGE_TAG}" ]                            && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
+          [ "${{ github.event.inputs.enable_spice_debug }}" = "true" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SPICE_DEBUG=true"
 
           ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_image_tag || 'latest' }} stdio --verbose"
 
