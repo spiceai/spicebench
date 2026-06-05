@@ -200,6 +200,37 @@ jobs:
             export RUST_LOG='info'
           fi
 
+          TABLE_FORMAT="parquet"
+          EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
+          ETL_ENDPOINT="${MINIO_ENDPOINT}"
+          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"
+          if [ -n "${ETL_PREFIX}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-prefix ${ETL_PREFIX}"
+          fi
+          if [ -n "${ETL_REGION}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"
+          fi
+          if [ -n "${ETL_ENDPOINT:-}" ]; then
+            ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
+          fi
+
+          ETL_SINK_ARGS="--etl-sink ${ETL_SINK} --table-format ${TABLE_FORMAT}"
+          if [ "${ETL_SINK}" = "adbc" ]; then
+            :
+          fi
+
+          VALIDATION_ARGS=""
+          if [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ]; then
+            VALIDATION_ARGS="--validate-results"
+          fi
+
+          SCHEDULER_STATE_ADAPTER_ENV="--system-adapter-env SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}"
+
+          SUT_METRICS_ARGS=""
+          if [ "${SCRAPE_SUT_METRICS}" = "true" ]; then
+            SUT_METRICS_ARGS="--scrape-sut-metrics"
+          fi
+
           export SPICEBENCH_ADBC_UPDATE_STRATEGY=${{ github.event.inputs.adbc_update_strategy || 'bulk_ingest_upsert' }}
           export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
           if [ "${SPICEBENCH_ADBC_UPDATE_STRATEGY}" = "bulk_ingest_upsert" ]; then
@@ -213,8 +244,7 @@ jobs:
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=cayenne"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
-          
-          
+
           # Optionally pin the apps to the private (dedicated) cluster via node affinity.
           if [ "${USE_PRIVATE_CLUSTER}" = "true" ]; then
             echo "Private cluster enabled: tagging apps with organization 'spicehq' for node affinity"
