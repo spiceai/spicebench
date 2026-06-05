@@ -156,7 +156,6 @@ jobs:
           SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '16Gi' }}
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ github.event.inputs.executor_memory_limit || '16Gi' }}
           SPIDAPTER_EXECUTOR_REPLICAS: ${{ github.event.inputs.executor_replicas || '4' }}
-          SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB: '256Gi'
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
@@ -207,7 +206,6 @@ jobs:
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_REPLICAS"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_REGION"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_CATALOG_FROM"
 
