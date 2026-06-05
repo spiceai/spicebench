@@ -436,7 +436,9 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     // kept alive for post-run inspection instead of being deleted.
     let preserve = args.no_teardown;
     if preserve {
-        tracing::info!("--no-teardown: calling teardown with preserve_resources=true to keep cloud resources alive.");
+        tracing::info!(
+            "--no-teardown: calling teardown with preserve_resources=true to keep cloud resources alive."
+        );
     }
     if let Err(e) = system_adapter_client
         .lock()
