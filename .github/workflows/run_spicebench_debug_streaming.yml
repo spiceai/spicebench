@@ -1,5 +1,5 @@
-name: Run (Debug - Streaming)
-run-name: Run (Debug Streaming) - ${{ github.event.inputs.system_under_test }} - ${{ github.event.inputs.acceleration }} - SF${{ github.event.inputs.scale_factor }}
+name: Run - Streaming
+run-name: Run Streaming - ${{ github.event.inputs.system_under_test }} - ${{ github.event.inputs.acceleration }} - SF${{ github.event.inputs.scale_factor }}
 
 on:
   workflow_dispatch:
@@ -19,7 +19,6 @@ on:
         type: choice
         options:
           - postgres-wal
-          - postgres-debezium
           - dynamodb-streams
           - mongodb-streams
       acceleration:
@@ -233,6 +232,7 @@ jobs:
           # Common docker opts
           ADAPTER_DOCKER_OPTS="run -i"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=${SYSTEM_UNDER_TEST}"
+          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CHANNEL=${SPIDAPTER_CHANNEL}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICE_ACCELERATION=${ACCELERATION}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
@@ -247,7 +247,7 @@ jobs:
           [ "${USE_PRIVATE_CLUSTER}" = "true" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
           [ -n "${CUSTOM_IMAGE_TAG}" ]           && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
 
-          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_image_tag || 'latest' }} stdio --verbose --channel ${SPIDAPTER_CHANNEL}"
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_image_tag || 'latest' }} stdio --verbose"
 
           set -x
           ~/.spice/bin/spicebench run \

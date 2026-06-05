@@ -200,6 +200,7 @@ jobs:
 
           ADAPTER_DOCKER_OPTS="run -i"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=cayenne"
+          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CHANNEL=${SPIDAPTER_CHANNEL}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SCHEDULER_STATE_LOCATION"
@@ -224,7 +225,7 @@ jobs:
 
           [ -n "${CUSTOM_IMAGE_TAG}" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
 
-          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel ${SPIDAPTER_CHANNEL}"
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose"
 
           set -x
           ~/.spice/bin/spicebench run \
