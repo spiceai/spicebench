@@ -235,6 +235,11 @@ pub struct SetupResponse {
 pub struct TeardownRequest {
     /// Unique identifier for the benchmark run to clean up
     pub run_id: Uuid,
+    /// When true, clean up the run state but preserve provisioned cloud resources
+    /// (EC2 instances, DynamoDB tables, SCP app, etc.) for post-run inspection.
+    /// Defaults to false.
+    #[serde(default)]
+    pub preserve_resources: bool,
 }
 
 /// Response from teardown request

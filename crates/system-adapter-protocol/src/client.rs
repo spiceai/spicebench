@@ -87,6 +87,10 @@ pub enum Client {
         _child: Box<Child>,
         stdin: ChildStdin,
         stdout: BufReader<ChildStdout>,
+        /// Monotonically increasing request ID. Each call gets a unique ID so
+        /// stale responses from cancelled/timed-out calls can be detected and
+        /// discarded rather than misrouted to the next caller.
+        next_id: u64,
     },
     /// HTTP transport - communicate via HTTP POST requests
     #[cfg(feature = "client")]
@@ -139,6 +143,7 @@ impl Client {
             _child: Box::new(child),
             stdin,
             stdout: BufReader::new(stdout),
+            next_id: 1,
         })
     }
 
@@ -198,9 +203,18 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
-    /// Teardown a benchmark run
-    pub async fn teardown(&mut self, run_id: uuid::Uuid) -> Result<crate::TeardownResponse> {
-        let request = crate::TeardownRequest { run_id };
+    /// Teardown a benchmark run.
+    /// Pass `preserve_resources: true` to keep provisioned cloud resources
+    /// (EC2 instances, DynamoDB tables, SCP app) alive for post-run inspection.
+    pub async fn teardown(
+        &mut self,
+        run_id: uuid::Uuid,
+        preserve_resources: bool,
+    ) -> Result<crate::TeardownResponse> {
+        let request = crate::TeardownRequest {
+            run_id,
+            preserve_resources,
+        };
         let rpc_request = JsonRpcRequest::new(1, crate::methods::TEARDOWN, request);
         let response = self.call_typed(rpc_request).await?;
         response
@@ -262,8 +276,14 @@ impl Client {
     /// Make a typed JSON-RPC call with request and response types
     async fn call_typed<Req: Serialize, Resp: DeserializeOwned>(
         &mut self,
-        request: JsonRpcRequest<Req>,
+        mut request: JsonRpcRequest<Req>,
     ) -> Result<JsonRpcResponse<Resp>> {
+        // Assign a unique ID so stale responses from cancelled calls can be
+        // detected and discarded rather than silently misrouted.
+        if let Self::Stdio { next_id, .. } = self {
+            request.id = serde_json::json!(*next_id);
+            *next_id += 1;
+        }
         let request_value = serde_json::to_value(request)?;
         let response_value = self.call_raw(request_value).await?;
         let response: JsonRpcResponse<Resp> = serde_json::from_value(response_value)?;
@@ -277,26 +297,47 @@ impl Client {
                 _child: _,
                 stdin,
                 stdout,
+                next_id: _,
             } => {
+                let expected_id = request.get("id").cloned();
+
                 let payload = serde_json::to_string(&request)?;
                 stdin.write_all(payload.as_bytes()).await?;
                 stdin.write_all(b"\n").await?;
                 stdin.flush().await?;
 
-                let mut line = String::new();
-                let read = stdout.read_line(&mut line).await?;
-                if read == 0 {
-                    return Err(ClientError::Transport(
-                        "Stdio process closed stdout before responding".to_string(),
-                    ));
-                }
+                // Read responses until we get one matching our request ID.
+                // Non-matching responses are stale (from a previously timed-out
+                // call whose future was dropped before the server responded).
+                loop {
+                    let mut line = String::new();
+                    let read = stdout.read_line(&mut line).await?;
+                    if read == 0 {
+                        return Err(ClientError::Transport(
+                            "Stdio process closed stdout before responding".to_string(),
+                        ));
+                    }
 
-                let response: serde_json::Value = serde_json::from_str(line.trim_end())?;
-                if let Some(error) = response.get("error") {
-                    let error: JsonRpcError = serde_json::from_value(error.clone())?;
-                    return Err(ClientError::JsonRpc(error));
+                    let response: serde_json::Value = serde_json::from_str(line.trim_end())?;
+
+                    if let Some(expected) = &expected_id {
+                        let got = response.get("id");
+                        if got != Some(expected) {
+                            tracing::warn!(
+                                expected_id = %expected,
+                                got_id = ?got,
+                                "Discarding stale JSON-RPC response with mismatched ID"
+                            );
+                            continue;
+                        }
+                    }
+
+                    if let Some(error) = response.get("error") {
+                        let error: JsonRpcError = serde_json::from_value(error.clone())?;
+                        return Err(ClientError::JsonRpc(error));
+                    }
+                    return Ok(response);
                 }
-                Ok(response)
             }
             #[cfg(feature = "client")]
             Self::Http { client, endpoint } => {

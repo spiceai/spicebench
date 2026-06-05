@@ -2204,7 +2204,7 @@ impl Handler for DatabricksAdapter {
         }
     }
 
-    async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String> {
+    async fn teardown(&mut self, run_id: Uuid, _preserve_resources: bool) -> std::result::Result<TeardownResponse, String> {
         eprintln!("[databricks-adapter] teardown: run_id={run_id}");
 
         let Some(state) = self.runs.remove(&run_id) else {

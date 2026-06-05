@@ -79,8 +79,14 @@ pub trait Handler: Send + Sync {
         datasets: HashMap<String, DatasetConfig>,
     ) -> std::result::Result<SetupResponse, String>;
 
-    /// Teardown a benchmark run
-    async fn teardown(&mut self, run_id: Uuid) -> std::result::Result<TeardownResponse, String>;
+    /// Teardown a benchmark run.
+    /// When `preserve_resources` is true, clean up the run state but keep
+    /// provisioned cloud resources alive for post-run inspection.
+    async fn teardown(
+        &mut self,
+        run_id: Uuid,
+        preserve_resources: bool,
+    ) -> std::result::Result<TeardownResponse, String>;
 
     /// Collect current metrics from the system under test
     ///
@@ -276,7 +282,12 @@ impl<H: Handler> Server<H> {
             Ok(r) => r,
             Err(e) => return e,
         };
-        Self::handler_response(self.handler.teardown(req.run_id).await, id)
+        Self::handler_response(
+            self.handler
+                .teardown(req.run_id, req.preserve_resources)
+                .await,
+            id,
+        )
     }
 
     async fn handle_metrics(
@@ -345,6 +356,7 @@ mod tests {
         async fn teardown(
             &mut self,
             _run_id: Uuid,
+            _preserve_resources: bool,
         ) -> std::result::Result<TeardownResponse, String> {
             Ok(TeardownResponse { ok: true })
         }

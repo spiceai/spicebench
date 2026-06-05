@@ -430,11 +430,20 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
         }
     };
 
-    // After successful setup, always teardown even if there are errors in between,
-    // unless --no-teardown was requested (e.g. to inspect cloud state after a run).
-    if args.no_teardown {
-        tracing::info!("Skipping teardown (--no-teardown flag is set).");
-    } else if let Err(e) = system_adapter_client.lock().await.teardown(run_id).await {
+    // Always call teardown so spidapter can clean up its run state and disarm
+    // RAII guards. When --no-teardown is set, pass preserve_resources=true so
+    // provisioned cloud resources (EC2 instances, DynamoDB tables, SCP app) are
+    // kept alive for post-run inspection instead of being deleted.
+    let preserve = args.no_teardown;
+    if preserve {
+        tracing::info!("--no-teardown: calling teardown with preserve_resources=true to keep cloud resources alive.");
+    }
+    if let Err(e) = system_adapter_client
+        .lock()
+        .await
+        .teardown(run_id, preserve)
+        .await
+    {
         tracing::error!("Failed to teardown system adapter: {e}");
     }
 
