@@ -1,5 +1,5 @@
 name: Run
-run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.etl_type}} - ${{ github.event.inputs.scale_factor}}
+run-name: Run - ${{ github.event.inputs.system_under_test || 'spice_cloud' }} - ${{ github.event.inputs.etl_type }} - SF${{ github.event.inputs.scale_factor }}
 
 on:
   schedule:
@@ -14,7 +14,7 @@ on:
         options:
           - tpch
       system_under_test:
-        description: 'System under test (spice_cloud via spidapter docker image, local databricks adapter modes, or postgres via spidapter local backend)'
+        description: 'System under test'
         required: true
         default: spice_cloud
         type: choice
@@ -22,12 +22,6 @@ on:
           - spice_cloud
           - databricks-sql
           - databricks-lakebase
-          - postgres-wal-cayenne
-          - postgres-wal-duckdb
-          - dynamodb-streams-cayenne
-          - dynamodb-streams-duckdb
-          - mongodb-streams-cayenne
-          - mongodb-streams-duckdb
       etl_type:
         description: 'ETL type'
         required: true
@@ -63,22 +57,22 @@ jobs:
       - uses: ./.github/actions/setup-cc
 
       - uses: ./.github/actions/management-login
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
         with:
           token-url: https://spice.ai/api/oauth/token
           client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
           client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
 
       - name: Log in to GHCR
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: pull spidapter image
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') || startsWith(env.SYSTEM_UNDER_TEST, 'dynamodb-') || startsWith(env.SYSTEM_UNDER_TEST, 'mongodb-') }}
+      - name: Pull spidapter image
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
       - uses: ./.github/actions/build-spicebench
@@ -108,93 +102,6 @@ jobs:
           path: ~/.spice/bin/databricks-system-adapter
           key: databricks-system-adapter-${{ runner.os }}-${{ hashFiles('system-adapters/databricks/Cargo.toml', 'system-adapters/databricks/Cargo.lock', 'system-adapters/databricks/src/**/*.rs', 'crates/system-adapter-protocol/Cargo.toml', 'crates/system-adapter-protocol/src/**/*.rs') }}
 
-      - name: Validate adapter configuration
-        env:
-          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: https://api.spice.ai
-          DATABRICKS_ENDPOINT: ${{ secrets.DATABRICKS_ENDPOINT }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
-          DATABRICKS_SQL_WAREHOUSE_ID: ${{ secrets.DATABRICKS_SQL_WAREHOUSE_ID }}
-          DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
-          DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
-        run: |
-          set -euo pipefail
-          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
-
-          if [ -z "${SCENARIO}" ]; then
-            echo "SCENARIO must not be empty"
-            exit 1
-          fi
-
-          case "${SYSTEM_UNDER_TEST_PREFIX}" in
-            spice_cloud)
-              if [ -z "${SPICEAI_API_KEY:-}" ]; then
-                echo "SPICEAI_API_KEY must be set for spice_cloud"
-                exit 1
-              fi
-
-              if ! command -v docker >/dev/null 2>&1; then
-                echo "docker is required for spice_cloud mode"
-                exit 1
-              fi
-
-              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
-                echo "spidapter docker image not found locally; pull step may have failed"
-                exit 1
-              }
-              ;;
-
-            databricks)
-              for required_var in DATABRICKS_ENDPOINT DATABRICKS_TOKEN DATABRICKS_HTTP_PATH DATABRICKS_SQL_WAREHOUSE_ID; do
-                if [ -z "${!required_var:-}" ]; then
-                  echo "${required_var} must be set for databricks adapter mode"
-                  exit 1
-                fi
-              done
-
-              if echo "${DATABRICKS_ENDPOINT}" | grep -qE '^https?://'; then
-                echo "DATABRICKS_ENDPOINT should be a hostname only (no http/https scheme)"
-                exit 1
-              fi
-
-              if echo "${DATABRICKS_HTTP_PATH}" | grep -qE '^/'; then
-                echo "DATABRICKS_HTTP_PATH should not start with '/'"
-                exit 1
-              fi
-
-              if [ ! -x "${HOME}/.spice/bin/databricks-system-adapter" ]; then
-                echo "Local databricks adapter binary is missing or not executable at ${HOME}/.spice/bin/databricks-system-adapter"
-                exit 1
-              fi
-
-              "${HOME}/.spice/bin/databricks-system-adapter" --help >/dev/null
-              ;;
-
-            postgres)
-              if ! command -v docker >/dev/null 2>&1; then
-                echo "docker is required for postgres mode"
-                exit 1
-              fi
-
-              docker image inspect ghcr.io/spiceai/spidapter:latest >/dev/null 2>&1 || {
-                echo "spidapter docker image not found locally; pull step may have failed"
-                exit 1
-              }
-              ;;
-
-            dynamodb)
-              ;;
-
-            mongodb)
-              ;;
-
-            *)
-              echo "Unsupported system_under_test value: ${SYSTEM_UNDER_TEST}"
-              exit 1
-              ;;
-          esac
-
       - name: Setup Go
         if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') }}
         uses: actions/setup-go@v5
@@ -220,13 +127,13 @@ jobs:
           sudo ldconfig
 
       - name: Install ADBC Postgres driver
-        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') || startsWith(env.SYSTEM_UNDER_TEST, 'postgres-') }}
+        if: ${{ startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') }}
         uses: columnar-tech/setup-dbc@v1
         with:
           drivers: postgresql
 
       - name: Install ADBC FlightSQL driver
-        if: ${{ !startsWith(env.SYSTEM_UNDER_TEST, 'databricks-') }}
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
         uses: columnar-tech/setup-dbc@v1
         with:
           drivers: flightsql
@@ -242,15 +149,18 @@ jobs:
           DATABRICKS_CATALOG: ${{ vars.DATABRICKS_CATALOG }}
           DATABRICKS_SCHEMA: ${{ vars.DATABRICKS_SCHEMA }}
           DATABRICKS_STAGING_VOLUME_PATH: ${{ vars.DATABRICKS_STAGING_VOLUME_PATH }}
-          SYSTEM_ADAPTER: ${{ env.SYSTEM_UNDER_TEST }}
+          LAKEBASE_PG_HOST: ${{ vars.LAKEBASE_PG_HOST }}
+          LAKEBASE_PG_USER: ${{ vars.LAKEBASE_PG_USER }}
+          LAKEBASE_PG_SCHEMA: ${{ vars.LAKEBASE_PG_SCHEMA }}
+          LAKEBASE_PROJECT: ${{ vars.LAKEBASE_PROJECT }}
+          LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
           NUM_QUERY_CLIENTS: '2'
-          ETL_BUCKET: 'spicebench'
+          ETL_BUCKET: spicebench
           ETL_PREFIX: ${{ env.ETL_TYPE == 'changes' && 'data-gen-mutable' || 'data-gen' }}
-          ETL_REGION: 'us-east-1'
-          ETL_SINK: 'adbc'
-          SCHEDULER_STATE_LOCATION: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/'
+          ETL_REGION: us-east-1
+          ETL_SINK: adbc
+          SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
           VALIDATE_CHECKPOINT_RESULTS: 'true'
-          ENABLE_MODULE_DEBUG_LOGGING: 'false'
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
@@ -258,93 +168,67 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          LAKEBASE_PG_HOST: ${{ vars.LAKEBASE_PG_HOST }}
-          LAKEBASE_PG_USER: ${{ vars.LAKEBASE_PG_USER }}
-          LAKEBASE_PG_SCHEMA: ${{ vars.LAKEBASE_PG_SCHEMA }}
-          LAKEBASE_PROJECT: ${{ vars.LAKEBASE_PROJECT }}
-          LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
-          EC2_SUBNET_ID: ${{ vars.EC2_SUBNET_ID }}
-          EC2_SECURITY_GROUP_ID: ${{ vars.EC2_SECURITY_GROUP_ID }}
-          EC2_AMI_ID: ${{ vars.EC2_AMI_ID }}
-          EC2_INSTANCE_TYPE: ${{ vars.EC2_INSTANCE_TYPE }}
-          EC2_IAM_INSTANCE_PROFILE: ${{ vars.EC2_IAM_INSTANCE_PROFILE }}
-          SPIDAPTER_ICEBERG_REGION: us-west-1
-          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           SPIDAPTER_APP_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB: '256Gi'
-          SPIDAPTER_ORGANIZATION_TAG: 'spicehq'
-          ENABLE_PVC: 'false'
+          SPIDAPTER_ORGANIZATION_TAG: spicehq
+          SPIDAPTER_ICEBERG_REGION: us-west-1
+          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
         run: |
           set -euo pipefail
-          if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
-            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug'
-          else
-            export RUST_LOG='info,etl::sink::adbc=debug,etl::sink::dynamodb=debug'
-          fi
+          export RUST_LOG='info,etl::sink::adbc=debug'
 
-          TABLE_FORMAT="parquet"
           EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
           ETL_ENDPOINT="${MINIO_ENDPOINT}"
-          DATABRICKS_TABLE_FORMAT="${TABLE_FORMAT}"
-          SYSTEM_UNDER_TEST_PREFIX="${SYSTEM_UNDER_TEST%%-*}"
 
-          # Scale ephemeral storage for streaming scenarios based on scale factor.
-          case "${SCALE_FACTOR}" in
-            0.1) STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=1Gi ;;
-            1)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=20Gi ;;
-            10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=400Gi ;;
-            *)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10Gi ;;
-          esac
-          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR}"
-          if [ -n "${ETL_PREFIX}" ]; then
-            ETL_ARGS="${ETL_ARGS} --etl-prefix ${ETL_PREFIX}"
-          fi
-          if [ -n "${ETL_REGION}" ]; then
-            ETL_ARGS="${ETL_ARGS} --etl-region ${ETL_REGION}"
-          fi
-          if [ -n "${ETL_ENDPOINT:-}" ]; then
-            ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
-          fi
-
-          ETL_SINK_ARGS="--etl-sink ${ETL_SINK} --table-format ${TABLE_FORMAT}"
-          if [ "${ETL_SINK}" = "adbc" ]; then
-            :
-          fi
+          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR} --etl-prefix ${ETL_PREFIX} --etl-region ${ETL_REGION}"
+          [ -n "${ETL_ENDPOINT:-}" ] && ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
 
           VALIDATION_ARGS=""
-          if [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ]; then
-            VALIDATION_ARGS="--validate-results"
-          fi
-
-          SCHEDULER_STATE_ADAPTER_ENV="--system-adapter-env SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}"
+          [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ] && VALIDATION_ARGS="--validate-results"
 
           SUT_METRICS_ARGS=""
-          if [ "${SCRAPE_SUT_METRICS}" = "true" ]; then
-            SUT_METRICS_ARGS="--scrape-sut-metrics"
-          fi
+          [ "${SCRAPE_SUT_METRICS}" = "true" ] && SUT_METRICS_ARGS="--scrape-sut-metrics"
 
-          if [ "${SYSTEM_UNDER_TEST_PREFIX}" = "databricks" ]; then
+          if [ "${SYSTEM_UNDER_TEST}" = "spice_cloud" ]; then
+            export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
+            export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
+            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
+
+            ADAPTER_DOCKER_OPTS="run -i"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=cayenne"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SCHEDULER_STATE_LOCATION"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_REGION"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_CATALOG_FROM"
+
+            ADAPTER_CMD="docker"
+            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            ADAPTER_ENVS="--system-adapter-env SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}"
+
+          else
+            # databricks-sql / databricks-lakebase
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
             export SPICEBENCH_TARGET_BATCH_ROWS=500000
             export SPICEBENCH_ADBC_MAX_INGEST_BATCH_BYTES=1268435456
             export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
+
             ADAPTER_CMD="${HOME}/.spice/bin/databricks-system-adapter"
             ADAPTER_ARGS="stdio"
-            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID} --system-adapter-env DATABRICKS_TABLE_FORMAT=${DATABRICKS_TABLE_FORMAT}"
-
-            if [ -n "${DATABRICKS_CATALOG:-}" ]; then
-              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"
-            fi
-
-            if [ -n "${DATABRICKS_SCHEMA:-}" ]; then
-              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
-            fi
-
-            if [ -n "${DATABRICKS_STAGING_VOLUME_PATH:-}" ]; then
-              ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STAGING_VOLUME_PATH=${DATABRICKS_STAGING_VOLUME_PATH}"
-            fi
+            ADAPTER_ENVS="--system-adapter-env DATABRICKS_ENDPOINT=${DATABRICKS_ENDPOINT}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_TOKEN=${DATABRICKS_TOKEN}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_HTTP_PATH=${DATABRICKS_HTTP_PATH}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SQL_WAREHOUSE_ID=${DATABRICKS_SQL_WAREHOUSE_ID}"
+            ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_TABLE_FORMAT=parquet"
+            [ -n "${DATABRICKS_CATALOG:-}" ]             && ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_CATALOG=${DATABRICKS_CATALOG}"
+            [ -n "${DATABRICKS_SCHEMA:-}" ]              && ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_SCHEMA=${DATABRICKS_SCHEMA}"
+            [ -n "${DATABRICKS_STAGING_VOLUME_PATH:-}" ] && ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_STAGING_VOLUME_PATH=${DATABRICKS_STAGING_VOLUME_PATH}"
 
             if [ "${SYSTEM_UNDER_TEST}" = "databricks-lakebase" ]; then
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env DATABRICKS_COMPUTE_MODE=lakebase"
@@ -354,106 +238,18 @@ jobs:
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_PROJECT=${LAKEBASE_PROJECT}"
               ADAPTER_ENVS="${ADAPTER_ENVS} --system-adapter-env LAKEBASE_BRANCH=${LAKEBASE_BRANCH}"
             fi
-          elif [[ "${SYSTEM_UNDER_TEST}" == postgres-wal-* ]]; then
-            export SPICEBENCH_TARGET_BATCH_ROWS=50000
-            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
-            export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
-            export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
-            case "${SYSTEM_UNDER_TEST}" in
-              postgres-wal-duckdb) SPICE_ACCELERATION="duckdb" ;;
-              *)                   SPICE_ACCELERATION="cayenne" ;;
-            esac
-            ADAPTER_CMD="docker"
-            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e EC2_DISK_SIZE_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB} -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute scp --storage postgres-wal --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
-            ADAPTER_ENVS=""
-          elif [[ "${SYSTEM_UNDER_TEST}" == postgres-debezium-* ]]; then
-            export SPICEBENCH_TARGET_BATCH_ROWS=50000
-            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
-            export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
-            export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
-            case "${SYSTEM_UNDER_TEST}" in
-              postgres-debezium-duckdb) SPICE_ACCELERATION="duckdb" ;;
-              *)                        SPICE_ACCELERATION="cayenne" ;;
-            esac
-            ADAPTER_CMD="docker"
-            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e EC2_DISK_SIZE_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB} -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute scp --storage postgres-debezium --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
-            ADAPTER_ENVS=""
-          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "dynamodb" ]; then
-            export SPICEBENCH_TARGET_BATCH_ROWS=50000
-            case "${SYSTEM_UNDER_TEST}" in
-              dynamodb-streams-duckdb) SPICE_ACCELERATION="duckdb" ;;
-              *)                   SPICE_ACCELERATION="cayenne" ;;
-            esac
-            ADAPTER_CMD="docker"
-            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute scp --storage dynamodb-streams --verbose --channel nightly"
-            ADAPTER_ENVS=""
-          elif [ "${SYSTEM_UNDER_TEST_PREFIX}" = "mongodb" ]; then
-            export SPICEBENCH_TARGET_BATCH_ROWS=50000
-            case "${SYSTEM_UNDER_TEST}" in
-              mongodb-streams-duckdb) SPICE_ACCELERATION="duckdb" ;;
-              *)                  SPICE_ACCELERATION="cayenne" ;;
-            esac
-            ADAPTER_CMD="docker"
-            ADAPTER_DOCKER_OPTS="run -i -e SPICE_ACCELERATION=${SPICE_ACCELERATION}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e EC2_DISK_SIZE_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB} -e AWS_REGION=us-west-2 -e EC2_IAM_INSTANCE_PROFILE"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --compute scp --storage mongodb-changes-stream --storage-compute ec2 --verbose --channel nightly --ec2-associate-public-ip"
-            ADAPTER_ENVS=""
-          else
-            export SPICEBENCH_ADBC_UPDATE_STRATEGY=bulk_ingest_upsert
-            export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
-            export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
-            ADAPTER_CMD="docker"
-            ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=4 -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
-
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
-
-            if [ "${ENABLE_PVC}" = "true" ]; then
-              echo "PVC enabled: app=3GB, executor=2GB"
-              ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3 -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2 -e SPIDAPTER_CAYENNE_DATA_DIR=/data/data -e SPIDAPTER_CAYENNE_METADATA_DIR=/data/metadata"
-            fi
-
-            ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose --channel nightly"
-            ADAPTER_ENVS=""
           fi
 
           set -x
           ~/.spice/bin/spicebench run \
-            --concurrency "${NUM_QUERY_CLIENTS}"  \
+            --concurrency "${NUM_QUERY_CLIENTS}" \
             --scenario "${SCENARIO}" \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
-            ${ETL_SINK_ARGS} \
+            --etl-sink "${ETL_SINK}" \
+            --table-format parquet \
             ${VALIDATION_ARGS} \
             ${SUT_METRICS_ARGS} \
             --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
-            ${ADAPTER_ENVS} \
-            ${SCHEDULER_STATE_ADAPTER_ENV}
-          set +x
+            ${ADAPTER_ENVS}
