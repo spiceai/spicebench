@@ -46,31 +46,21 @@ on:
         required: false
         default: 'latest'
         type: string
-      custom_image_tag:
-        description: 'Custom spiced image tag from ghcr.io/spiceai/spiceai-dev (uses internal channel)'
-        required: false
-        default: ''
-        type: string
       num_query_clients:
         description: 'Number of concurrent query clients'
         required: false
         default: '2'
         type: string
-      executor_replicas:
-        description: 'Number of executor replicas'
+      enable_module_debug_logging:
+        description: 'Enable debug logs'
         required: false
-        default: '4'
-        type: string
-      app_memory_limit:
-        description: 'Memory limit for the scheduler pod (e.g. 16Gi, 62Gi)'
+        default: false
+        type: boolean
+      disable_teardown:
+        description: 'Skip the teardown RPC call to the system adapter'
         required: false
-        default: '16Gi'
-        type: string
-      executor_memory_limit:
-        description: 'Memory limit for the executor pod (e.g. 16Gi, 62Gi)'
-        required: false
-        default: '16Gi'
-        type: string
+        default: false
+        type: boolean
       adbc_update_strategy:
         description: 'ADBC update strategy'
         required: false
@@ -80,29 +70,38 @@ on:
           - bulk_ingest_upsert
           - staging_table
       enable_pvc:
-        description: 'Enable PVC block storage for scheduler and executor pods'
+        description: 'Enable PVC block storage for scheduler and executor pods (sizes are derived from scale_factor)'
         required: false
         default: false
         type: boolean
+      executor_replicas:
+        description: 'Number of executor replicas'
+        required: false
+        default: '4'
+        type: string
+      app_memory_limit:
+        description: 'Memory limit for the scheduler (app) pod (e.g. 16Gi, 20Gi)'
+        required: false
+        default: '16Gi'
+        type: string
+      executor_memory_limit:
+        description: 'Memory limit for the executor pod (e.g. 16Gi, 62Gi)'
+        required: false
+        default: '16Gi'
+        type: string
+      custom_image_tag:
+        description: 'Custom runtime container image tag from ghcr.io/spiceai/spiceai-dev (e.g. spicebench-sf10).'
+        required: false
+        default: ''
+        type: string
       use_private_cluster:
-        description: 'Pin to private cluster (spicehq org tag)'
+        description: 'Run on the private (dedicated) cluster by tagging apps with the spicehq organization for node affinity'
         required: false
         default: false
         type: boolean
-      enable_module_debug_logging:
-        description: 'Enable debug logs'
-        required: false
-        default: false
-        type: boolean
-      disable_teardown:
-        description: 'Skip teardown — keeps SCP app alive for inspection'
-        required: false
-        default: false
-        type: boolean
-
 jobs:
   run-spicebench:
-    name: Run spicebench (Spice Cloud debug)
+    name: Run spicebench
     runs-on: spiceai-dev-runners
     timeout-minutes: 600
     steps:
@@ -123,10 +122,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull spidapter image
+      - name: pull spidapter image
         run: docker pull ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }}
 
       - uses: ./.github/actions/build-spicebench
+
+      - name: Validate adapter configuration
+        env:
+          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
+          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SCENARIO}" ]; then
+            echo "SCENARIO must not be empty"
+            exit 1
+          fi
+
+          if [ -z "${SPICEAI_API_KEY:-}" ]; then
+            echo "SPICEAI_API_KEY must be set for spice_cloud"
+            exit 1
+          fi
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "docker is required for spice_cloud mode"
+            exit 1
+          fi
+
+          docker image inspect ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} >/dev/null 2>&1 || {
+            echo "spidapter docker image not found locally; pull step may have failed"
+            exit 1
+          }
 
       - name: Install ADBC FlightSQL driver
         uses: columnar-tech/setup-dbc@v1
@@ -138,14 +165,17 @@ jobs:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
-          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
+          SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '2' }}
-          ETL_BUCKET: spicebench
+          ETL_BUCKET: 'spicebench'
           ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
-          ETL_REGION: us-east-1
-          ETL_SINK: adbc
-          SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
+          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
+          ETL_REGION: 'us-east-1'
+          ETL_SINK: 'adbc'
+          SCHEDULER_STATE_LOCATION: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/'
           VALIDATE_CHECKPOINT_RESULTS: 'true'
+          ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
@@ -153,22 +183,21 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '16Gi' }}
-          SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ github.event.inputs.executor_memory_limit || '16Gi' }}
-          SPIDAPTER_EXECUTOR_REPLICAS: ${{ github.event.inputs.executor_replicas || '4' }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
-          ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
           DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
           ENABLE_PVC: ${{ github.event.inputs.enable_pvc || 'false' }}
-          USE_PRIVATE_CLUSTER: ${{ github.event.inputs.use_private_cluster || 'false' }}
+          EXECUTOR_REPLICAS: ${{ github.event.inputs.executor_replicas || '4' }}
+          SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '16Gi' }}
+          SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ github.event.inputs.executor_memory_limit || '16Gi' }}
           CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
+          USE_PRIVATE_CLUSTER: ${{ github.event.inputs.use_private_cluster || 'false' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
             export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug'
           else
-            export RUST_LOG='info,etl::sink::adbc=debug'
+            export RUST_LOG='info'
           fi
 
           export SPICEBENCH_ADBC_UPDATE_STRATEGY=${{ github.event.inputs.adbc_update_strategy || 'bulk_ingest_upsert' }}
@@ -178,64 +207,55 @@ jobs:
           else
             export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
           fi
+          ADAPTER_CMD="docker"
+          ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=${EXECUTOR_REPLICAS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
 
-          EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
-          ETL_ENDPOINT="${MINIO_ENDPOINT}"
-
-          ETL_ARGS="--etl-bucket ${ETL_BUCKET} --scale-factor ${SCALE_FACTOR} --etl-prefix ${ETL_PREFIX} --etl-region ${ETL_REGION}"
-          [ -n "${ETL_ENDPOINT:-}" ] && ETL_ARGS="${ETL_ARGS} --etl-endpoint ${ETL_ENDPOINT}"
-
-          VALIDATION_ARGS=""
-          [ "${VALIDATE_CHECKPOINT_RESULTS}" = "true" ] && VALIDATION_ARGS="--validate-results"
-
-          SUT_METRICS_ARGS=""
-          [ "${SCRAPE_SUT_METRICS}" = "true" ] && SUT_METRICS_ARGS="--scrape-sut-metrics"
-
-          NO_TEARDOWN_ARG=""
-          [ "${DISABLE_TEARDOWN}" = "true" ] && NO_TEARDOWN_ARG="--no-teardown"
-
-          SPIDAPTER_CHANNEL="nightly"
-          [ -n "${CUSTOM_IMAGE_TAG}" ] && SPIDAPTER_CHANNEL="internal"
-
-          ADAPTER_DOCKER_OPTS="run -i"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=cayenne"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CHANNEL=${SPIDAPTER_CHANNEL}"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SCHEDULER_STATE_LOCATION"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_REPLICAS"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_REGION"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_CATALOG_FROM"
-
+          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT=${SPIDAPTER_APP_MEMORY_LIMIT}"
+          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT=${SPIDAPTER_EXECUTOR_MEMORY_LIMIT}"
+          
+          
+          # Optionally pin the apps to the private (dedicated) cluster via node affinity.
           if [ "${USE_PRIVATE_CLUSTER}" = "true" ]; then
+            echo "Private cluster enabled: tagging apps with organization 'spicehq' for node affinity"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
           fi
 
-          if [ "${ENABLE_PVC}" = "true" ]; then
-            echo "PVC enabled: app=3GB, executor=2GB, Cayenne dirs=/data/{data,metadata}"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CAYENNE_DATA_DIR=/data/data"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CAYENNE_METADATA_DIR=/data/metadata"
+          # Optional custom image from ghcr.io/spiceai/spiceai-dev
+          if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
+            echo "Custom image tag: tag=${CUSTOM_IMAGE_TAG}"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
           fi
 
-          [ -n "${CUSTOM_IMAGE_TAG}" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
+          if [ "${ENABLE_PVC}" = "true" ]; then
+            echo "PVC enabled: app=3GB, executor=2GB"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_STORAGE_SIZE_GB=3 -e SPIDAPTER_EXECUTOR_STORAGE_SIZE_GB=2 -e SPIDAPTER_CAYENNE_DATA_DIR=/data/data -e SPIDAPTER_CAYENNE_METADATA_DIR=/data/metadata"
+          fi
 
-          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose"
+          # Use internal channel when a custom image is specified, otherwise nightly.
+          SPIDAPTER_CHANNEL="nightly"
+          if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
+            SPIDAPTER_CHANNEL="internal"
+          fi
 
-          set -x
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose --channel ${SPIDAPTER_CHANNEL}"
+          ADAPTER_ENVS=""
+
+          NO_TEARDOWN_ARG=""
+          if [ "${DISABLE_TEARDOWN}" = "true" ]; then
+            NO_TEARDOWN_ARG="--no-teardown"
+          fi
+
           ~/.spice/bin/spicebench run \
-            --concurrency "${NUM_QUERY_CLIENTS}" \
+            --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
-            --etl-sink "${ETL_SINK}" \
-            --table-format parquet \
+            ${ETL_SINK_ARGS} \
             ${VALIDATION_ARGS} \
             ${SUT_METRICS_ARGS} \
-            --system-adapter-stdio-cmd docker \
+            --system-adapter-stdio-cmd "${ADAPTER_CMD}" \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
-            --system-adapter-env "SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}" \
-            ${NO_TEARDOWN_ARG}
+            ${ADAPTER_ENVS} \
+            ${SCHEDULER_STATE_ADAPTER_ENV} \
+            ${NO_TEARDOWN_ARG} \
