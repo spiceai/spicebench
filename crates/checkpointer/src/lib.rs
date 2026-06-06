@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use serde::{Deserialize, Serialize};
 
 /// Top-level manifest persisted as `{prefix}/checkpoints.json`.
