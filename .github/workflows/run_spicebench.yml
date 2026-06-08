@@ -43,6 +43,9 @@ on:
 env:
   SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
   SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+  # Label benchmark metrics (adapter_name) by the actual SUT. Without this,
+  # spicebench falls back to the --system-adapter-name default ("system_adapter").
+  SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
   ETL_TYPE: ${{ github.event.inputs.etl_type || 'changes' }}
   SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
 
