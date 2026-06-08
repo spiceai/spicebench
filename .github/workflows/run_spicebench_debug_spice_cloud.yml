@@ -2,6 +2,56 @@ name: Run (Debug - Spice Cloud)
 run-name: Run (Debug) - ${{ inputs.system_under_test || 'spice_cloud' }}
 
 on:
+  workflow_call:
+    inputs:
+      system_under_test:
+        type: string
+        default: 'spice_cloud'
+      environment:
+        type: string
+        default: 'prod'
+      scenario:
+        type: string
+        default: 'tpch'
+      etl_type:
+        type: string
+        default: 'events'
+      scale_factor:
+        type: string
+        default: '1'
+      spidapter_version:
+        type: string
+        default: 'latest'
+      num_query_clients:
+        type: string
+        default: '2'
+      enable_module_debug_logging:
+        type: boolean
+        default: false
+      disable_teardown:
+        type: boolean
+        default: false
+      adbc_update_strategy:
+        type: string
+        default: 'bulk_ingest_upsert'
+      enable_pvc:
+        type: boolean
+        default: false
+      executor_replicas:
+        type: string
+        default: '4'
+      app_memory_limit:
+        type: string
+        default: '16Gi'
+      executor_memory_limit:
+        type: string
+        default: '16Gi'
+      custom_image_tag:
+        type: string
+        default: ''
+      use_private_cluster:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       system_under_test:
