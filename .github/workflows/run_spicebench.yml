@@ -154,6 +154,7 @@ jobs:
           LAKEBASE_PG_SCHEMA: ${{ vars.LAKEBASE_PG_SCHEMA }}
           LAKEBASE_PROJECT: ${{ vars.LAKEBASE_PROJECT }}
           LAKEBASE_BRANCH: ${{ vars.LAKEBASE_BRANCH }}
+          SYSTEM_ADAPTER: ${{ env.SYSTEM_UNDER_TEST }}
           NUM_QUERY_CLIENTS: '2'
           ETL_BUCKET: spicebench
           ETL_PREFIX: ${{ env.ETL_TYPE == 'changes' && 'data-gen-mutable' || 'data-gen' }}
