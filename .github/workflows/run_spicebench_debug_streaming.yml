@@ -146,7 +146,7 @@ jobs:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test }}
-          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test }}
+          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test }} - ${{ github.event.inputs.acceleration }}
           ACCELERATION: ${{ github.event.inputs.acceleration }}
           SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
           SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
@@ -180,7 +180,7 @@ jobs:
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
             export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug,etl::sink::adbc=debug,etl::sink::dynamodb=debug,etl::sink::mongodb=debug'
           else
-            export RUST_LOG='info,etl::sink::adbc=debug,etl::sink::dynamodb=debug,etl::sink::mongodb=debug'
+            export RUST_LOG='info'
           fi
 
           EXECUTOR_INSTANCE_TYPE="github-hosted-ubuntu-latest"
@@ -189,7 +189,7 @@ jobs:
           case "${SCALE_FACTOR}" in
             0.1) STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=8  ;;
             1)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=20 ;;
-            10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=400 ;;
+            10)  STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=100 ;;
             *)   STREAMING_EPHEMERAL_STORAGE_LIMIT_GB=10 ;;
           esac
           export EC2_DISK_SIZE_GB="${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}"
@@ -211,7 +211,7 @@ jobs:
             postgres-wal)
               USE_EC2=true
               export SPICEBENCH_TARGET_BATCH_ROWS=50000
-              export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
+              export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=5000
               export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
               export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
               export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
@@ -219,7 +219,7 @@ jobs:
             postgres-debezium)
               USE_EC2=true
               export SPICEBENCH_TARGET_BATCH_ROWS=50000
-              export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=1000
+              export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=10000
               export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
               export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
               export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
