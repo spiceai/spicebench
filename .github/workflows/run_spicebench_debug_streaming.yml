@@ -2,6 +2,56 @@ name: Run - Streaming
 run-name: Run Streaming - ${{ inputs.system_under_test }} - ${{ inputs.acceleration }} - ${{ inputs.etl_type }} - SF${{ inputs.scale_factor }}
 
 on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        default: 'production'
+      system_under_test:
+        type: string
+        default: 'mongodb-streams'
+      acceleration:
+        type: string
+        default: 'cayenne'
+      scenario:
+        type: string
+        default: 'tpch'
+      etl_type:
+        type: string
+        default: 'changes'
+      scale_factor:
+        type: string
+        default: '1'
+      spidapter_image_tag:
+        type: string
+        default: 'latest'
+      custom_image_tag:
+        type: string
+        default: ''
+      num_query_clients:
+        type: string
+        default: '2'
+      app_memory_limit:
+        type: string
+        default: '64Gi'
+      ec2_instance_type:
+        type: string
+        default: ''
+      checkpoint_validation_timeout:
+        type: string
+        default: '3600'
+      use_private_cluster:
+        type: boolean
+        default: true
+      enable_module_debug_logging:
+        type: boolean
+        default: false
+      enable_spice_debug:
+        type: boolean
+        default: false
+      disable_teardown:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       environment:
