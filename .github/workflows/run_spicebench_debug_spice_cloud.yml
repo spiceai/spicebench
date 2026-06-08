@@ -1,5 +1,5 @@
 name: Run (Debug - Spice Cloud)
-run-name: Run (Debug) - ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
+run-name: Run (Debug) - ${{ inputs.system_under_test || 'spice_cloud' }}
 
 on:
   workflow_dispatch:
@@ -111,9 +111,9 @@ jobs:
 
       - uses: ./.github/actions/management-login
         with:
-          token-url: ${{ github.event.inputs.environment == 'prod' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
-          client-id: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ github.event.inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+          token-url: ${{ inputs.environment == 'prod' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
+          client-id: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -123,15 +123,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: pull spidapter image
-        run: docker pull ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }}
+        run: docker pull ghcr.io/spiceai/spidapter:${{ inputs.spidapter_version || 'latest' }}
 
       - uses: ./.github/actions/build-spicebench
 
       - name: Validate adapter configuration
         env:
-          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
+          SCENARIO: ${{ inputs.scenario || 'tpch' }}
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+          SPICE_CLOUD_API_URL: ${{ inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
         run: |
           set -euo pipefail
 
@@ -150,7 +150,7 @@ jobs:
             exit 1
           fi
 
-          docker image inspect ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} >/dev/null 2>&1 || {
+          docker image inspect ghcr.io/spiceai/spidapter:${{ inputs.spidapter_version || 'latest' }} >/dev/null 2>&1 || {
             echo "spidapter docker image not found locally; pull step may have failed"
             exit 1
           }
@@ -163,19 +163,19 @@ jobs:
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
-          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
-          SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
-          NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '2' }}
+          SPICE_CLOUD_API_URL: ${{ inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+          SCENARIO: ${{ inputs.scenario || 'tpch' }}
+          SYSTEM_UNDER_TEST: ${{ inputs.system_under_test || 'spice_cloud' }}
+          SYSTEM_ADAPTER: ${{ inputs.system_under_test || 'spice_cloud' }}
+          NUM_QUERY_CLIENTS: ${{ inputs.num_query_clients || '2' }}
           ETL_BUCKET: 'spicebench'
-          ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
-          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
+          ETL_PREFIX: ${{ inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
+          SCALE_FACTOR: ${{ inputs.scale_factor || '1' }}
           ETL_REGION: 'us-east-1'
           ETL_SINK: 'adbc'
           SCHEDULER_STATE_LOCATION: 's3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/'
           VALIDATE_CHECKPOINT_RESULTS: 'true'
-          ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
+          ENABLE_MODULE_DEBUG_LOGGING: ${{ inputs.enable_module_debug_logging || 'false' }}
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
@@ -185,13 +185,13 @@ jobs:
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_ICEBERG_REGION: us-west-1
           SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
-          DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
-          ENABLE_PVC: ${{ github.event.inputs.enable_pvc || 'false' }}
-          EXECUTOR_REPLICAS: ${{ github.event.inputs.executor_replicas || '4' }}
-          SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '16Gi' }}
-          SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ github.event.inputs.executor_memory_limit || '16Gi' }}
-          CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
-          USE_PRIVATE_CLUSTER: ${{ github.event.inputs.use_private_cluster || 'false' }}
+          DISABLE_TEARDOWN: ${{ inputs.disable_teardown || 'false' }}
+          ENABLE_PVC: ${{ inputs.enable_pvc || 'false' }}
+          EXECUTOR_REPLICAS: ${{ inputs.executor_replicas || '4' }}
+          SPIDAPTER_APP_MEMORY_LIMIT: ${{ inputs.app_memory_limit || '16Gi' }}
+          SPIDAPTER_EXECUTOR_MEMORY_LIMIT: ${{ inputs.executor_memory_limit || '16Gi' }}
+          CUSTOM_IMAGE_TAG: ${{ inputs.custom_image_tag || '' }}
+          USE_PRIVATE_CLUSTER: ${{ inputs.use_private_cluster || 'false' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -231,7 +231,7 @@ jobs:
             SUT_METRICS_ARGS="--scrape-sut-metrics"
           fi
 
-          export SPICEBENCH_ADBC_UPDATE_STRATEGY=${{ github.event.inputs.adbc_update_strategy || 'bulk_ingest_upsert' }}
+          export SPICEBENCH_ADBC_UPDATE_STRATEGY=${{ inputs.adbc_update_strategy || 'bulk_ingest_upsert' }}
           export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
           if [ "${SPICEBENCH_ADBC_UPDATE_STRATEGY}" = "bulk_ingest_upsert" ]; then
             export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
@@ -269,7 +269,7 @@ jobs:
           fi
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CHANNEL=${SPIDAPTER_CHANNEL}"
 
-          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_version || 'latest' }} stdio --verbose"
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_version || 'latest' }} stdio --verbose"
           ADAPTER_ENVS=""
 
           NO_TEARDOWN_ARG=""

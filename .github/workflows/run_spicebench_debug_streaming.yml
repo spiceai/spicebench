@@ -1,5 +1,5 @@
 name: Run - Streaming
-run-name: Run Streaming - ${{ github.event.inputs.system_under_test }} - ${{ github.event.inputs.acceleration }} - ${{ github.event.inputs.etl_type }} - SF${{ github.event.inputs.scale_factor }}
+run-name: Run Streaming - ${{ inputs.system_under_test }} - ${{ inputs.acceleration }} - ${{ inputs.etl_type }} - SF${{ inputs.scale_factor }}
 
 on:
   workflow_dispatch:
@@ -104,7 +104,7 @@ on:
 
 jobs:
   run-spicebench:
-    name: Run spicebench (streaming - ${{ github.event.inputs.system_under_test }})
+    name: Run spicebench (streaming - ${{ inputs.system_under_test }})
     runs-on: spiceai-dev-runners
     timeout-minutes: 600
     steps:
@@ -114,9 +114,9 @@ jobs:
 
       - uses: ./.github/actions/management-login
         with:
-          token-url: ${{ github.event.inputs.environment == 'production' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
-          client-id: ${{ github.event.inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ github.event.inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
+          token-url: ${{ inputs.environment == 'production' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
+          client-id: ${{ inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          client-secret: ${{ inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -126,12 +126,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull spidapter image
-        run: docker pull ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_image_tag || 'latest' }}
+        run: docker pull ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }}
 
       - uses: ./.github/actions/build-spicebench
 
       - name: Install ADBC Postgres driver
-        if: ${{ startsWith(github.event.inputs.system_under_test, 'postgres-') }}
+        if: ${{ startsWith(inputs.system_under_test, 'postgres-') }}
         uses: columnar-tech/setup-dbc@v1
         with:
           drivers: postgresql
@@ -144,20 +144,20 @@ jobs:
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
-          SPICE_CLOUD_API_URL: ${{ github.event.inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
-          SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test }}
-          SYSTEM_ADAPTER: ${{ github.event.inputs.system_under_test }} - ${{ github.event.inputs.acceleration }}
-          ACCELERATION: ${{ github.event.inputs.acceleration }}
-          SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
-          SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
-          NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '2' }}
+          SPICE_CLOUD_API_URL: ${{ inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+          SYSTEM_UNDER_TEST: ${{ inputs.system_under_test }}
+          SYSTEM_ADAPTER: ${{ inputs.system_under_test }} - ${{ inputs.acceleration }}
+          ACCELERATION: ${{ inputs.acceleration }}
+          SCENARIO: ${{ inputs.scenario || 'tpch' }}
+          SCALE_FACTOR: ${{ inputs.scale_factor || '1' }}
+          NUM_QUERY_CLIENTS: ${{ inputs.num_query_clients || '2' }}
           ETL_BUCKET: spicebench
-          ETL_PREFIX: ${{ github.event.inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
+          ETL_PREFIX: ${{ inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
           ETL_REGION: us-east-1
           ETL_SINK: adbc
           SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
           VALIDATE_CHECKPOINT_RESULTS: 'true'
-          CHECKPOINT_VALIDATION_TIMEOUT: ${{ github.event.inputs.checkpoint_validation_timeout || '3600' }}
+          CHECKPOINT_VALIDATION_TIMEOUT: ${{ inputs.checkpoint_validation_timeout || '3600' }}
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
@@ -168,13 +168,13 @@ jobs:
           EC2_SUBNET_ID: ${{ vars.EC2_SUBNET_ID }}
           EC2_SECURITY_GROUP_ID: ${{ vars.EC2_SECURITY_GROUP_ID }}
           EC2_AMI_ID: ${{ vars.EC2_AMI_ID }}
-          EC2_INSTANCE_TYPE: ${{ github.event.inputs.ec2_instance_type || vars.EC2_INSTANCE_TYPE }}
+          EC2_INSTANCE_TYPE: ${{ inputs.ec2_instance_type || vars.EC2_INSTANCE_TYPE }}
           EC2_IAM_INSTANCE_PROFILE: ${{ vars.EC2_IAM_INSTANCE_PROFILE }}
-          SPIDAPTER_APP_MEMORY_LIMIT: ${{ github.event.inputs.app_memory_limit || '64Gi' }}
-          ENABLE_MODULE_DEBUG_LOGGING: ${{ github.event.inputs.enable_module_debug_logging || 'false' }}
-          DISABLE_TEARDOWN: ${{ github.event.inputs.disable_teardown || 'false' }}
-          CUSTOM_IMAGE_TAG: ${{ github.event.inputs.custom_image_tag || '' }}
-          USE_PRIVATE_CLUSTER: ${{ github.event.inputs.use_private_cluster || 'true' }}
+          SPIDAPTER_APP_MEMORY_LIMIT: ${{ inputs.app_memory_limit || '64Gi' }}
+          ENABLE_MODULE_DEBUG_LOGGING: ${{ inputs.enable_module_debug_logging || 'false' }}
+          DISABLE_TEARDOWN: ${{ inputs.disable_teardown || 'false' }}
+          CUSTOM_IMAGE_TAG: ${{ inputs.custom_image_tag || '' }}
+          USE_PRIVATE_CLUSTER: ${{ inputs.use_private_cluster || 'true' }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -254,9 +254,9 @@ jobs:
 
           [ "${USE_PRIVATE_CLUSTER}" = "true" ]                   && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"
           [ -n "${CUSTOM_IMAGE_TAG}" ]                            && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
-          [ "${{ github.event.inputs.enable_spice_debug }}" = "true" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SPICE_DEBUG=true"
+          [ "${{ inputs.enable_spice_debug }}" = "true" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SPICE_DEBUG=true"
 
-          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ github.event.inputs.spidapter_image_tag || 'latest' }} stdio --verbose"
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose"
 
           set -x
           ~/.spice/bin/spicebench run \
