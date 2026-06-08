@@ -864,6 +864,7 @@ pub(crate) async fn run(
             KeyValue::new("service.name", "spicebench"),
             KeyValue::new("type", "spicebench"),
             KeyValue::new("adapter_name", common_args.system_adapter_name.clone()),
+            KeyValue::new("run_tag", common_args.run_tag.clone()),
             KeyValue::new("scenario", scenario.to_string()),
             KeyValue::new(
                 "data_gen_version",

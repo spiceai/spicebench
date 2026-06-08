@@ -52,6 +52,9 @@ on:
       disable_teardown:
         type: boolean
         default: false
+      run_tag:
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       environment:
@@ -151,6 +154,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_tag:
+        description: 'Optional suffix appended to the adapter_name metric label (e.g. "analyze-fix"). Used to differentiate runs in Grafana.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   run-spicebench:
@@ -196,7 +204,8 @@ jobs:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: ${{ inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SYSTEM_UNDER_TEST: ${{ inputs.system_under_test }}
-          SYSTEM_ADAPTER: ${{ inputs.system_under_test }} - ${{ inputs.acceleration }}
+          SYSTEM_ADAPTER: ${{ inputs.system_under_test }}-${{ inputs.acceleration }}
+          RUN_TAG: ${{ inputs.run_tag || '' }}
           ACCELERATION: ${{ inputs.acceleration }}
           SCENARIO: ${{ inputs.scenario || 'tpch' }}
           SCALE_FACTOR: ${{ inputs.scale_factor || '1' }}
