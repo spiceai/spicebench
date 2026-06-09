@@ -23,10 +23,15 @@ use std::time::Instant;
 use arrow::array::{Array, AsArray, RecordBatch};
 use arrow::datatypes::{DataType, Float64Type, Int64Type, TimeUnit};
 use async_trait::async_trait;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use mongodb::bson::{Bson, Document};
 use mongodb::options::{ReplaceOneModel, WriteModel};
 
 use super::{InsertOp, Sink};
+
+const UPDATE_PARALLELISM_ENV: &str = "SPICEBENCH_MONGO_UPDATE_PARALLELISM";
+const DELETE_PARALLELISM_ENV: &str = "SPICEBENCH_MONGO_DELETE_PARALLELISM";
 
 pub struct MongoDbSink {
     db: mongodb::Database,
@@ -35,6 +40,10 @@ pub struct MongoDbSink {
     primary_key_columns: HashMap<String, Vec<String>>,
     /// Running row counts per table, updated after each write.
     row_counts: Arc<Mutex<HashMap<String, u64>>>,
+    /// Number of concurrent bulk_write requests for updates.
+    update_parallelism: usize,
+    /// Number of concurrent delete_many requests for deletes.
+    delete_parallelism: usize,
 }
 
 impl MongoDbSink {
@@ -51,10 +60,31 @@ impl MongoDbSink {
             .unwrap_or_else(|| "spicebench".to_string());
         let client = mongodb::Client::with_options(options)
             .map_err(|e| anyhow::anyhow!("MongoDB client creation error: {e}"))?;
+
+        let update_parallelism = std::env::var(UPDATE_PARALLELISM_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(1);
+        let delete_parallelism = std::env::var(DELETE_PARALLELISM_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(1);
+
+        if update_parallelism > 1 {
+            tracing::info!(update_parallelism, "MongoDB update parallelism enabled");
+        }
+        if delete_parallelism > 1 {
+            tracing::info!(delete_parallelism, "MongoDB delete parallelism enabled");
+        }
+
         Ok(Self {
             db: client.database(&db_name),
             primary_key_columns,
             row_counts: Arc::new(Mutex::new(HashMap::new())),
+            update_parallelism,
+            delete_parallelism,
         })
     }
 
@@ -162,14 +192,12 @@ impl Sink for MongoDbSink {
                 }
             }
             InsertOp::Update { .. } => {
-                // Single round trip using Client::bulk_write (requires MongoDB 8.0+).
-                // Each row becomes a ReplaceOne(upsert=true) model, so the entire batch
-                // lands in one server round trip.
                 let collection = self.db.collection::<Document>(table_name);
                 let namespace = collection.namespace();
                 let schema = batch.schema();
 
-                let mut models: Vec<WriteModel> = Vec::with_capacity(batch.num_rows());
+                // Build all WriteModels upfront.
+                let mut all_models: Vec<WriteModel> = Vec::with_capacity(batch.num_rows());
                 for row in 0..batch.num_rows() {
                     let id = self.compute_id(table_name, &batch, row)?;
                     let mut doc = Document::new();
@@ -183,7 +211,7 @@ impl Sink for MongoDbSink {
                         }
                     }
                     let filter = mongodb::bson::doc! { "_id": id };
-                    models.push(
+                    all_models.push(
                         ReplaceOneModel::builder()
                             .namespace(namespace.clone())
                             .filter(filter)
@@ -194,30 +222,43 @@ impl Sink for MongoDbSink {
                     );
                 }
 
-                if !models.is_empty() {
-                    self.db.client().bulk_write(models).await.map_err(|e| {
-                        anyhow::anyhow!(
-                            "MongoDB bulk_write (update) failed for '{table_name}': {e}"
-                        )
-                    })?;
+                if !all_models.is_empty() {
+                    let parallelism = self.update_parallelism;
+                    let client = self.db.client().clone();
+                    run_parallel_writes(all_models, parallelism, move |chunk| {
+                        let client = client.clone();
+                        async move {
+                            client.bulk_write(chunk).await.map(|_| ()).map_err(|e| {
+                                anyhow::anyhow!("MongoDB bulk_write (update) failed: {e}")
+                            })
+                        }
+                    })
+                    .await?;
                 }
             }
             InsertOp::Delete { .. } => {
-                // Batch all deletes into a single delete_many($in) — 1 round trip.
                 let collection = self.db.collection::<Document>(table_name);
 
-                let mut ids = Vec::with_capacity(batch.num_rows());
+                let mut all_ids: Vec<Bson> = Vec::with_capacity(batch.num_rows());
                 for row in 0..batch.num_rows() {
                     let id = self.compute_id(table_name, &batch, row)?;
                     if id != Bson::Null {
-                        ids.push(id);
+                        all_ids.push(id);
                     }
                 }
-                if !ids.is_empty() {
-                    let filter = mongodb::bson::doc! { "_id": { "$in": ids } };
-                    collection.delete_many(filter).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB delete_many failed for '{table_name}': {e}")
-                    })?;
+
+                if !all_ids.is_empty() {
+                    let parallelism = self.delete_parallelism;
+                    run_parallel_writes(all_ids, parallelism, |chunk| {
+                        let collection = collection.clone();
+                        async move {
+                            let filter = mongodb::bson::doc! { "_id": { "$in": chunk } };
+                            collection.delete_many(filter).await.map(|_| ()).map_err(|e| {
+                                anyhow::anyhow!("MongoDB delete_many failed: {e}")
+                            })
+                        }
+                    })
+                    .await?;
                 }
             }
         }
@@ -241,6 +282,42 @@ impl Sink for MongoDbSink {
 
         Ok(())
     }
+}
+
+/// Split `items` into `parallelism` equal chunks and call `f` on each chunk
+/// concurrently, waiting for all to complete.
+async fn run_parallel_writes<T, Fut>(
+    items: Vec<T>,
+    parallelism: usize,
+    f: impl Fn(Vec<T>) -> Fut,
+) -> anyhow::Result<()>
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    if parallelism <= 1 {
+        return f(items).await;
+    }
+
+    let chunk_size = (items.len() + parallelism - 1) / parallelism;
+    let mut tasks: FuturesUnordered<tokio::task::JoinHandle<anyhow::Result<()>>> =
+        FuturesUnordered::new();
+
+    // Split into owned chunks without requiring T: Clone.
+    let mut remaining = items;
+    while !remaining.is_empty() {
+        let split_at = chunk_size.min(remaining.len());
+        let rest = remaining.split_off(split_at);
+        let chunk = remaining;
+        remaining = rest;
+        tasks.push(tokio::spawn(f(chunk)));
+    }
+
+    while let Some(result) = tasks.next().await {
+        result.map_err(|e| anyhow::anyhow!("parallel write task panicked: {e}"))??;
+    }
+
+    Ok(())
 }
 
 fn arrow_col_to_bson(col: &dyn Array, row: usize) -> Bson {

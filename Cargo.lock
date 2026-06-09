@@ -1679,6 +1679,7 @@ dependencies = [
  "chrono",
  "data-generation",
  "duckdb",
+ "futures",
  "indexmap",
  "mongodb",
  "object_store",

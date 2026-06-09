@@ -275,14 +275,6 @@ jobs:
               export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
               export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
               ;;
-            postgres-debezium)
-              USE_EC2=true
-              export SPICEBENCH_TARGET_BATCH_ROWS=50000
-              export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=10000
-              export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
-              export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
-              export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
-              ;;
             dynamodb-streams)
               USE_EC2=false
               export SPICEBENCH_TARGET_BATCH_ROWS=50000
@@ -290,6 +282,8 @@ jobs:
             mongodb-streams)
               USE_EC2=true
               export SPICEBENCH_TARGET_BATCH_ROWS=50000
+              export SPICEBENCH_MONGO_UPDATE_PARALLELISM=8
+              export SPICEBENCH_MONGO_DELETE_PARALLELISM=8
               ;;
           esac
 
