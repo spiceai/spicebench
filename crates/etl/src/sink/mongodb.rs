@@ -51,13 +51,14 @@ impl MongoDbSink {
         uri: &str,
         primary_key_columns: HashMap<String, Vec<String>>,
     ) -> anyhow::Result<Self> {
-        let options = mongodb::options::ClientOptions::parse(uri)
+        let mut options = mongodb::options::ClientOptions::parse(uri)
             .await
             .map_err(|e| anyhow::anyhow!("MongoDB URI parse error: {e}"))?;
         let db_name = options
             .default_database
             .clone()
             .unwrap_or_else(|| "spicebench".to_string());
+        options.max_pool_size = Some(200);
         let client = mongodb::Client::with_options(options)
             .map_err(|e| anyhow::anyhow!("MongoDB client creation error: {e}"))?;
 
@@ -228,7 +229,7 @@ impl Sink for MongoDbSink {
                     run_parallel_writes(all_models, parallelism, move |chunk| {
                         let client = client.clone();
                         async move {
-                            client.bulk_write(chunk).await.map(|_| ()).map_err(|e| {
+                            client.bulk_write(chunk).ordered(false).await.map(|_| ()).map_err(|e| {
                                 anyhow::anyhow!("MongoDB bulk_write (update) failed: {e}")
                             })
                         }
