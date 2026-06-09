@@ -29,9 +29,9 @@ pub struct CheckpointArgs {
     #[arg(long)]
     pub version: String,
 
-    /// S3 bucket name (used for both source and target)
-    #[arg(long)]
-    pub bucket: String,
+    /// S3 bucket name (used for both source and target). Not required when --etl-source-archive is set.
+    #[arg(long, required_unless_present = "etl_source_archive")]
+    pub bucket: Option<String>,
 
     /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)
     #[arg(long, default_value = "")]
@@ -56,4 +56,8 @@ pub struct CheckpointArgs {
     /// Directory to write checkpoint parquet files into
     #[arg(long, default_value = "./checkpoints")]
     pub checkpoint_dir: std::path::PathBuf,
+
+    /// Path to a locally generated data archive. When set, skips S3 download.
+    #[arg(long)]
+    pub etl_source_archive: Option<String>,
 }
