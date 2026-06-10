@@ -30,11 +30,14 @@ use mongodb::options::{ReplaceOneModel, WriteModel};
 
 use super::{InsertOp, Sink};
 
+const INSERT_PARALLELISM_ENV: &str = "SPICEBENCH_MONGO_INSERT_PARALLELISM";
+const INSERT_BATCH_SIZE_ENV: &str = "SPICEBENCH_MONGO_INSERT_BATCH_SIZE";
 const UPDATE_PARALLELISM_ENV: &str = "SPICEBENCH_MONGO_UPDATE_PARALLELISM";
 const DELETE_PARALLELISM_ENV: &str = "SPICEBENCH_MONGO_DELETE_PARALLELISM";
 const UPDATE_BATCH_SIZE_ENV: &str = "SPICEBENCH_MONGO_UPDATE_BATCH_SIZE";
 const DELETE_BATCH_SIZE_ENV: &str = "SPICEBENCH_MONGO_DELETE_BATCH_SIZE";
 
+const DEFAULT_INSERT_BATCH_SIZE: usize = 5_000;
 const DEFAULT_UPDATE_BATCH_SIZE: usize = 5_000;
 const DEFAULT_DELETE_BATCH_SIZE: usize = 5_000;
 
@@ -45,6 +48,10 @@ pub struct MongoDbSink {
     primary_key_columns: HashMap<String, Vec<String>>,
     /// Running row counts per table, updated after each write.
     row_counts: Arc<Mutex<HashMap<String, u64>>>,
+    /// Max concurrent insert_many requests for inserts.
+    insert_parallelism: usize,
+    /// Chunk size for splitting insert batches before parallelising.
+    insert_batch_size: usize,
     /// Max concurrent bulk_write requests for updates.
     update_parallelism: usize,
     /// Chunk size for splitting update batches before parallelising.
@@ -71,6 +78,16 @@ impl MongoDbSink {
         let client = mongodb::Client::with_options(options)
             .map_err(|e| anyhow::anyhow!("MongoDB client creation error: {e}"))?;
 
+        let insert_parallelism = std::env::var(INSERT_PARALLELISM_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(8);
+        let insert_batch_size = std::env::var(INSERT_BATCH_SIZE_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(DEFAULT_INSERT_BATCH_SIZE);
         let update_parallelism = std::env::var(UPDATE_PARALLELISM_ENV)
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -93,6 +110,8 @@ impl MongoDbSink {
             .unwrap_or(DEFAULT_DELETE_BATCH_SIZE);
 
         tracing::info!(
+            insert_parallelism,
+            insert_batch_size,
             update_parallelism,
             update_batch_size,
             delete_parallelism,
@@ -104,6 +123,8 @@ impl MongoDbSink {
             db: client.database(&db_name),
             primary_key_columns,
             row_counts: Arc::new(Mutex::new(HashMap::new())),
+            insert_parallelism,
+            insert_batch_size,
             update_parallelism,
             update_batch_size,
             delete_parallelism,
@@ -200,7 +221,7 @@ impl Sink for MongoDbSink {
             InsertOp::Insert => {
                 let collection = self.db.collection::<Document>(table_name);
                 let schema = batch.schema();
-                let mut docs = Vec::with_capacity(batch.num_rows());
+                let mut all_docs = Vec::with_capacity(batch.num_rows());
                 for row in 0..batch.num_rows() {
                     let mut doc = Document::new();
                     let id = self.compute_id(table_name, &batch, row)?;
@@ -213,15 +234,40 @@ impl Sink for MongoDbSink {
                             doc.insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
                         }
                     }
-                    docs.push(doc);
+                    all_docs.push(doc);
                 }
-                if !docs.is_empty() {
-                    tracing::debug!(table = %table_name, rows, "insert_many starting");
-                    let t = Instant::now();
-                    collection.insert_many(&docs).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB insert_many failed for '{table_name}': {e}")
-                    })?;
-                    tracing::debug!(table = %table_name, rows, elapsed_ms = t.elapsed().as_millis(), "insert_many done");
+                if !all_docs.is_empty() {
+                    let n_chunks = (all_docs.len() + self.insert_batch_size - 1) / self.insert_batch_size;
+                    tracing::debug!(
+                        table = %table_name,
+                        rows,
+                        chunk_size = self.insert_batch_size,
+                        n_chunks,
+                        parallelism = self.insert_parallelism,
+                        "insert_many starting"
+                    );
+                    let table_name_owned = table_name.to_string();
+                    run_chunked_parallel(
+                        all_docs,
+                        self.insert_batch_size,
+                        self.insert_parallelism,
+                        |chunk| {
+                            let collection = collection.clone();
+                            let table = table_name_owned.clone();
+                            async move {
+                                let n = chunk.len();
+                                let t = Instant::now();
+                                tracing::debug!(table = %table, rows = n, "insert_many subbatch started");
+                                let r = collection.insert_many(chunk).await.map(|_| ()).map_err(|e| {
+                                    anyhow::anyhow!("MongoDB insert_many failed for '{table}': {e}")
+                                });
+                                tracing::debug!(table = %table, rows = n, elapsed_ms = t.elapsed().as_millis(), "insert_many subbatch done");
+                                r
+                            }
+                        },
+                    )
+                    .await?;
+                    tracing::debug!(table = %table_name, rows, "insert_many done");
                 }
             }
             InsertOp::Update { .. } => {
