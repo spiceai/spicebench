@@ -281,10 +281,10 @@ jobs:
               ;;
             mongodb-streams)
               USE_EC2=true
-              export SPICEBENCH_TARGET_BATCH_ROWS=40000
+              export SPICEBENCH_TARGET_BATCH_ROWS=80000
               export SPICEBENCH_MONGO_UPDATE_BATCH_SIZE=5000
               export SPICEBENCH_MONGO_DELETE_BATCH_SIZE=5000
-              export SPICEBENCH_MONGO_UPDATE_PARALLELISM=8
+              export SPICEBENCH_MONGO_UPDATE_PARALLELISM=16
               export SPICEBENCH_MONGO_DELETE_PARALLELISM=16
               ;;
           esac
