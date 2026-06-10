@@ -34,7 +34,7 @@ runs:
       run: |
         mkdir -p ~/.spice/bin
         cargo build -p spicebench --release
-        install -m 755 target/debug/spicebench ~/.spice/bin/spicebench
+        install -m 755 target/release/spicebench ~/.spice/bin/spicebench
 
     - name: Save spicebench cache
       if: steps.build-spicebench.outcome == 'success'
