@@ -33,7 +33,7 @@ runs:
       shell: bash
       run: |
         mkdir -p ~/.spice/bin
-        cargo build -p spicebench
+        cargo build -p spicebench --release
         install -m 755 target/debug/spicebench ~/.spice/bin/spicebench
 
     - name: Save spicebench cache
