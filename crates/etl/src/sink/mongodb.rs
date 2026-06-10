@@ -189,6 +189,13 @@ impl Sink for MongoDbSink {
             InsertOp::Delete { .. } => "delete",
         };
 
+        tracing::debug!(
+            table = %table_name,
+            op = %op_label,
+            rows,
+            "Sink::write started"
+        );
+
         match op {
             InsertOp::Insert => {
                 let collection = self.db.collection::<Document>(table_name);
@@ -209,9 +216,12 @@ impl Sink for MongoDbSink {
                     docs.push(doc);
                 }
                 if !docs.is_empty() {
+                    tracing::debug!(table = %table_name, rows, "insert_many starting");
+                    let t = Instant::now();
                     collection.insert_many(&docs).await.map_err(|e| {
                         anyhow::anyhow!("MongoDB insert_many failed for '{table_name}': {e}")
                     })?;
+                    tracing::debug!(table = %table_name, rows, elapsed_ms = t.elapsed().as_millis(), "insert_many done");
                 }
             }
             InsertOp::Update { .. } => {
@@ -246,17 +256,33 @@ impl Sink for MongoDbSink {
                 }
 
                 if !all_models.is_empty() {
+                    let n_chunks = (all_models.len() + self.update_batch_size - 1) / self.update_batch_size;
+                    tracing::debug!(
+                        table = %table_name,
+                        rows,
+                        chunk_size = self.update_batch_size,
+                        n_chunks,
+                        parallelism = self.update_parallelism,
+                        "bulk_write updates starting"
+                    );
                     let client = self.db.client().clone();
+                    let table_name_owned = table_name.to_string();
                     run_chunked_parallel(
                         all_models,
                         self.update_batch_size,
                         self.update_parallelism,
                         move |chunk| {
                             let client = client.clone();
+                            let table = table_name_owned.clone();
                             async move {
-                                client.bulk_write(chunk).ordered(false).await.map(|_| ()).map_err(|e| {
+                                let n = chunk.len();
+                                let t = Instant::now();
+                                tracing::debug!(table = %table, rows = n, "bulk_write subbatch started");
+                                let r = client.bulk_write(chunk).ordered(false).await.map(|_| ()).map_err(|e| {
                                     anyhow::anyhow!("MongoDB bulk_write (update) failed: {e}")
-                                })
+                                });
+                                tracing::debug!(table = %table, rows = n, elapsed_ms = t.elapsed().as_millis(), "bulk_write subbatch done");
+                                r
                             }
                         },
                     )
@@ -275,17 +301,33 @@ impl Sink for MongoDbSink {
                 }
 
                 if !all_ids.is_empty() {
+                    let n_chunks = (all_ids.len() + self.delete_batch_size - 1) / self.delete_batch_size;
+                    tracing::debug!(
+                        table = %table_name,
+                        rows,
+                        chunk_size = self.delete_batch_size,
+                        n_chunks,
+                        parallelism = self.delete_parallelism,
+                        "delete_many starting"
+                    );
+                    let table_name_owned = table_name.to_string();
                     run_chunked_parallel(
                         all_ids,
                         self.delete_batch_size,
                         self.delete_parallelism,
                         |chunk| {
                             let collection = collection.clone();
+                            let table = table_name_owned.clone();
                             async move {
+                                let n = chunk.len();
+                                let t = Instant::now();
+                                tracing::debug!(table = %table, rows = n, "delete_many subbatch started");
                                 let filter = mongodb::bson::doc! { "_id": { "$in": chunk } };
-                                collection.delete_many(filter).await.map(|_| ()).map_err(|e| {
+                                let r = collection.delete_many(filter).await.map(|_| ()).map_err(|e| {
                                     anyhow::anyhow!("MongoDB delete_many failed: {e}")
-                                })
+                                });
+                                tracing::debug!(table = %table, rows = n, elapsed_ms = t.elapsed().as_millis(), "delete_many subbatch done");
+                                r
                             }
                         },
                     )
