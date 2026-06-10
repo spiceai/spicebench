@@ -32,6 +32,11 @@ use super::{InsertOp, Sink};
 
 const UPDATE_PARALLELISM_ENV: &str = "SPICEBENCH_MONGO_UPDATE_PARALLELISM";
 const DELETE_PARALLELISM_ENV: &str = "SPICEBENCH_MONGO_DELETE_PARALLELISM";
+const UPDATE_BATCH_SIZE_ENV: &str = "SPICEBENCH_MONGO_UPDATE_BATCH_SIZE";
+const DELETE_BATCH_SIZE_ENV: &str = "SPICEBENCH_MONGO_DELETE_BATCH_SIZE";
+
+const DEFAULT_UPDATE_BATCH_SIZE: usize = 5_000;
+const DEFAULT_DELETE_BATCH_SIZE: usize = 5_000;
 
 pub struct MongoDbSink {
     db: mongodb::Database,
@@ -40,10 +45,14 @@ pub struct MongoDbSink {
     primary_key_columns: HashMap<String, Vec<String>>,
     /// Running row counts per table, updated after each write.
     row_counts: Arc<Mutex<HashMap<String, u64>>>,
-    /// Number of concurrent bulk_write requests for updates.
+    /// Max concurrent bulk_write requests for updates.
     update_parallelism: usize,
-    /// Number of concurrent delete_many requests for deletes.
+    /// Chunk size for splitting update batches before parallelising.
+    update_batch_size: usize,
+    /// Max concurrent delete_many requests for deletes.
     delete_parallelism: usize,
+    /// Chunk size for splitting delete batches before parallelising.
+    delete_batch_size: usize,
 }
 
 impl MongoDbSink {
@@ -66,26 +75,39 @@ impl MongoDbSink {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
-            .unwrap_or(1);
+            .unwrap_or(8);
+        let update_batch_size = std::env::var(UPDATE_BATCH_SIZE_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(DEFAULT_UPDATE_BATCH_SIZE);
         let delete_parallelism = std::env::var(DELETE_PARALLELISM_ENV)
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
-            .unwrap_or(1);
+            .unwrap_or(16);
+        let delete_batch_size = std::env::var(DELETE_BATCH_SIZE_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(DEFAULT_DELETE_BATCH_SIZE);
 
-        if update_parallelism > 1 {
-            tracing::info!(update_parallelism, "MongoDB update parallelism enabled");
-        }
-        if delete_parallelism > 1 {
-            tracing::info!(delete_parallelism, "MongoDB delete parallelism enabled");
-        }
+        tracing::info!(
+            update_parallelism,
+            update_batch_size,
+            delete_parallelism,
+            delete_batch_size,
+            "MongoDB sink configured"
+        );
 
         Ok(Self {
             db: client.database(&db_name),
             primary_key_columns,
             row_counts: Arc::new(Mutex::new(HashMap::new())),
             update_parallelism,
+            update_batch_size,
             delete_parallelism,
+            delete_batch_size,
         })
     }
 
@@ -224,16 +246,20 @@ impl Sink for MongoDbSink {
                 }
 
                 if !all_models.is_empty() {
-                    let parallelism = self.update_parallelism;
                     let client = self.db.client().clone();
-                    run_parallel_writes(all_models, parallelism, move |chunk| {
-                        let client = client.clone();
-                        async move {
-                            client.bulk_write(chunk).ordered(false).await.map(|_| ()).map_err(|e| {
-                                anyhow::anyhow!("MongoDB bulk_write (update) failed: {e}")
-                            })
-                        }
-                    })
+                    run_chunked_parallel(
+                        all_models,
+                        self.update_batch_size,
+                        self.update_parallelism,
+                        move |chunk| {
+                            let client = client.clone();
+                            async move {
+                                client.bulk_write(chunk).ordered(false).await.map(|_| ()).map_err(|e| {
+                                    anyhow::anyhow!("MongoDB bulk_write (update) failed: {e}")
+                                })
+                            }
+                        },
+                    )
                     .await?;
                 }
             }
@@ -249,16 +275,20 @@ impl Sink for MongoDbSink {
                 }
 
                 if !all_ids.is_empty() {
-                    let parallelism = self.delete_parallelism;
-                    run_parallel_writes(all_ids, parallelism, |chunk| {
-                        let collection = collection.clone();
-                        async move {
-                            let filter = mongodb::bson::doc! { "_id": { "$in": chunk } };
-                            collection.delete_many(filter).await.map(|_| ()).map_err(|e| {
-                                anyhow::anyhow!("MongoDB delete_many failed: {e}")
-                            })
-                        }
-                    })
+                    run_chunked_parallel(
+                        all_ids,
+                        self.delete_batch_size,
+                        self.delete_parallelism,
+                        |chunk| {
+                            let collection = collection.clone();
+                            async move {
+                                let filter = mongodb::bson::doc! { "_id": { "$in": chunk } };
+                                collection.delete_many(filter).await.map(|_| ()).map_err(|e| {
+                                    anyhow::anyhow!("MongoDB delete_many failed: {e}")
+                                })
+                            }
+                        },
+                    )
                     .await?;
                 }
             }
@@ -285,36 +315,39 @@ impl Sink for MongoDbSink {
     }
 }
 
-/// Split `items` into `parallelism` equal chunks and call `f` on each chunk
-/// concurrently, waiting for all to complete.
-async fn run_parallel_writes<T, Fut>(
+/// Split `items` into chunks of `chunk_size` and dispatch up to `max_parallel`
+/// concurrently using a sliding window. Only parallelises when there is more
+/// than one chunk, so small batches always use a single request.
+async fn run_chunked_parallel<T, Fut>(
     items: Vec<T>,
-    parallelism: usize,
+    chunk_size: usize,
+    max_parallel: usize,
     f: impl Fn(Vec<T>) -> Fut,
 ) -> anyhow::Result<()>
 where
     T: Send + 'static,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
-    if parallelism <= 1 {
-        return f(items).await;
-    }
-
-    let chunk_size = (items.len() + parallelism - 1) / parallelism;
-    let mut tasks: FuturesUnordered<tokio::task::JoinHandle<anyhow::Result<()>>> =
+    let mut remaining = items;
+    let mut pending: FuturesUnordered<tokio::task::JoinHandle<anyhow::Result<()>>> =
         FuturesUnordered::new();
 
-    // Split into owned chunks without requiring T: Clone.
-    let mut remaining = items;
     while !remaining.is_empty() {
+        // Drain completed tasks to stay within max_parallel in-flight.
+        while pending.len() >= max_parallel {
+            if let Some(result) = pending.next().await {
+                result.map_err(|e| anyhow::anyhow!("parallel write task panicked: {e}"))??;
+            }
+        }
+
         let split_at = chunk_size.min(remaining.len());
         let rest = remaining.split_off(split_at);
         let chunk = remaining;
         remaining = rest;
-        tasks.push(tokio::spawn(f(chunk)));
+        pending.push(tokio::spawn(f(chunk)));
     }
 
-    while let Some(result) = tasks.next().await {
+    while let Some(result) = pending.next().await {
         result.map_err(|e| anyhow::anyhow!("parallel write task panicked: {e}"))??;
     }
 
