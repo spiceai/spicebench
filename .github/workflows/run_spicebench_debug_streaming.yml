@@ -55,6 +55,9 @@ on:
       run_tag:
         type: string
         default: ''
+      validate_results:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       environment:
@@ -159,6 +162,11 @@ on:
         required: false
         default: ''
         type: string
+      validate_results:
+        description: 'Validate checkpoint results (disable to measure raw ETL throughput without waiting for spiced convergence)'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   run-spicebench:
@@ -215,7 +223,7 @@ jobs:
           ETL_REGION: us-east-1
           ETL_SINK: adbc
           SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
-          VALIDATE_CHECKPOINT_RESULTS: 'true'
+          VALIDATE_CHECKPOINT_RESULTS: ${{ inputs.validate_results != false && 'true' || 'false' }}
           CHECKPOINT_VALIDATION_TIMEOUT: ${{ inputs.checkpoint_validation_timeout || '3600' }}
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
