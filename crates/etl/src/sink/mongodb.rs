@@ -71,6 +71,8 @@ impl MongoDbSink {
             .clone()
             .unwrap_or_else(|| "spicebench".to_string());
         options.max_pool_size = Some(200);
+        options.min_pool_size = Some(64);
+        options.max_connecting = Some(16);
         let client = mongodb::Client::with_options(options)
             .map_err(|e| anyhow::anyhow!("MongoDB client creation error: {e}"))?;
 
@@ -125,8 +127,6 @@ impl MongoDbSink {
         *count
     }
 
-    /// Compute the `_id` for a row as a colon-joined string of primary key values.
-    /// For a single key this is just the value; for compound keys it's "v1:v2:...".
     fn compute_id(
         &self,
         table_name: &str,
@@ -138,30 +138,30 @@ impl MongoDbSink {
             .get(table_name)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-
-        if pk_cols.is_empty() {
-            // No PK configured — let MongoDB auto-generate _id
-            return Ok(Bson::Null);
-        }
-
-        let schema = batch.schema();
-        let parts: Vec<String> = pk_cols
-            .iter()
-            .map(|pk| {
-                let idx = schema.index_of(pk).map_err(|_| {
-                    anyhow::anyhow!("PK column '{pk}' not in schema for '{table_name}'")
-                })?;
-                let col = batch.column(idx);
-                Ok(bson_to_string(&arrow_col_to_bson(col.as_ref(), row)))
-            })
-            .collect::<anyhow::Result<_>>()?;
-
-        Ok(if parts.len() == 1 {
-            Bson::String(parts.into_iter().next().unwrap())
-        } else {
-            Bson::String(parts.join(":"))
-        })
+        compute_id_for_row(pk_cols, batch, row)
     }
+}
+
+fn compute_id_for_row(pk_cols: &[String], batch: &RecordBatch, row: usize) -> anyhow::Result<Bson> {
+    if pk_cols.is_empty() {
+        return Ok(Bson::Null);
+    }
+    let schema = batch.schema();
+    let parts: Vec<String> = pk_cols
+        .iter()
+        .map(|pk| {
+            let idx = schema.index_of(pk).map_err(|_| {
+                anyhow::anyhow!("PK column '{pk}' not in schema")
+            })?;
+            let col = batch.column(idx);
+            Ok(bson_to_string(&arrow_col_to_bson(col.as_ref(), row)))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    Ok(if parts.len() == 1 {
+        Bson::String(parts.into_iter().next().unwrap())
+    } else {
+        Bson::String(parts.join(":"))
+    })
 }
 
 fn bson_to_string(b: &Bson) -> String {
@@ -202,52 +202,75 @@ impl Sink for MongoDbSink {
         match op {
             InsertOp::Insert => {
                 let collection = self.db.collection::<Document>(table_name);
-                let schema = batch.schema();
-                let mut all_docs = Vec::with_capacity(batch.num_rows());
-                for row in 0..batch.num_rows() {
-                    let mut doc = Document::new();
-                    let id = self.compute_id(table_name, &batch, row)?;
-                    if id != Bson::Null {
-                        doc.insert("_id", id);
-                    }
-                    for (col_idx, field) in schema.fields().iter().enumerate() {
-                        let col = batch.column(col_idx);
-                        if !col.is_null(row) {
-                            doc.insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
-                        }
-                    }
-                    all_docs.push(doc);
-                }
-                if !all_docs.is_empty() {
-                    let n_chunks = (all_docs.len() + self.insert_batch_size - 1) / self.insert_batch_size;
+                let n_rows = batch.num_rows();
+                let chunk_size = self.insert_batch_size;
+                let n_chunks = (n_rows + chunk_size - 1) / chunk_size;
+
+                if n_rows > 0 {
                     tracing::debug!(
                         table = %table_name,
                         rows,
-                        chunk_size = self.insert_batch_size,
+                        chunk_size,
                         n_chunks,
                         "insert_many starting"
                     );
+
+                    // Pipeline: each task converts its chunk then acquires semaphore and inserts.
+                    // Conversion happens before acquiring the permit so it overlaps with in-flight I/O.
+                    let batch = Arc::new(batch);
+                    let pk_cols = self.primary_key_columns
+                        .get(table_name)
+                        .cloned()
+                        .unwrap_or_default();
                     let table_name_owned = table_name.to_string();
-                    run_chunked_parallel(
-                        all_docs,
-                        self.insert_batch_size,
-                        self.semaphore.clone(),
-                        move |chunk| {
-                            let collection = collection.clone();
-                            let table = table_name_owned.clone();
-                            async move {
-                                let n = chunk.len();
-                                let t = Instant::now();
-                                tracing::debug!(table = %table, rows = n, "insert_many subbatch started");
-                                let r = collection.insert_many(chunk).await.map(|_| ()).map_err(|e| {
-                                    anyhow::anyhow!("MongoDB insert_many failed for '{table}': {e}")
-                                });
-                                tracing::debug!(table = %table, rows = n, elapsed_ms = t.elapsed().as_millis(), "insert_many subbatch done");
-                                r
-                            }
-                        },
-                    )
-                    .await?;
+                    let mut pending: FuturesUnordered<tokio::task::JoinHandle<anyhow::Result<()>>> =
+                        FuturesUnordered::new();
+
+                    for chunk_start in (0..n_rows).step_by(chunk_size) {
+                        let chunk_end = (chunk_start + chunk_size).min(n_rows);
+                        let batch = Arc::clone(&batch);
+                        let pk_cols = pk_cols.clone();
+                        let collection = collection.clone();
+                        let sem = self.semaphore.clone();
+                        let table = table_name_owned.clone();
+
+                        pending.push(tokio::spawn(async move {
+                            // Convert this chunk — CPU work, runs before acquiring semaphore
+                            // so conversion for multiple chunks overlaps in parallel.
+                            let docs = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Document>> {
+                                let schema = batch.schema();
+                                let mut docs = Vec::with_capacity(chunk_end - chunk_start);
+                                for row in chunk_start..chunk_end {
+                                    let mut doc = Document::new();
+                                    let id = compute_id_for_row(&pk_cols, &batch, row)?;
+                                    if id != Bson::Null { doc.insert("_id", id); }
+                                    for (col_idx, field) in schema.fields().iter().enumerate() {
+                                        let col = batch.column(col_idx);
+                                        if !col.is_null(row) {
+                                            doc.insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
+                                        }
+                                    }
+                                    docs.push(doc);
+                                }
+                                Ok(docs)
+                            }).await??;
+
+                            let n = docs.len();
+                            let t = Instant::now();
+                            tracing::debug!(table = %table, rows = n, "insert_many subbatch started");
+                            let _permit = sem.acquire_owned().await
+                                .map_err(|e| anyhow::anyhow!("semaphore closed: {e}"))?;
+                            let r = collection.insert_many(docs).await.map(|_| ()).map_err(|e| {
+                                anyhow::anyhow!("MongoDB insert_many failed for '{table}': {e}")
+                            });
+                            tracing::debug!(table = %table, rows = n, elapsed_ms = t.elapsed().as_millis(), "insert_many subbatch done");
+                            r
+                        }));
+                    }
+
+                    while let Some(r) = pending.next().await {
+                        r.map_err(|e| anyhow::anyhow!("insert task panicked: {e}"))??;
+                    }
                     tracing::debug!(table = %table_name, rows, "insert_many done");
                 }
             }
