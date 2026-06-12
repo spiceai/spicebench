@@ -74,15 +74,37 @@ async fn run_benchmark(
         let meta_path = local_dir.join("checkpoints.json");
         if let Ok(bytes) = std::fs::read(&meta_path) {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                if let Some(steps) = v.get("checkpoint_interval_steps").and_then(|v| v.as_u64()) {
-                    checkpoint_steps = Some(steps as usize);
+                // checkpoints.json structure: { "scenarios": { "<name>": { "checkpoint_interval_steps": N, ... } } }
+                let steps = v
+                    .get("scenarios")
+                    .and_then(|s| s.get(&scenario_name))
+                    .and_then(|s| s.get("checkpoint_interval_steps"))
+                    .and_then(|v| v.as_u64());
+                let num_checkpoints = v
+                    .get("scenarios")
+                    .and_then(|s| s.get(&scenario_name))
+                    .and_then(|s| s.get("checkpoint_indexes"))
+                    .and_then(|v| v.as_array())
+                    .map_or(0, |a| a.len());
+                let num_queries = v
+                    .get("scenarios")
+                    .and_then(|s| s.get(&scenario_name))
+                    .and_then(|s| s.get("query_indexes"))
+                    .and_then(|v| v.as_array())
+                    .map_or(0, |a| a.len());
+                if let Some(s) = steps {
+                    checkpoint_steps = Some(s as usize);
                 }
+                tracing::info!(
+                    scenario = %scenario_name,
+                    num_checkpoints,
+                    num_queries,
+                    checkpoint_interval_steps = checkpoint_steps,
+                    dir = %local_dir.display(),
+                    "Using local checkpoints (no download)"
+                );
             }
         }
-        tracing::info!(
-            dir = %local_dir.display(),
-            "Using local checkpoints (no download)"
-        );
     } else {
         checkpoint_path = checkpoint_tempdir.path();
         let derived_version = format_scale_factor(common.scale_factor);
