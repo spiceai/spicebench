@@ -62,57 +62,76 @@ async fn run_benchmark(
     file_storage: Arc<FileStorage>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    // --- Download checkpoints from S3 ---
+    // --- Load checkpoints from local dir or download from S3 ---
     let scenario_name = common.scenario.to_string();
-    let checkpoint_dir = tempfile::tempdir()?;
-
-    let derived_version = format_scale_factor(common.scale_factor);
-    let version_prefix = build_version_prefix(&common.etl_prefix, &scenario_name, &derived_version);
-    let checkpoint_store = CheckpointStore::new(
-        &common.etl_bucket,
-        &version_prefix,
-        common.etl_region.as_deref(),
-        common.etl_endpoint.as_deref(),
-    )?;
-
-    let manifest = checkpoint_store
-        .download_manifest()
-        .await
-        .map_err(|e| {
-            tracing::warn!("Failed to download checkpoint manifest - results validation will not be enabled: {e}");
-            e
-        })
-        .ok();
+    let checkpoint_tempdir = tempfile::tempdir()?; // kept alive until end of function
     let mut checkpoint_steps: Option<usize> = None;
-    if let Some(manifest) = manifest
-        && let Some(scenario_info) = manifest.scenarios.get(&scenario_name)
-    {
+    // Points to either the local dir or the downloaded tempdir.
+    let checkpoint_path: &std::path::Path;
+
+    if let Some(local_dir) = &common.checkpoint_local_dir {
+        checkpoint_path = local_dir.as_path();
+        let meta_path = local_dir.join("checkpoints.json");
+        if let Ok(bytes) = std::fs::read(&meta_path) {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(steps) = v.get("checkpoint_interval_steps").and_then(|v| v.as_u64()) {
+                    checkpoint_steps = Some(steps as usize);
+                }
+            }
+        }
         tracing::info!(
-            scenario = %scenario_name,
-            num_checkpoints = scenario_info.checkpoint_indexes.len(),
-            num_queries = scenario_info.query_indexes.len(),
-            checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
-            path = %checkpoint_dir.path().display(),
-            "Downloading checkpoints"
+            dir = %local_dir.display(),
+            "Using local checkpoints (no download)"
         );
-        if scenario_info.checkpoint_interval_steps > 0 {
-            checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
-        }
-        if let Err(e) = checkpoint_store
-            .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
-            .await
-        {
-            tracing::warn!(
-                "Failed to download checkpoints - results validation will not be enabled: {e}"
-            );
-        } else {
-            tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
-        }
     } else {
-        tracing::warn!(
-            scenario = %scenario_name,
-            "No checkpoints found for scenario in manifest"
-        );
+        checkpoint_path = checkpoint_tempdir.path();
+        let derived_version = format_scale_factor(common.scale_factor);
+        let version_prefix = build_version_prefix(&common.etl_prefix, &scenario_name, &derived_version);
+        let checkpoint_store = CheckpointStore::new(
+            &common.etl_bucket,
+            &version_prefix,
+            common.etl_region.as_deref(),
+            common.etl_endpoint.as_deref(),
+        )?;
+
+        let manifest = checkpoint_store
+            .download_manifest()
+            .await
+            .map_err(|e| {
+                tracing::warn!("Failed to download checkpoint manifest - results validation will not be enabled: {e}");
+                e
+            })
+            .ok();
+        if let Some(manifest) = manifest
+            && let Some(scenario_info) = manifest.scenarios.get(&scenario_name)
+        {
+            tracing::info!(
+                scenario = %scenario_name,
+                num_checkpoints = scenario_info.checkpoint_indexes.len(),
+                num_queries = scenario_info.query_indexes.len(),
+                checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
+                path = %checkpoint_path.display(),
+                "Downloading checkpoints"
+            );
+            if scenario_info.checkpoint_interval_steps > 0 {
+                checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
+            }
+            if let Err(e) = checkpoint_store
+                .download_checkpoints(&scenario_name, scenario_info, checkpoint_path)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to download checkpoints - results validation will not be enabled: {e}"
+                );
+            } else {
+                tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
+            }
+        } else {
+            tracing::warn!(
+                scenario = %scenario_name,
+                "No checkpoints found for scenario in manifest"
+            );
+        }
     }
 
     let dataset_source = DatasetSource::from_dataset_type(&version_metadata.dataset_type)?;
@@ -267,7 +286,7 @@ async fn run_benchmark(
         read_pool,
         &mut pipeline,
         checkpoint_steps,
-        Some(checkpoint_dir.path()),
+        Some(checkpoint_path),
         query_catalog_namespace,
         shutdown,
     )
@@ -315,20 +334,30 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
     // This happens before benchmark timing begins.
     let extract_dir = tempfile::tempdir()?;
 
-    let source_config = TargetConfig {
-        bucket: args.etl_bucket.clone(),
-        prefix: version_prefix.clone(),
-        region: args.etl_region.clone(),
-        endpoint: args.etl_endpoint.clone(),
-        partition_columns: vec![],
-    };
-    let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
+    if let Some(archive_path) = &args.etl_source_archive {
+        tracing::info!(
+            archive = %archive_path.display(),
+            extract_dir = %extract_dir.path().display(),
+            "Extracting local data archive (skipping S3 download)"
+        );
+        data_generation::archive::extract_archive(archive_path, extract_dir.path())
+            .map_err(|e| anyhow::anyhow!("Failed to extract local archive: {e}"))?;
+    } else {
+        let source_config = TargetConfig {
+            bucket: args.etl_bucket.clone(),
+            prefix: version_prefix.clone(),
+            region: args.etl_region.clone(),
+            endpoint: args.etl_endpoint.clone(),
+            partition_columns: vec![],
+        };
+        let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
 
-    tracing::info!(
-        extract_dir = %extract_dir.path().display(),
-        "Downloading and extracting data archive"
-    );
-    ETLPipeline::download(archive_storage, extract_dir.path()).await?;
+        tracing::info!(
+            extract_dir = %extract_dir.path().display(),
+            "Downloading and extracting data archive"
+        );
+        ETLPipeline::download(archive_storage, extract_dir.path()).await?;
+    }
 
     // Step 2: Create FileStorage from extracted data and read version metadata.
     let file_storage = Arc::new(FileStorage::new(extract_dir.path()));

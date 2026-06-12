@@ -166,6 +166,16 @@ pub struct RunArgs {
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
 
+    /// Path to a local `.tar.zst` archive. When set, skips the S3 download
+    /// and extracts this file directly.
+    #[arg(long)]
+    pub(crate) etl_source_archive: Option<std::path::PathBuf>,
+
+    /// Path to a local directory of pre-computed checkpoints. When set,
+    /// validation loads from this directory instead of downloading from S3.
+    #[arg(long)]
+    pub(crate) checkpoint_local_dir: Option<std::path::PathBuf>,
+
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]
     pub(crate) table_format: TableFormat,
