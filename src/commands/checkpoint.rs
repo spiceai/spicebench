@@ -193,19 +193,30 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
         .map(|q| q.sql.to_string())
         .collect();
 
-    let version_prefix = build_version_prefix(&args.prefix, &scenario_name, &args.version);
-    let source_config = TargetConfig {
-        bucket: args.bucket.clone(),
-        prefix: version_prefix.clone(),
-        region: args.region.clone(),
-        endpoint: args.endpoint.clone(),
-        partition_columns: vec![],
-    };
-    let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
-
-    // Download and extract the archive to a temporary local directory.
+    // Download (or extract from local archive) to a temporary directory.
     let extract_dir = tempfile::tempdir()?;
-    ETLPipeline::download(archive_storage, extract_dir.path()).await?;
+    let version_prefix = build_version_prefix(&args.prefix, &scenario_name, &args.version);
+
+    if let Some(local_archive) = &args.etl_source_archive {
+        tracing::info!(archive = %local_archive, "Extracting local archive (skipping S3)");
+        let archive_path = std::path::Path::new(local_archive);
+        anyhow::ensure!(archive_path.exists(), "Local archive not found: {local_archive}");
+        data_generation::archive::extract_archive(archive_path, extract_dir.path())?;
+    } else {
+        let bucket = args.bucket.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("--bucket is required when --etl-source-archive is not set")
+        })?;
+        let source_config = TargetConfig {
+            bucket: bucket.to_string(),
+            prefix: version_prefix.clone(),
+            region: args.region.clone(),
+            endpoint: args.endpoint.clone(),
+            partition_columns: vec![],
+        };
+        let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
+        ETLPipeline::download(archive_storage, extract_dir.path()).await?;
+    }
+
     let source: Arc<dyn DataStorage> = Arc::new(FileStorage::new(extract_dir.path()));
 
     // Read version metadata to derive dataset config and mutations.
@@ -238,7 +249,7 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
         scenario = %scenario_name,
         version = %args.version,
         dataset = %version_metadata.dataset_type,
-        bucket = %args.bucket,
+        bucket = args.bucket.as_deref().unwrap_or("(local)"),
         prefix = %args.prefix,
         version_prefix = %version_prefix,
         extract_dir = %extract_dir.path().display(),
@@ -304,19 +315,33 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
                 )
                 .await?;
 
-                let checkpoint_store = CheckpointStore::new(
-                    &args.bucket,
-                    &version_prefix,
-                    args.region.as_deref(),
-                    args.endpoint.as_deref(),
-                )?;
-                checkpoint_store
-                    .upload_checkpoints(
+                // Skip S3 upload when using a local archive — write the
+                // manifest directly to checkpoint_dir/checkpoints.json instead.
+                if args.etl_source_archive.is_none() {
+                    let checkpoint_store = CheckpointStore::new(
+                        args.bucket.as_deref().unwrap_or_default(),
+                        &version_prefix,
+                        args.region.as_deref(),
+                        args.endpoint.as_deref(),
+                    )?;
+                    checkpoint_store
+                        .upload_checkpoints(
+                            &scenario_name,
+                            &args.checkpoint_dir,
+                            args.checkpoint_interval_steps as usize,
+                        )
+                        .await?;
+                } else {
+                    CheckpointStore::write_local_manifest(
                         &scenario_name,
                         &args.checkpoint_dir,
                         args.checkpoint_interval_steps as usize,
-                    )
-                    .await?;
+                    )?;
+                    tracing::info!(
+                        dir = %args.checkpoint_dir.display(),
+                        "Local archive mode — manifest written to checkpoint dir"
+                    );
+                }
 
                 tracing::info!("Checkpointer completed successfully");
                 break;

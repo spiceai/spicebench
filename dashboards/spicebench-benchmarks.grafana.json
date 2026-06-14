@@ -412,7 +412,7 @@
           "refId": "A"
         }
       ],
-      "title": "Query latency P99 \u2014 overall (ms)",
+      "title": "Query latency P99 — overall (ms)",
       "type": "timeseries"
     },
     {
@@ -507,7 +507,7 @@
           "refId": "A"
         }
       ],
-      "title": "Query latency P99 \u2014 by query (ms)",
+      "title": "Query latency P99 — by query (ms)",
       "type": "timeseries"
     },
     {
@@ -1985,9 +1985,214 @@
       ],
       "title": "Disk write IOPS",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "id": 29,
+      "panels": [],
+      "title": "CDC",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 70
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => exists r[\"run_id\"])\n    |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n    |> filter(fn: (r) => \"${etl_type}\" == \"All\" or (exists r[\"etl_type\"] and r[\"etl_type\"] == \"${etl_type}\"))\n    |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n    |> keep(columns: [\"run_id\"])\n    |> group()\n    |> distinct(column: \"run_id\")\n    |> findColumn(fn: (key) => true, column: \"_value\")\n\n  from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => r[\"_measurement\"] == \"sut_cdc_rows_applied\")\n    |> filter(fn: (r) => exists r[\"adapter_name\"])\n    |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n    |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"run_tag\", \"table\"])\n    |> aggregateWindow(every: 30s, fn: last, createEmpty: false)\n    |> derivative(unit: 1s, nonNegative: true, columns: [\"_value\"])\n    |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"run_tag\"])\n    |> aggregateWindow(every: 30s, fn: sum, createEmpty: false)\n    |> map(fn: (r) => ({ r with legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] }))\n    |> group(columns: [\"legend\"])\n    |> sort(columns: [\"_time\"])\n    |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "CDC Throughput Records/sec",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "1eox324"
+      },
+      "description": "Share of CDC time blocked waiting on the source vs. applying. High = source-bound, low = apply-bound.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 70
+      },
+      "id": 28,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "1eox324"
+          },
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => exists r[\"run_id\"])\n    |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n    |> filter(fn: (r) => \"${etl_type}\" == \"All\" or (exists r[\"etl_type\"] and r[\"etl_type\"] == \"${etl_type}\"))\n    |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n    |> keep(columns: [\"run_id\"])\n    |> group()\n    |> distinct(column: \"run_id\")\n    |> findColumn(fn: (key) => true, column: \"_value\")\n\n  total = (m) =>\n    from(bucket: \"benchmarks-telemetry\")\n      |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n      |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n      |> filter(fn: (r) => r[\"_measurement\"] == m)\n      |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n      |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"run_tag\", \"table\"])\n      |> aggregateWindow(every: 30s, fn: last, createEmpty: false)   // cumulative per table\n      |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"run_tag\"])\n      |> aggregateWindow(every: 30s, fn: sum, createEmpty: false)    // total cumulative across tables\n\n  wait  = total(m: \"sut_cdc_source_wait_ms\")\n  apply = total(m: \"sut_cdc_apply_ms\")\n\n  join(tables: {wait: wait, apply: apply}, on: [\"_time\", \"run_id\", \"adapter_name\", \"scenario\", \"run_tag\"])\n    |> map(fn: (r) => ({ r with\n        _value: if (r._value_wait + r._value_apply) > 0.0 then 100.0 * r._value_wait / (r._value_wait + r._value_apply) else 0.0,\n        legend: r.adapter_name + \" - \" + r.scenario + \" - \" + (if exists r.run_tag then r.run_tag else \"untagged\")\n    }))\n    |> group(columns: [\"legend\"])\n    |> sort(columns: [\"_time\"])\n    |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "CDC Source-Wait %",
+      "type": "timeseries"
     }
   ],
   "preload": false,
+  "refresh": "5s",
   "schemaVersion": 40,
   "tags": [],
   "templating": {
@@ -2015,8 +2220,8 @@
       {
         "allValue": ".*",
         "current": {
-          "text": "All",
-          "value": "$__all"
+          "text": "1",
+          "value": "1"
         },
         "datasource": {
           "type": "influxdb",
@@ -2035,20 +2240,20 @@
       },
       {
         "current": {
-          "text": "All",
-          "value": "All"
+          "text": "success",
+          "value": "success"
         },
         "description": "Filter runs on the dashboard based on the final outcome.",
         "label": "Outcome",
         "name": "outcome",
         "options": [
           {
-            "selected": true,
+            "selected": false,
             "text": "All",
             "value": "All"
           },
           {
-            "selected": false,
+            "selected": true,
             "text": "success",
             "value": "success"
           },
@@ -2114,6 +2319,6 @@
   "timezone": "browser",
   "title": "SpiceBench benchmark insights",
   "uid": "afdqis05ydnuod",
-  "version": 23,
+  "version": 5,
   "weekStart": ""
 }

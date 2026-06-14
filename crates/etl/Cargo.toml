@@ -16,13 +16,14 @@ path = "src/lib.rs"
 adbc_client = { path = "../adbc_client" }
 anyhow.workspace = true
 arrow.workspace = true
-arrow-cast = "57"
+arrow-cast.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 data-generation = { path = "../data-generation" }
 aws-config = { workspace = true, optional = true }
 aws-sdk-dynamodb = { workspace = true, optional = true }
 duckdb = { workspace = true, optional = true, features = ["bundled", "vtab", "vtab-arrow", "appender-arrow"] }
+futures.workspace = true
 mongodb = { workspace = true, optional = true }
 indexmap = { workspace = true }
 object_store = { workspace = true }

@@ -62,18 +62,24 @@ async fn run_benchmark(
     file_storage: Arc<FileStorage>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    // --- Download checkpoints from S3 ---
+    // --- Load checkpoints (from local dir or S3) ---
     let scenario_name = common.scenario.to_string();
     let checkpoint_dir = tempfile::tempdir()?;
 
     let derived_version = format_scale_factor(common.scale_factor);
     let version_prefix = build_version_prefix(&common.etl_prefix, &scenario_name, &derived_version);
-    let checkpoint_store = CheckpointStore::new(
-        &common.etl_bucket,
-        &version_prefix,
-        common.etl_region.as_deref(),
-        common.etl_endpoint.as_deref(),
-    )?;
+
+    let checkpoint_store = if let Some(local_dir) = &common.checkpoint_local_dir {
+        tracing::info!(dir = %local_dir, "Using local checkpoint directory (skipping S3)");
+        CheckpointStore::new_local(std::path::Path::new(local_dir))
+    } else {
+        CheckpointStore::new(
+            &common.etl_bucket,
+            &version_prefix,
+            common.etl_region.as_deref(),
+            common.etl_endpoint.as_deref(),
+        )
+    }?;
 
     let manifest = checkpoint_store
         .download_manifest()
@@ -87,26 +93,40 @@ async fn run_benchmark(
     if let Some(manifest) = manifest
         && let Some(scenario_info) = manifest.scenarios.get(&scenario_name)
     {
-        tracing::info!(
-            scenario = %scenario_name,
-            num_checkpoints = scenario_info.checkpoint_indexes.len(),
-            num_queries = scenario_info.query_indexes.len(),
-            checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
-            path = %checkpoint_dir.path().display(),
-            "Downloading checkpoints"
-        );
-        if scenario_info.checkpoint_interval_steps > 0 {
-            checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
-        }
-        if let Err(e) = checkpoint_store
-            .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
-            .await
-        {
-            tracing::warn!(
-                "Failed to download checkpoints - results validation will not be enabled: {e}"
+        if common.checkpoint_local_dir.is_some() {
+            // Local checkpoints: files are already in checkpoint_local_dir/{idx}/{q}.parquet.
+            // Reuse that directory directly instead of downloading into a temp dir.
+            tracing::info!(
+                scenario = %scenario_name,
+                num_checkpoints = scenario_info.checkpoint_indexes.len(),
+                num_queries = scenario_info.query_indexes.len(),
+                "Using local checkpoints (no download)"
             );
+            if scenario_info.checkpoint_interval_steps > 0 {
+                checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
+            }
         } else {
-            tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
+            tracing::info!(
+                scenario = %scenario_name,
+                num_checkpoints = scenario_info.checkpoint_indexes.len(),
+                num_queries = scenario_info.query_indexes.len(),
+                checkpoint_interval_steps = scenario_info.checkpoint_interval_steps,
+                path = %checkpoint_dir.path().display(),
+                "Downloading checkpoints"
+            );
+            if scenario_info.checkpoint_interval_steps > 0 {
+                checkpoint_steps = Some(scenario_info.checkpoint_interval_steps);
+            }
+            if let Err(e) = checkpoint_store
+                .download_checkpoints(&scenario_name, scenario_info, checkpoint_dir.path())
+                .await
+            {
+                tracing::warn!(
+                    "Failed to download checkpoints - results validation will not be enabled: {e}"
+                );
+            } else {
+                tracing::info!(scenario = %scenario_name, "Checkpoints downloaded");
+            }
         }
     } else {
         tracing::warn!(
@@ -267,7 +287,10 @@ async fn run_benchmark(
         read_pool,
         &mut pipeline,
         checkpoint_steps,
-        Some(checkpoint_dir.path()),
+        common.checkpoint_local_dir
+            .as_deref()
+            .map(std::path::Path::new)
+            .or_else(|| Some(checkpoint_dir.path())),
         query_catalog_namespace,
         shutdown,
     )
@@ -293,7 +316,45 @@ async fn run_benchmark(
     Ok(())
 }
 
+/// Best-effort lookup of the machine's public egress IP, logged at run start so
+/// operators can allowlist it in a source/database firewall (e.g. the MongoDB
+/// Atlas Network Access List). Non-fatal — a failure just logs a warning.
+async fn log_public_egress_ip() {
+    const ENDPOINTS: [&str; 3] = [
+        "https://api.ipify.org",
+        "https://checkip.amazonaws.com",
+        "https://ifconfig.me/ip",
+    ];
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Could not build HTTP client to detect public egress IP: {e}");
+            return;
+        }
+    };
+    for url in ENDPOINTS {
+        if let Ok(resp) = client.get(url).send().await
+            && let Ok(body) = resp.text().await
+        {
+            let ip = body.trim();
+            if !ip.is_empty() {
+                tracing::info!(
+                    public_egress_ip = %ip,
+                    "Public egress IP — allowlist this in your source/database firewall (e.g. MongoDB Atlas Network Access List)"
+                );
+                return;
+            }
+        }
+    }
+    tracing::warn!("Could not determine public egress IP (all lookup endpoints failed)");
+}
+
 pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
+    log_public_egress_ip().await;
+
     let scenario_name = args.scenario.to_string();
     let derived_version = format_scale_factor(args.scale_factor);
     let version_prefix = build_version_prefix(&args.etl_prefix, &scenario_name, &derived_version);
@@ -311,24 +372,38 @@ pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
         "ETL configuration"
     );
 
-    // Step 1: Download and extract the data archive to a TempDir.
+    // Step 1: Download (or copy from local) and extract the data archive.
     // This happens before benchmark timing begins.
     let extract_dir = tempfile::tempdir()?;
 
-    let source_config = TargetConfig {
-        bucket: args.etl_bucket.clone(),
-        prefix: version_prefix.clone(),
-        region: args.etl_region.clone(),
-        endpoint: args.etl_endpoint.clone(),
-        partition_columns: vec![],
-    };
-    let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
+    if let Some(local_archive) = &args.etl_source_archive {
+        tracing::info!(
+            archive = %local_archive,
+            extract_dir = %extract_dir.path().display(),
+            "Extracting local data archive (skipping S3 download)"
+        );
+        let archive_path = std::path::Path::new(local_archive);
+        anyhow::ensure!(
+            archive_path.exists(),
+            "Local archive not found: {local_archive}"
+        );
+        data_generation::archive::extract_archive(archive_path, extract_dir.path())?;
+    } else {
+        let source_config = TargetConfig {
+            bucket: args.etl_bucket.clone(),
+            prefix: version_prefix.clone(),
+            region: args.etl_region.clone(),
+            endpoint: args.etl_endpoint.clone(),
+            partition_columns: vec![],
+        };
+        let archive_storage: Arc<dyn DataStorage> = Arc::new(S3Storage::new(&source_config)?);
 
-    tracing::info!(
-        extract_dir = %extract_dir.path().display(),
-        "Downloading and extracting data archive"
-    );
-    ETLPipeline::download(archive_storage, extract_dir.path()).await?;
+        tracing::info!(
+            extract_dir = %extract_dir.path().display(),
+            "Downloading and extracting data archive"
+        );
+        ETLPipeline::download(archive_storage, extract_dir.path()).await?;
+    }
 
     // Step 2: Create FileStorage from extracted data and read version metadata.
     let file_storage = Arc::new(FileStorage::new(extract_dir.path()));

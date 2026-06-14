@@ -63,6 +63,12 @@ name = "arrow-schema"
 version = "57.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c872d36b7bf2a6a6a2b40de9156265f0242910791db366a2c17476ba8330d68"
+
+[[package]]
+name = "arrow-schema"
+version = "58.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f633dbfdf39c039ada1bf9e34c694816eb71fbb7dc78f613993b7245e078a1ed"
 dependencies = [
  "serde",
  "serde_core",
@@ -261,7 +267,7 @@ name = "databricks-system-adapter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arrow-schema",
+ "arrow-schema 57.3.0",
  "async-trait",
  "base64",
  "clap",
@@ -1465,7 +1471,7 @@ dependencies = [
 name = "system-adapter-protocol"
 version = "0.1.0"
 dependencies = [
- "arrow-schema",
+ "arrow-schema 58.3.0",
  "async-trait",
  "serde",
  "serde_json",

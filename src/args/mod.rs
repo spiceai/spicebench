@@ -105,6 +105,11 @@ pub struct RunArgs {
     #[arg(long, default_value = "system_adapter", env = "SYSTEM_ADAPTER")]
     pub(crate) system_adapter_name: String,
 
+    /// Optional suffix added as a separate `run_tag` metric label for differentiating
+    /// runs in dashboards without changing the adapter_name dimension.
+    #[arg(long, default_value = "", env = "RUN_TAG")]
+    pub(crate) run_tag: String,
+
     /// How to execute when a system adapter transport is configured.
     /// - adapter-command: dispatch spicebench run as a JSON-RPC command (e.g. run.load)
     /// - direct-query: execute load/query path in spicebench directly (ADBC path)
@@ -160,6 +165,18 @@ pub struct RunArgs {
     /// S3 endpoint URL for the ETL bucket (for MinIO/LocalStack)
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
+
+    /// Path to a locally generated data archive (e.g. from `spicebench generate --output-archive`).
+    /// When set, skips the S3 download and uses this local .tar.zst file directly.
+    /// --etl-bucket and --etl-endpoint are not required when this is set.
+    #[arg(long)]
+    pub(crate) etl_source_archive: Option<String>,
+
+    /// Path to a local directory containing pre-generated checkpoints (checkpoints.json +
+    /// checkpoints/ sub-tree). When set, skips the S3 checkpoint download.
+    /// Combine with --validate-results for fully offline validation.
+    #[arg(long)]
+    pub(crate) checkpoint_local_dir: Option<String>,
 
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]

@@ -56,6 +56,14 @@ struct SutInstruments {
     ingestion_bytes_total: Gauge<u64>,
     ingestion_rows_per_sec: Gauge<f64>,
     active_connections: Gauge<u64>,
+    // CDC replication: per-table gauges of the cumulative source counters, plus
+    // a derived per-scrape source-wait% gauge. Labeled with a `table` dimension.
+    cdc_source_wait_ms: Gauge<f64>,
+    cdc_apply_ms: Gauge<f64>,
+    cdc_linger_ms: Gauge<f64>,
+    cdc_rows_applied: Gauge<u64>,
+    cdc_bytes_applied: Gauge<u64>,
+    cdc_source_wait_pct: Gauge<f64>,
 }
 
 fn run_metric_attributes(
@@ -177,6 +185,43 @@ fn record_sut_metrics(
     if let Some(v) = response.resource.num_compute_nodes {
         crate::metrics::NUM_COMPUTE_NODES.record(v, attributes);
     }
+
+    // CDC replication metrics: emit per-table gauges with a `table` dimension
+    // appended to the run attributes. The cumulative counters are recorded
+    // as-is (the metrics backend deltas them for rates); the source-wait% is
+    // derived per table as a ratio-of-sums so idle/low-volume tables that are
+    // ~100% wait don't distort it — a table with negligible absolute time
+    // contributes a negligible verdict.
+    if let Some(cdc) = &response.cdc_replication {
+        for t in &cdc.per_table {
+            let mut table_attrs = attributes.to_vec();
+            table_attrs.push(KeyValue::new("table", t.table.clone()));
+            if let Some(v) = t.source_wait_ms {
+                instruments.cdc_source_wait_ms.record(v, &table_attrs);
+            }
+            if let Some(v) = t.apply_ms {
+                instruments.cdc_apply_ms.record(v, &table_attrs);
+            }
+            if let Some(v) = t.linger_ms {
+                instruments.cdc_linger_ms.record(v, &table_attrs);
+            }
+            if let Some(v) = t.rows_applied {
+                instruments.cdc_rows_applied.record(v, &table_attrs);
+            }
+            if let Some(v) = t.bytes_applied {
+                instruments.cdc_bytes_applied.record(v, &table_attrs);
+            }
+            let wait = t.source_wait_ms.unwrap_or(0.0);
+            let apply = t.apply_ms.unwrap_or(0.0);
+            let linger = t.linger_ms.unwrap_or(0.0);
+            let total = wait + apply + linger;
+            if total > 0.0 {
+                instruments
+                    .cdc_source_wait_pct
+                    .record(100.0 * wait / total, &table_attrs);
+            }
+        }
+    }
 }
 
 /// Spawn a task that periodically scrapes SUT metrics from the system adapter.
@@ -255,10 +300,10 @@ fn spawn_sut_metrics_scraper(
                             last_response = Some(resp);
                         }
                         Ok(Err(e)) => {
-                            eprintln!("SUT metrics scrape failed: {e}");
+                            tracing::error!("SUT metrics scrape failed: {e}");
                         }
                         Err(_) => {
-                            eprintln!(
+                            tracing::error!(
                                 "SUT metrics scrape timed out after {}s, skipping",
                                 PERIODIC_SCRAPE_TIMEOUT.as_secs()
                             );
@@ -306,10 +351,10 @@ fn spawn_sut_metrics_scraper(
                             last_response = Some(resp);
                         }
                         Ok(Err(e)) => {
-                            eprintln!("Final SUT metrics scrape failed: {e}");
+                            tracing::error!("Final SUT metrics scrape failed: {e}");
                         }
                         Err(_) => {
-                            eprintln!(
+                            tracing::error!(
                                 "Final SUT metrics scrape timed out after {}s, abandoning",
                                 FINAL_SCRAPE_TIMEOUT.as_secs()
                             );
@@ -432,7 +477,7 @@ async fn validate_checkpoint_table_row_counts(
     query_catalog_namespace: Option<&str>,
 ) -> bool {
     if expected_row_counts.is_empty() {
-        println!(
+        tracing::info!(
             "Checkpoint {checkpoint_idx}: no table row counts found, skipping row-count validation"
         );
         return true;
@@ -445,7 +490,7 @@ async fn validate_checkpoint_table_row_counts(
         let query = match checkpoint_count_query(table_name, query_catalog_namespace) {
             Ok(query) => query,
             Err(err) => {
-                eprintln!(
+                tracing::error!(
                     "Checkpoint {checkpoint_idx}: failed to build row count query for table '{table_name}': {err}"
                 );
                 return false;
@@ -454,7 +499,7 @@ async fn validate_checkpoint_table_row_counts(
         let result = match executor.execute(&query).await {
             Ok(result) => result,
             Err(err) => {
-                eprintln!(
+                tracing::error!(
                     "Checkpoint {checkpoint_idx}: row count query for table '{table_name}' failed: {err}"
                 );
                 return false;
@@ -462,7 +507,7 @@ async fn validate_checkpoint_table_row_counts(
         };
 
         let Some(batches) = result.batches.as_ref() else {
-            eprintln!(
+            tracing::error!(
                 "Checkpoint {checkpoint_idx}: row count query for table '{table_name}' did not return batches"
             );
             return false;
@@ -471,7 +516,7 @@ async fn validate_checkpoint_table_row_counts(
         let actual_count = match extract_row_count_from_batches(batches) {
             Ok(count) => count,
             Err(err) => {
-                eprintln!(
+                tracing::error!(
                     "Checkpoint {checkpoint_idx}: failed to read row count for table '{table_name}': {err}"
                 );
                 return false;
@@ -479,14 +524,14 @@ async fn validate_checkpoint_table_row_counts(
         };
 
         if actual_count != *expected_count {
-            eprintln!(
+            tracing::error!(
                 "Checkpoint {checkpoint_idx}: table '{table_name}' row count mismatch: expected {expected_count}, actual {actual_count}"
             );
             return false;
         }
     }
 
-    println!("Checkpoint {checkpoint_idx}: table row counts passed, validating full query set");
+    tracing::info!("Checkpoint {checkpoint_idx}: table row counts passed, validating full query set");
     true
 }
 
@@ -581,7 +626,7 @@ async fn probe_until_pass(
                 result: handle,
             });
 
-            println!(
+            tracing::info!(
                 "Checkpoint {checkpoint_idx}: probe #{} dispatched, {} in-flight",
                 *probe_count,
                 in_flight.len()
@@ -686,11 +731,11 @@ async fn validate_full_query_set(
     }
 
     if !all_passed {
-        eprintln!(
+        tracing::error!(
             "Checkpoint {checkpoint_idx}: full query set validation failed, returning to probe phase",
         );
         for detail in &fail_details {
-            eprintln!("{detail}");
+            tracing::error!("{detail}");
         }
     }
 
@@ -730,7 +775,7 @@ async fn run_checkpoint_validation(
     // Use query2 as the probe query.  Query1 is too slow.
     let probe_query = &queries[1];
     let Some(probe_expected) = expected_results.get(&probe_query.name) else {
-        eprintln!(
+        tracing::error!(
             "Checkpoint {checkpoint_idx}: no expected results for probe query '{}', skipping validation",
             probe_query.name
         );
@@ -740,13 +785,13 @@ async fn run_checkpoint_validation(
     // Phase 0: validate table row counts first as a fast correctness probe.
     // Row count queries are cheap and immediately surface data loss/duplication
     // without waiting for expensive analytical queries to converge.
-    println!("Checkpoint {checkpoint_idx}: validating table row counts before probing queries",);
+    tracing::info!("Checkpoint {checkpoint_idx}: validating table row counts before probing queries",);
     {
         let mut row_count_ticker = tokio::time::interval(probe_period);
         let mut row_count_attempt = 0u64;
         loop {
             if tokio::time::Instant::now() >= deadline {
-                println!(
+                tracing::info!(
                     "Checkpoint {checkpoint_idx}: row count validation timed out after {} attempts",
                     row_count_attempt
                 );
@@ -771,13 +816,13 @@ async fn run_checkpoint_validation(
                 break;
             }
 
-            println!(
+            tracing::info!(
                 "Checkpoint {checkpoint_idx}: row count validation attempt {row_count_attempt} failed, retrying",
             );
         }
     }
 
-    println!(
+    tracing::info!(
         "Checkpoint {checkpoint_idx}: row counts passed, probing '{}' every {}s",
         probe_query.name,
         probe_period.as_secs()
@@ -801,7 +846,7 @@ async fn run_checkpoint_validation(
         .await
         {
             ProbeOutcome::Passed(send_time) => {
-                println!(
+                tracing::info!(
                     "Checkpoint {checkpoint_idx}: probe query '{}' passed, validating full query set",
                     probe_query.name
                 );
@@ -829,7 +874,7 @@ async fn run_checkpoint_validation(
                 .duration_since(checkpoint_pause_time)
                 .as_secs_f64()
                 * 1000.0;
-            println!(
+            tracing::info!(
                 "Checkpoint {checkpoint_idx} converged: E2E latency = {:.1}s (send_time of first passing probe)",
                 latency_ms / 1000.0
             );
@@ -864,6 +909,7 @@ pub(crate) async fn run(
             KeyValue::new("service.name", "spicebench"),
             KeyValue::new("type", "spicebench"),
             KeyValue::new("adapter_name", common_args.system_adapter_name.clone()),
+            KeyValue::new("run_tag", common_args.run_tag.clone()),
             KeyValue::new("scenario", scenario.to_string()),
             KeyValue::new(
                 "data_gen_version",
@@ -883,7 +929,7 @@ pub(crate) async fn run(
         read_pool.clone(),
     ));
 
-    println!("Running benchmark");
+    tracing::info!("Running benchmark");
 
     let load_end_condition = scenario.end_condition();
 
@@ -923,9 +969,33 @@ pub(crate) async fn run(
                 .u64_gauge("active_connections")
                 .with_description("Number of concurrent query clients the benchmark is driving.")
                 .build(),
+            cdc_source_wait_ms: m
+                .f64_gauge("sut_cdc_source_wait_ms")
+                .with_description("Cumulative ms the CDC consumer blocked waiting for the source to deliver changes (per table).")
+                .build(),
+            cdc_apply_ms: m
+                .f64_gauge("sut_cdc_apply_ms")
+                .with_description("Cumulative ms spent applying CDC changes to the accelerator (per table).")
+                .build(),
+            cdc_linger_ms: m
+                .f64_gauge("sut_cdc_linger_ms")
+                .with_description("Cumulative ms spent in the CDC coalesce/linger window (per table).")
+                .build(),
+            cdc_rows_applied: m
+                .u64_gauge("sut_cdc_rows_applied")
+                .with_description("Cumulative row-level CDC records applied (per table).")
+                .build(),
+            cdc_bytes_applied: m
+                .u64_gauge("sut_cdc_bytes_applied")
+                .with_description("Cumulative bytes of CDC changes applied (per table).")
+                .build(),
+            cdc_source_wait_pct: m
+                .f64_gauge("sut_cdc_source_wait_pct")
+                .with_description("Source-wait as a share of total CDC time (per table): wait/(wait+apply+linger). High = source-bound, low = apply-bound.")
+                .build(),
         };
         let sut_attributes = Arc::new(std::sync::RwLock::new(metric_attributes.clone()));
-        println!("SUT metrics scraping enabled (run_id={run_id})");
+        tracing::info!("SUT metrics scraping enabled (run_id={run_id})");
         (
             Some(spawn_sut_metrics_scraper(
                 system_adapter_client,
@@ -1064,13 +1134,13 @@ pub(crate) async fn run(
                                             checkpoint_e2e_latency_samples.push(e2e_latency_ms);
                                         }
                                         CheckpointValidationResult::Interrupted => {
-                                            eprintln!("Interrupt received during checkpoint validation, stopping...");
+                                            tracing::error!("Interrupt received during checkpoint validation, stopping...");
                                             shutdown_token.cancel();
                                             etl_pipeline.cancel();
                                             break Some(RunOutcome::Cancelled);
                                         }
                                         CheckpointValidationResult::TimedOut => {
-                                            eprintln!(
+                                            tracing::error!(
                                                 "Checkpoint {checkpoint_idx} validation timed out after 600s without convergence, aborting run"
                                             );
                                             shutdown_token.cancel();
@@ -1096,14 +1166,14 @@ pub(crate) async fn run(
                         }
 
                         if let Err(e) = etl_pipeline.continue_pipeline() {
-                            eprintln!("Failed to continue ETL pipeline after pause: {e}");
+                            tracing::error!("Failed to continue ETL pipeline after pause: {e}");
                             shutdown_token.cancel();
                             break Some(RunOutcome::PipelineFailure(format!("Failed to continue ETL pipeline: {e}")));
                         }
                         tracing::info!("ETL pipeline resumed");
                     }
                     PipelineState::Stopped(StopReason::Completed) => {
-                        println!("ETL pipeline completed");
+                        tracing::info!("ETL pipeline completed");
 
                         // --- Final checkpoint validation ---
                         // The pipeline transitions directly from Running →
@@ -1148,12 +1218,12 @@ pub(crate) async fn run(
                                             checkpoint_e2e_latency_samples.push(e2e_latency_ms);
                                         }
                                         CheckpointValidationResult::Interrupted => {
-                                            eprintln!("Interrupt received during final checkpoint validation, stopping...");
+                                            tracing::error!("Interrupt received during final checkpoint validation, stopping...");
                                             shutdown_token.cancel();
                                             break Some(RunOutcome::Cancelled);
                                         }
                                         CheckpointValidationResult::TimedOut => {
-                                            eprintln!(
+                                            tracing::error!(
                                                 "Final checkpoint {checkpoint_idx} validation timed out after 600s without convergence, aborting run"
                                             );
                                             shutdown_token.cancel();
@@ -1202,17 +1272,17 @@ pub(crate) async fn run(
                             }
                         }
 
-                        println!("Stopping benchmark...");
+                        tracing::info!("Stopping benchmark...");
                         shutdown_token.cancel();
                         break None;
                     }
                     PipelineState::Stopped(StopReason::Error(ref e)) => {
-                        eprintln!("ETL pipeline failed: {e}");
+                        tracing::error!("ETL pipeline failed: {e}");
                         shutdown_token.cancel();
                         break Some(RunOutcome::PipelineFailure(e.clone()));
                     }
                     PipelineState::Stopped(StopReason::Cancelled) => {
-                        println!("ETL pipeline was cancelled, stopping benchmark...");
+                        tracing::info!("ETL pipeline was cancelled, stopping benchmark...");
                         shutdown_token.cancel();
                         break None;
                     }
@@ -1221,7 +1291,7 @@ pub(crate) async fn run(
             }
             // SIGINT/SIGTERM: stop everything
             _ = shutdown.cancelled() => {
-                println!("Interrupt received, stopping benchmark...");
+                tracing::info!("Interrupt received, stopping benchmark...");
                 shutdown_token.cancel();
                 etl_pipeline.cancel();
                 break Some(RunOutcome::Cancelled);
@@ -1326,7 +1396,7 @@ pub(crate) async fn run(
         const SCRAPER_JOIN_TIMEOUT: Duration = Duration::from_secs(840);
         match tokio::time::timeout(SCRAPER_JOIN_TIMEOUT, &mut handle).await {
             Ok(Ok(Some(last_sut_metrics))) => {
-                println!(
+                tracing::info!(
                     "Final SUT metrics: cpu_sec={:?}, mem={:?}B, ingested_rows={:?}, ingested_bytes={:?}",
                     last_sut_metrics.resource.cpu_usage_percent,
                     last_sut_metrics.resource.memory_usage_bytes,
@@ -1335,9 +1405,9 @@ pub(crate) async fn run(
                 );
             }
             Ok(Ok(None)) => {}
-            Ok(Err(e)) => eprintln!("SUT metrics scraper task failed: {e}"),
+            Ok(Err(e)) => tracing::error!("SUT metrics scraper task failed: {e}"),
             Err(_) => {
-                eprintln!(
+                tracing::error!(
                     "SUT metrics scraper did not finish within {}s; aborting it and continuing shutdown",
                     SCRAPER_JOIN_TIMEOUT.as_secs()
                 );
@@ -1349,8 +1419,8 @@ pub(crate) async fn run(
         pipeline.shutdown();
     }
 
-    println!("{}", vec!["-"; 30].join(""));
-    println!("Benchmark metrics:");
+    tracing::info!("{}", vec!["-"; 30].join(""));
+    tracing::info!("Benchmark metrics:");
     let records = metrics.build_records()?;
     print_batches(&records)?;
 
@@ -1359,7 +1429,7 @@ pub(crate) async fn run(
         exporter.shutdown().await;
     }
 
-    println!("Benchmark completed (outcome: {outcome})");
+    tracing::info!("Benchmark completed (outcome: {outcome})");
 
     // Always emit telemetry — even on failure — so the outcome dimension is recorded.
     telemetry.emit().await?;
