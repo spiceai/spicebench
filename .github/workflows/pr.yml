@@ -160,4 +160,4 @@ jobs:
             --scale-factor 0.001 \
             --etl-region us-east-1 \
             --system-adapter-stdio-cmd docker \
-            --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SPIDAPTER_CHANNEL=nightly -e SPIDAPTER_SCENARIO=cayenne ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            --system-adapter-stdio-args "run -i -v ${{ github.workspace }}/scenarios:/spicebench-scenarios:ro -e SPIDAPTER_SCENARIO_BASE_PATH=/spicebench-scenarios -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SPIDAPTER_CHANNEL=nightly -e SPIDAPTER_SCENARIO=cayenne ghcr.io/spiceai/spidapter:latest stdio --verbose"
