@@ -531,7 +531,9 @@ async fn validate_checkpoint_table_row_counts(
         }
     }
 
-    tracing::info!("Checkpoint {checkpoint_idx}: table row counts passed, validating full query set");
+    tracing::info!(
+        "Checkpoint {checkpoint_idx}: table row counts passed, validating full query set"
+    );
     true
 }
 
@@ -785,7 +787,9 @@ async fn run_checkpoint_validation(
     // Phase 0: validate table row counts first as a fast correctness probe.
     // Row count queries are cheap and immediately surface data loss/duplication
     // without waiting for expensive analytical queries to converge.
-    tracing::info!("Checkpoint {checkpoint_idx}: validating table row counts before probing queries",);
+    tracing::info!(
+        "Checkpoint {checkpoint_idx}: validating table row counts before probing queries",
+    );
     {
         let mut row_count_ticker = tokio::time::interval(probe_period);
         let mut row_count_attempt = 0u64;

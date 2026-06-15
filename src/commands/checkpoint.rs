@@ -200,7 +200,10 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
     if let Some(local_archive) = &args.etl_source_archive {
         tracing::info!(archive = %local_archive, "Extracting local archive (skipping S3)");
         let archive_path = std::path::Path::new(local_archive);
-        anyhow::ensure!(archive_path.exists(), "Local archive not found: {local_archive}");
+        anyhow::ensure!(
+            archive_path.exists(),
+            "Local archive not found: {local_archive}"
+        );
         data_generation::archive::extract_archive(archive_path, extract_dir.path())?;
     } else {
         let bucket = args.bucket.as_deref().ok_or_else(|| {

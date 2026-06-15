@@ -897,15 +897,19 @@ async fn write_segments_for_batch(
     // begins. Each chunk write acquires the per-table permit first, then the global
     // permit (consistent order across all tasks → no cross-table deadlock).
     let chunk_size = sink_chunk_rows();
-    let table_sink_semaphore =
-        Arc::new(tokio::sync::Semaphore::new(sink_parallelism_per_table()));
+    let table_sink_semaphore = Arc::new(tokio::sync::Semaphore::new(sink_parallelism_per_table()));
 
     for segment in segments {
         let op = segment.op.clone();
         let n = segment.batch.num_rows();
         let chunks: Vec<_> = if chunk_size > 0 && n > chunk_size {
-            (0..n).step_by(chunk_size)
-                .map(|start| segment.batch.slice(start, (start + chunk_size).min(n) - start))
+            (0..n)
+                .step_by(chunk_size)
+                .map(|start| {
+                    segment
+                        .batch
+                        .slice(start, (start + chunk_size).min(n) - start)
+                })
                 .collect()
         } else {
             vec![segment.batch.clone()]
@@ -923,13 +927,25 @@ async fn write_segments_for_batch(
 
             op_set.spawn(async move {
                 let output_batch = append_created_at(&chunk_batch, &output_schema, batch_ts)
-                    .map_err(|e| format!("append __created_at to {table_name} batch {batch_id}: {e}"))?;
-                let _table_permit = table_sem.acquire_owned().await
+                    .map_err(|e| {
+                        format!("append __created_at to {table_name} batch {batch_id}: {e}")
+                    })?;
+                let _table_permit = table_sem
+                    .acquire_owned()
+                    .await
                     .map_err(|e| format!("per-table sink semaphore closed: {e}"))?;
-                let _global_permit = global_sem.acquire_owned().await
+                let _global_permit = global_sem
+                    .acquire_owned()
+                    .await
                     .map_err(|e| format!("global sink semaphore closed: {e}"))?;
                 data_sink
-                    .write(&table_name, batch_id, output_batch, chunk_op, partition_columns)
+                    .write(
+                        &table_name,
+                        batch_id,
+                        output_batch,
+                        chunk_op,
+                        partition_columns,
+                    )
                     .await
                     .map_err(|e| format!("write {table_name} batch {batch_id}: {e:#}"))
             });

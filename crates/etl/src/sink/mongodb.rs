@@ -79,7 +79,12 @@ impl MongoDbSink {
         *count
     }
 
-    fn compute_id(&self, table_name: &str, batch: &RecordBatch, row: usize) -> anyhow::Result<Bson> {
+    fn compute_id(
+        &self,
+        table_name: &str,
+        batch: &RecordBatch,
+        row: usize,
+    ) -> anyhow::Result<Bson> {
         let pk_cols = self
             .primary_key_columns
             .get(table_name)
@@ -136,7 +141,9 @@ impl Sink for MongoDbSink {
                 for row in 0..rows {
                     let mut doc = Document::new();
                     let id = self.compute_id(table_name, &batch, row)?;
-                    if id != Bson::Null { doc.insert("_id", id); }
+                    if id != Bson::Null {
+                        doc.insert("_id", id);
+                    }
                     for (col_idx, field) in schema.fields().iter().enumerate() {
                         let col = batch.column(col_idx);
                         if !col.is_null(row) {
@@ -160,7 +167,9 @@ impl Sink for MongoDbSink {
                                 })
                         );
                         if !all_duplicates {
-                            return Err(anyhow::anyhow!("MongoDB insert_many failed for '{table_name}': {e}"));
+                            return Err(anyhow::anyhow!(
+                                "MongoDB insert_many failed for '{table_name}': {e}"
+                            ));
                         }
                         let dup_count = match e.kind.as_ref() {
                             mongodb::error::ErrorKind::InsertMany(ime) => {
@@ -181,7 +190,9 @@ impl Sink for MongoDbSink {
                 for row in 0..rows {
                     let id = self.compute_id(table_name, &batch, row)?;
                     let mut doc = Document::new();
-                    if id != Bson::Null { doc.insert("_id", id.clone()); }
+                    if id != Bson::Null {
+                        doc.insert("_id", id.clone());
+                    }
                     for (col_idx, field) in schema.fields().iter().enumerate() {
                         let col = batch.column(col_idx);
                         if !col.is_null(row) {
@@ -201,8 +212,16 @@ impl Sink for MongoDbSink {
                 if !models.is_empty() {
                     tracing::trace!(table = %table_name, rows, "bulk_write starting");
                     let t = Instant::now();
-                    self.db.client().bulk_write(models).ordered(false).await
-                        .map_err(|e| anyhow::anyhow!("MongoDB bulk_write (update) failed for '{table_name}': {e}"))?;
+                    self.db
+                        .client()
+                        .bulk_write(models)
+                        .ordered(false)
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "MongoDB bulk_write (update) failed for '{table_name}': {e}"
+                            )
+                        })?;
                     tracing::trace!(table = %table_name, rows, elapsed_ms = t.elapsed().as_millis(), "bulk_write done");
                 }
             }
@@ -211,14 +230,17 @@ impl Sink for MongoDbSink {
                 let mut ids = Vec::with_capacity(rows);
                 for row in 0..rows {
                     let id = self.compute_id(table_name, &batch, row)?;
-                    if id != Bson::Null { ids.push(id); }
+                    if id != Bson::Null {
+                        ids.push(id);
+                    }
                 }
                 if !ids.is_empty() {
                     tracing::trace!(table = %table_name, rows, "delete_many starting");
                     let t = Instant::now();
                     let filter = mongodb::bson::doc! { "_id": { "$in": ids } };
-                    collection.delete_many(filter).await
-                        .map_err(|e| anyhow::anyhow!("MongoDB delete_many failed for '{table_name}': {e}"))?;
+                    collection.delete_many(filter).await.map_err(|e| {
+                        anyhow::anyhow!("MongoDB delete_many failed for '{table_name}': {e}")
+                    })?;
                     tracing::trace!(table = %table_name, rows, elapsed_ms = t.elapsed().as_millis(), "delete_many done");
                 }
             }
@@ -256,18 +278,50 @@ fn bson_to_string(b: &Bson) -> String {
 fn arrow_col_to_bson(col: &dyn Array, row: usize) -> Bson {
     match col.data_type() {
         DataType::Boolean => Bson::Boolean(col.as_boolean().value(row)),
-        DataType::Int8 => Bson::Int32(col.as_primitive::<arrow::datatypes::Int8Type>().value(row).into()),
-        DataType::Int16 => Bson::Int32(col.as_primitive::<arrow::datatypes::Int16Type>().value(row).into()),
-        DataType::Int32 => Bson::Int32(col.as_primitive::<arrow::datatypes::Int32Type>().value(row)),
+        DataType::Int8 => Bson::Int32(
+            col.as_primitive::<arrow::datatypes::Int8Type>()
+                .value(row)
+                .into(),
+        ),
+        DataType::Int16 => Bson::Int32(
+            col.as_primitive::<arrow::datatypes::Int16Type>()
+                .value(row)
+                .into(),
+        ),
+        DataType::Int32 => {
+            Bson::Int32(col.as_primitive::<arrow::datatypes::Int32Type>().value(row))
+        }
         DataType::Int64 => Bson::Int64(col.as_primitive::<Int64Type>().value(row)),
-        DataType::UInt8 => Bson::Int32(col.as_primitive::<arrow::datatypes::UInt8Type>().value(row).into()),
-        DataType::UInt16 => Bson::Int32(col.as_primitive::<arrow::datatypes::UInt16Type>().value(row).into()),
-        DataType::UInt32 => Bson::Int64(col.as_primitive::<arrow::datatypes::UInt32Type>().value(row).into()),
-        DataType::UInt64 => Bson::Int64(col.as_primitive::<arrow::datatypes::UInt64Type>().value(row).cast_signed()),
-        DataType::Float32 => Bson::Double(col.as_primitive::<arrow::datatypes::Float32Type>().value(row).into()),
+        DataType::UInt8 => Bson::Int32(
+            col.as_primitive::<arrow::datatypes::UInt8Type>()
+                .value(row)
+                .into(),
+        ),
+        DataType::UInt16 => Bson::Int32(
+            col.as_primitive::<arrow::datatypes::UInt16Type>()
+                .value(row)
+                .into(),
+        ),
+        DataType::UInt32 => Bson::Int64(
+            col.as_primitive::<arrow::datatypes::UInt32Type>()
+                .value(row)
+                .into(),
+        ),
+        DataType::UInt64 => Bson::Int64(
+            col.as_primitive::<arrow::datatypes::UInt64Type>()
+                .value(row)
+                .cast_signed(),
+        ),
+        DataType::Float32 => Bson::Double(
+            col.as_primitive::<arrow::datatypes::Float32Type>()
+                .value(row)
+                .into(),
+        ),
         DataType::Float64 => Bson::Double(col.as_primitive::<Float64Type>().value(row)),
         DataType::Decimal128(_, scale) => {
-            let raw = col.as_primitive::<arrow::datatypes::Decimal128Type>().value(row);
+            let raw = col
+                .as_primitive::<arrow::datatypes::Decimal128Type>()
+                .value(row);
             #[allow(clippy::cast_sign_loss)]
             let scale = *scale as u32;
             let divisor = 10i128.pow(scale);
@@ -286,29 +340,44 @@ fn arrow_col_to_bson(col: &dyn Array, row: usize) -> Bson {
             bytes: col.as_binary::<i64>().value(row).to_vec(),
         }),
         DataType::Date32 => {
-            let days = i64::from(col.as_primitive::<arrow::datatypes::Date32Type>().value(row));
+            let days = i64::from(
+                col.as_primitive::<arrow::datatypes::Date32Type>()
+                    .value(row),
+            );
             Bson::DateTime(mongodb::bson::DateTime::from_millis(days * 86_400 * 1_000))
         }
         DataType::Date64 => {
-            let millis = col.as_primitive::<arrow::datatypes::Date64Type>().value(row);
+            let millis = col
+                .as_primitive::<arrow::datatypes::Date64Type>()
+                .value(row);
             Bson::DateTime(mongodb::bson::DateTime::from_millis(millis))
         }
         DataType::Timestamp(TimeUnit::Second, _) => {
-            let secs = col.as_primitive::<arrow::datatypes::TimestampSecondType>().value(row);
+            let secs = col
+                .as_primitive::<arrow::datatypes::TimestampSecondType>()
+                .value(row);
             Bson::DateTime(mongodb::bson::DateTime::from_millis(secs * 1_000))
         }
         DataType::Timestamp(TimeUnit::Millisecond, _) => {
-            let millis = col.as_primitive::<arrow::datatypes::TimestampMillisecondType>().value(row);
+            let millis = col
+                .as_primitive::<arrow::datatypes::TimestampMillisecondType>()
+                .value(row);
             Bson::DateTime(mongodb::bson::DateTime::from_millis(millis))
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            let micros = col.as_primitive::<arrow::datatypes::TimestampMicrosecondType>().value(row);
+            let micros = col
+                .as_primitive::<arrow::datatypes::TimestampMicrosecondType>()
+                .value(row);
             Bson::DateTime(mongodb::bson::DateTime::from_millis(micros / 1_000))
         }
         DataType::Timestamp(TimeUnit::Nanosecond, _) => {
-            let nanos = col.as_primitive::<arrow::datatypes::TimestampNanosecondType>().value(row);
+            let nanos = col
+                .as_primitive::<arrow::datatypes::TimestampNanosecondType>()
+                .value(row);
             Bson::DateTime(mongodb::bson::DateTime::from_millis(nanos / 1_000_000))
         }
-        _ => Bson::String(arrow::util::display::array_value_to_string(col, row).unwrap_or_default()),
+        _ => {
+            Bson::String(arrow::util::display::array_value_to_string(col, row).unwrap_or_default())
+        }
     }
 }

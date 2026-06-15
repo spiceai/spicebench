@@ -287,7 +287,8 @@ async fn run_benchmark(
         read_pool,
         &mut pipeline,
         checkpoint_steps,
-        common.checkpoint_local_dir
+        common
+            .checkpoint_local_dir
             .as_deref()
             .map(std::path::Path::new)
             .or_else(|| Some(checkpoint_dir.path())),
