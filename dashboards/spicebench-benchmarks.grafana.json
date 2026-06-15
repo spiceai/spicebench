@@ -19,7 +19,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 79,
+  "id": 70,
   "links": [],
   "panels": [
     {
@@ -965,8 +965,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1059,8 +1058,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1154,8 +1152,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1262,8 +1259,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1357,8 +1353,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1452,8 +1447,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1547,8 +1541,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1655,8 +1648,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1750,8 +1742,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1845,8 +1836,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1940,8 +1930,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -2047,8 +2036,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -2086,7 +2074,7 @@
             "type": "influxdb",
             "uid": "1eox324"
           },
-          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => exists r[\"run_id\"])\n    |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n    |> filter(fn: (r) => \"${etl_type}\" == \"All\" or (exists r[\"etl_type\"] and r[\"etl_type\"] == \"${etl_type}\"))\n    |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n    |> keep(columns: [\"run_id\"])\n    |> group()\n    |> distinct(column: \"run_id\")\n    |> findColumn(fn: (key) => true, column: \"_value\")\n\n  from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => r[\"_measurement\"] == \"sut_cdc_rows_applied\")\n    |> filter(fn: (r) => exists r[\"adapter_name\"])\n    |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n    |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"run_tag\", \"table\"])\n    |> aggregateWindow(every: 30s, fn: last, createEmpty: false)\n    |> derivative(unit: 1s, nonNegative: true, columns: [\"_value\"])\n    |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"run_tag\"])\n    |> aggregateWindow(every: 30s, fn: sum, createEmpty: false)\n    |> map(fn: (r) => ({ r with legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] }))\n    |> group(columns: [\"legend\"])\n    |> sort(columns: [\"_time\"])\n    |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => exists r[\"run_id\"])\n    |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n    |> filter(fn: (r) => \"${etl_type}\" == \"All\" or (exists r[\"etl_type\"] and r[\"etl_type\"] == \"${etl_type}\"))\n    |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n    |> keep(columns: [\"run_id\"])\n    |> group()\n    |> distinct(column: \"run_id\")\n    |> findColumn(fn: (key) => true, column: \"_value\")\n\n  from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => r[\"_measurement\"] == \"sut_cdc_rows_applied\")\n    |> filter(fn: (r) => exists r[\"adapter_name\"])\n    |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n    |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"table\"])\n    |> aggregateWindow(every: 30s, fn: last, createEmpty: false)\n    |> derivative(unit: 1s, nonNegative: true, columns: [\"_value\"])\n    |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\"])\n    |> aggregateWindow(every: 30s, fn: sum, createEmpty: false)\n    |> map(fn: (r) => ({ r with legend: r[\"adapter_name\"] + \" - \" + r[\"scenario\"] }))\n    |> group(columns: [\"legend\"])\n    |> sort(columns: [\"_time\"])\n    |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
           "refId": "A"
         }
       ],
@@ -2144,8 +2132,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -2183,7 +2170,7 @@
             "type": "influxdb",
             "uid": "1eox324"
           },
-          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => exists r[\"run_id\"])\n    |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n    |> filter(fn: (r) => \"${etl_type}\" == \"All\" or (exists r[\"etl_type\"] and r[\"etl_type\"] == \"${etl_type}\"))\n    |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n    |> keep(columns: [\"run_id\"])\n    |> group()\n    |> distinct(column: \"run_id\")\n    |> findColumn(fn: (key) => true, column: \"_value\")\n\n  total = (m) =>\n    from(bucket: \"benchmarks-telemetry\")\n      |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n      |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n      |> filter(fn: (r) => r[\"_measurement\"] == m)\n      |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n      |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"run_tag\", \"table\"])\n      |> aggregateWindow(every: 30s, fn: last, createEmpty: false)   // cumulative per table\n      |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"run_tag\"])\n      |> aggregateWindow(every: 30s, fn: sum, createEmpty: false)    // total cumulative across tables\n\n  wait  = total(m: \"sut_cdc_source_wait_ms\")\n  apply = total(m: \"sut_cdc_apply_ms\")\n\n  join(tables: {wait: wait, apply: apply}, on: [\"_time\", \"run_id\", \"adapter_name\", \"scenario\", \"run_tag\"])\n    |> map(fn: (r) => ({ r with\n        _value: if (r._value_wait + r._value_apply) > 0.0 then 100.0 * r._value_wait / (r._value_wait + r._value_apply) else 0.0,\n        legend: r.adapter_name + \" - \" + r.scenario + \" - \" + (if exists r.run_tag then r.run_tag else \"untagged\")\n    }))\n    |> group(columns: [\"legend\"])\n    |> sort(columns: [\"_time\"])\n    |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
+          "query": "qualifying_run_ids = from(bucket: \"benchmarks-telemetry\")\n    |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n    |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n    |> filter(fn: (r) => exists r[\"run_id\"])\n    |> filter(fn: (r) => \"${outcome}\" == \"All\" or (exists r[\"outcome\"] and r[\"outcome\"] == \"${outcome}\"))\n    |> filter(fn: (r) => \"${etl_type}\" == \"All\" or (exists r[\"etl_type\"] and r[\"etl_type\"] == \"${etl_type}\"))\n    |> filter(fn: (r) => r[\"scale_factor\"] =~ /^${scale_factor:regex}$/)\n    |> keep(columns: [\"run_id\"])\n    |> group()\n    |> distinct(column: \"run_id\")\n    |> findColumn(fn: (key) => true, column: \"_value\")\n\n  total = (m) =>\n    from(bucket: \"benchmarks-telemetry\")\n      |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n      |> filter(fn: (r) => r[\"type\"] == \"spicebench\")\n      |> filter(fn: (r) => r[\"_measurement\"] == m)\n      |> filter(fn: (r) => contains(value: r[\"run_id\"], set: qualifying_run_ids))\n      |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\", \"table\"])\n      |> aggregateWindow(every: 30s, fn: last, createEmpty: false)   // cumulative per table\n      |> group(columns: [\"run_id\", \"adapter_name\", \"scenario\"])\n      |> aggregateWindow(every: 30s, fn: sum, createEmpty: false)    // total cumulative across tables\n\n  wait  = total(m: \"sut_cdc_source_wait_ms\")\n  apply = total(m: \"sut_cdc_apply_ms\")\n\n  join(tables: {wait: wait, apply: apply}, on: [\"_time\", \"run_id\", \"adapter_name\", \"scenario\"])\n    |> map(fn: (r) => ({ r with\n        _value: if (r._value_wait + r._value_apply) > 0.0 then 100.0 * r._value_wait / (r._value_wait + r._value_apply) else 0.0,\n        legend: r.adapter_name + \" - \" + r.scenario + \" - \"\n    }))\n    |> group(columns: [\"legend\"])\n    |> sort(columns: [\"_time\"])\n    |> keep(columns: [\"_time\", \"_value\", \"legend\"])",
           "refId": "A"
         }
       ],
@@ -2220,8 +2207,8 @@
       {
         "allValue": ".*",
         "current": {
-          "text": "1",
-          "value": "1"
+          "text": "10",
+          "value": "10"
         },
         "datasource": {
           "type": "influxdb",
@@ -2319,6 +2306,6 @@
   "timezone": "browser",
   "title": "SpiceBench benchmark insights",
   "uid": "afdqis05ydnuod",
-  "version": 5,
+  "version": 6,
   "weekStart": ""
 }
