@@ -484,7 +484,7 @@ async fn validate_checkpoint_table_row_counts(
     }
 
     let mut tables: Vec<_> = expected_row_counts.iter().collect();
-    tables.sort_by(|(left, _), (right, _)| left.cmp(right));
+    tables.sort_by_key(|(left, _)| *left);
 
     for (table_name, expected_count) in tables {
         let query = match checkpoint_count_query(table_name, query_catalog_namespace) {
