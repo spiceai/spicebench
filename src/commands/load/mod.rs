@@ -56,6 +56,11 @@ struct SutInstruments {
     ingestion_bytes_total: Gauge<u64>,
     ingestion_rows_per_sec: Gauge<f64>,
     active_connections: Gauge<u64>,
+    // Harness-side ingestion throughput: cumulative rows the ETL pipeline has
+    // dispatched to the write sink. Distinct from the SUT-reported
+    // `ingestion_rows_total` above (this is what spicebench pushed, not what the
+    // SUT confirmed applied).
+    etl_ingest_rows_total: Gauge<u64>,
     // CDC replication: per-table gauges of the cumulative source counters, plus
     // a derived per-scrape source-wait% gauge. Labeled with a `table` dimension.
     cdc_source_wait_ms: Gauge<f64>,
@@ -236,6 +241,7 @@ fn spawn_sut_metrics_scraper(
     concurrency: u64,
     attributes: Arc<std::sync::RwLock<Vec<KeyValue>>>,
     instruments: SutInstruments,
+    etl_ingest_rows_total: Arc<std::sync::atomic::AtomicU64>,
 ) -> tokio::task::JoinHandle<Option<MetricsResponse>> {
     // Bound every scrape so a wedged adapter call can neither hold the adapter
     // lock indefinitely nor stop this task from observing shutdown. A periodic
@@ -268,6 +274,14 @@ fn spawn_sut_metrics_scraper(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                    // Emit harness-side ingestion throughput every tick, independent
+                    // of the SUT scrape (and its backoff) below — it's a local atomic
+                    // read, so it never adds adapter latency.
+                    {
+                        let rows = etl_ingest_rows_total.load(std::sync::atomic::Ordering::Relaxed);
+                        let attrs = attributes.read().expect("SUT attributes lock poisoned");
+                        instruments.etl_ingest_rows_total.record(rows, &attrs);
+                    }
                     if skip_remaining > 0 {
                         // Backing off after a slow scrape — skip this tick so
                         // metrics collection stops adding latency to the run.
@@ -324,6 +338,12 @@ fn spawn_sut_metrics_scraper(
                     }
                 }
                 () = token.cancelled() => {
+                    // Record the final harness-side ingestion total before exiting.
+                    {
+                        let rows = etl_ingest_rows_total.load(std::sync::atomic::Ordering::Relaxed);
+                        let attrs = attributes.read().expect("SUT attributes lock poisoned");
+                        instruments.etl_ingest_rows_total.record(rows, &attrs);
+                    }
                     // Final scrape before exiting. Bounded so cancellation can
                     // never leave this task (and the shutdown join) hanging.
                     let final_result = tokio::time::timeout(
@@ -973,6 +993,10 @@ pub(crate) async fn run(
                 .u64_gauge("active_connections")
                 .with_description("Number of concurrent query clients the benchmark is driving.")
                 .build(),
+            etl_ingest_rows_total: m
+                .u64_gauge("bench_etl_ingest_rows_total")
+                .with_description("Cumulative rows the spicebench ETL pipeline has dispatched to the write sink (harness-side ingestion throughput).")
+                .build(),
             cdc_source_wait_ms: m
                 .f64_gauge("sut_cdc_source_wait_ms")
                 .with_description("Cumulative ms the CDC consumer blocked waiting for the source to deliver changes (per table).")
@@ -1009,6 +1033,7 @@ pub(crate) async fn run(
                 common_args.concurrency as u64,
                 Arc::clone(&sut_attributes),
                 instruments,
+                etl_pipeline.ingest_rows_total(),
             )),
             Some(sut_pipeline),
             Some(sut_attributes),

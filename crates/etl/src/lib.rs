@@ -878,6 +878,7 @@ async fn write_segments_for_batch(
     partition_columns: &[String],
     global_sink_semaphore: Arc<tokio::sync::Semaphore>,
     rate_limiter: Option<Arc<util::RateLimiter>>,
+    ingest_rows_total: Arc<AtomicU64>,
 ) -> Result<(), String> {
     let table_name_owned = table_name.to_string();
 
@@ -938,13 +939,15 @@ async fn write_segments_for_batch(
             let table_sem = Arc::clone(&table_sink_semaphore);
             let global_sem = Arc::clone(&global_sink_semaphore);
             let rate_limiter = rate_limiter.clone();
+            let ingest_rows_total = Arc::clone(&ingest_rows_total);
             let chunk_op = op.clone();
 
             op_set.spawn(async move {
+                let chunk_rows = chunk_batch.num_rows();
                 // Rate gate first (paces dispatch independent of concurrency),
                 // then per-table and global concurrency permits.
                 if let Some(limiter) = &rate_limiter {
-                    limiter.acquire(chunk_batch.num_rows()).await;
+                    limiter.acquire(chunk_rows).await;
                 }
                 let output_batch = append_created_at(&chunk_batch, &output_schema, batch_ts)
                     .map_err(|e| {
@@ -967,7 +970,10 @@ async fn write_segments_for_batch(
                         partition_columns,
                     )
                     .await
-                    .map_err(|e| format!("write {table_name} batch {batch_id}: {e:#}"))
+                    .map_err(|e| format!("write {table_name} batch {batch_id}: {e:#}"))?;
+                // Count rows actually dispatched to the sink (harness-side throughput).
+                ingest_rows_total.fetch_add(chunk_rows as u64, Ordering::Relaxed);
+                Ok(())
             });
         }
         // Await all chunks for this operation type before proceeding to the next.
@@ -1108,6 +1114,10 @@ pub struct ETLPipeline {
     /// Only meaningful when the pipeline was started with
     /// [`run`](ETLPipeline::run) (i.e. with a step budget).
     checkpoint_idx: usize,
+    /// Cumulative count of rows written to the sink across the init and run
+    /// phases. Shared with the background task so the harness can sample
+    /// harness-side ingestion throughput.
+    ingest_rows_total: Arc<AtomicU64>,
 }
 
 impl ETLPipeline {
@@ -1150,7 +1160,15 @@ impl ETLPipeline {
             })),
             last_created_at_us,
             checkpoint_idx: 0,
+            ingest_rows_total: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Returns a shared handle to the cumulative count of rows written to the
+    /// sink (init + run phases). The harness samples this to emit a
+    /// harness-side ingestion-throughput metric.
+    pub fn ingest_rows_total(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.ingest_rows_total)
     }
 
     pub fn with_target_config(mut self, target_config: TargetConfig) -> Self {
@@ -1382,6 +1400,7 @@ impl ETLPipeline {
             let mutations = self.mutations.clone();
             let sink_semaphore = Arc::clone(&init_sink_semaphore);
             let rate_limiter = init_rate_limiter.clone();
+            let ingest_rows_total = Arc::clone(&self.ingest_rows_total);
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
@@ -1422,6 +1441,7 @@ impl ETLPipeline {
                         &partition_columns,
                         Arc::clone(&sink_semaphore),
                         rate_limiter.clone(),
+                        Arc::clone(&ingest_rows_total),
                     )
                     .await?;
 
@@ -1645,6 +1665,7 @@ impl ETLPipeline {
                 .collect::<HashMap<_, _>>(),
         );
 
+        let ingest_rows_total = Arc::clone(&self.ingest_rows_total);
         let handle = tokio::spawn(async move {
             let outcome = run_pipeline(
                 source,
@@ -1656,6 +1677,7 @@ impl ETLPipeline {
                 table_partition_columns,
                 table_output_schemas,
                 mutations,
+                ingest_rows_total,
             )
             .await;
             let _ = state_tx.send(outcome);
@@ -1694,6 +1716,7 @@ async fn run_pipeline(
     table_partition_columns: Arc<HashMap<String, Vec<String>>>,
     table_output_schemas: Arc<HashMap<String, SchemaRef>>,
     mutations: MutationConfig,
+    ingest_rows_total: Arc<AtomicU64>,
 ) -> PipelineState {
     let _sp = sink_parallelism();
     let _spt = sink_parallelism_per_table();
@@ -1915,6 +1938,7 @@ async fn run_pipeline(
             let mutations = mutations.clone();
             let sink_semaphore = Arc::clone(&sink_semaphore);
             let rate_limiter = rate_limiter.clone();
+            let ingest_rows_total = Arc::clone(&ingest_rows_total);
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
@@ -2011,6 +2035,7 @@ async fn run_pipeline(
                         &partition_columns,
                         Arc::clone(&sink_semaphore),
                         rate_limiter.clone(),
+                        Arc::clone(&ingest_rows_total),
                     )
                     .await
                     {
