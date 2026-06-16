@@ -879,10 +879,13 @@ async fn write_segments_for_batch(
     global_sink_semaphore: Arc<tokio::sync::Semaphore>,
     rate_limiter: Option<Arc<util::RateLimiter>>,
     ingest_rows_total: Arc<AtomicU64>,
+    net_rows: Arc<StdMutex<HashMap<String, i64>>>,
 ) -> Result<(), String> {
     let table_name_owned = table_name.to_string();
 
-    // Log per-operation row counts for data reconciliation.
+    // Log per-operation row counts for data reconciliation, and track the net
+    // per-table row count (inserts - deletes; updates are count-neutral) used as
+    // the expected accelerator row count for data validation.
     {
         let mut insert_rows: usize = 0;
         let mut update_rows: usize = 0;
@@ -904,6 +907,14 @@ async fn write_segments_for_batch(
             delete_rows,
             "Writing segments for batch",
         );
+        let delta = insert_rows as i64 - delete_rows as i64;
+        if delta != 0 {
+            *net_rows
+                .lock()
+                .expect("net_rows lock poisoned")
+                .entry(table_name_owned.clone())
+                .or_insert(0) += delta;
+        }
     }
 
     // Process segments preserving insert→update→delete ordering within a table.
@@ -1122,6 +1133,10 @@ pub struct ETLPipeline {
     /// `continue_pipeline`. Disabled during the bootstrap base seed so the
     /// initial load runs unthrottled; re-enabled for the streaming/mutation phase.
     rate_limit_enabled: bool,
+    /// Per-table net rows written to the sink (`+inserts -deletes`; updates are
+    /// count-neutral). This is the expected accelerator row count once the SUT
+    /// has caught up — used for periodic bootstrap data validation.
+    net_rows: Arc<StdMutex<HashMap<String, i64>>>,
 }
 
 impl ETLPipeline {
@@ -1166,7 +1181,20 @@ impl ETLPipeline {
             checkpoint_idx: 0,
             ingest_rows_total: Arc::new(AtomicU64::new(0)),
             rate_limit_enabled: true,
+            net_rows: Arc::new(StdMutex::new(HashMap::new())),
         })
+    }
+
+    /// Expected per-table accelerator row counts (`inserts - deletes`, clamped to
+    /// `>= 0`) based on what the pipeline has written to the sink so far. Used to
+    /// validate that the SUT has correctly replicated the data.
+    pub fn expected_row_counts(&self) -> HashMap<String, usize> {
+        self.net_rows
+            .lock()
+            .expect("net_rows lock poisoned")
+            .iter()
+            .map(|(table, &net)| (table.clone(), net.max(0) as usize))
+            .collect()
     }
 
     /// Enable or disable the sink rate limiter for subsequent `run`/
@@ -1174,6 +1202,13 @@ impl ETLPipeline {
     /// load); enable for the streaming/mutation phase.
     pub fn set_rate_limit_enabled(&mut self, enabled: bool) {
         self.rate_limit_enabled = enabled;
+    }
+
+    /// Override the per-`run`/`continue_pipeline` step budget (pause cadence).
+    /// Used in bootstrap mode to pause every N mutation steps for periodic
+    /// data validation.
+    pub fn set_batch_budget(&mut self, steps: usize) {
+        self.batch_budget = Some(steps);
     }
 
     /// Returns a shared handle to the cumulative count of rows written to the
@@ -1413,6 +1448,7 @@ impl ETLPipeline {
             let sink_semaphore = Arc::clone(&init_sink_semaphore);
             let rate_limiter = init_rate_limiter.clone();
             let ingest_rows_total = Arc::clone(&self.ingest_rows_total);
+            let net_rows = Arc::clone(&self.net_rows);
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
@@ -1454,6 +1490,7 @@ impl ETLPipeline {
                         Arc::clone(&sink_semaphore),
                         rate_limiter.clone(),
                         Arc::clone(&ingest_rows_total),
+                        Arc::clone(&net_rows),
                     )
                     .await?;
 
@@ -1678,6 +1715,7 @@ impl ETLPipeline {
         );
 
         let ingest_rows_total = Arc::clone(&self.ingest_rows_total);
+        let net_rows = Arc::clone(&self.net_rows);
         let rate_limit_enabled = self.rate_limit_enabled;
         let handle = tokio::spawn(async move {
             let outcome = run_pipeline(
@@ -1691,6 +1729,7 @@ impl ETLPipeline {
                 table_output_schemas,
                 mutations,
                 ingest_rows_total,
+                net_rows,
                 rate_limit_enabled,
             )
             .await;
@@ -1731,6 +1770,7 @@ async fn run_pipeline(
     table_output_schemas: Arc<HashMap<String, SchemaRef>>,
     mutations: MutationConfig,
     ingest_rows_total: Arc<AtomicU64>,
+    net_rows: Arc<StdMutex<HashMap<String, i64>>>,
     rate_limit_enabled: bool,
 ) -> PipelineState {
     let _sp = sink_parallelism();
@@ -1959,6 +1999,7 @@ async fn run_pipeline(
             let sink_semaphore = Arc::clone(&sink_semaphore);
             let rate_limiter = rate_limiter.clone();
             let ingest_rows_total = Arc::clone(&ingest_rows_total);
+            let net_rows = Arc::clone(&net_rows);
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
@@ -2056,6 +2097,7 @@ async fn run_pipeline(
                         Arc::clone(&sink_semaphore),
                         rate_limiter.clone(),
                         Arc::clone(&ingest_rows_total),
+                        Arc::clone(&net_rows),
                     )
                     .await
                     {
