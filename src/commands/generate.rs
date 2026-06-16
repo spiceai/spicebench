@@ -77,7 +77,12 @@ pub async fn execute(args: &GenerateArgs) -> anyhow::Result<()> {
         "Configuration"
     );
 
-    let mutations_config = MutationConfig::new(args.update_ratio, args.delete_ratio);
+    let mutations_config = if args.bootstrap {
+        MutationConfig::new(args.update_ratio, args.delete_ratio)
+            .with_bootstrap(args.bootstrap_mutation_steps, args.bootstrap_churn_fraction)
+    } else {
+        MutationConfig::new(args.update_ratio, args.delete_ratio)
+    };
 
     // Generate data to a temporary working directory on disk.
     let work_dir = tempfile::tempdir()?;

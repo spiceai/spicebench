@@ -1090,7 +1090,14 @@ pub(crate) async fn run(
     // all remaining batches without pausing.
     tracing::info!("Starting ETL pipeline (remaining batches)...");
     let mut etl_state_rx = etl_pipeline.state_watch();
-    if let Some(steps) = checkpoint_steps {
+    // Bootstrap mode seeds the base before this point and leaves the pipeline
+    // Paused at the base→mutation boundary (SUT already activated). Resume the
+    // mutation phase with `continue_pipeline` — calling `run` here would rebuild
+    // the work plan and re-process the already-seeded base.
+    if matches!(etl_pipeline.state(), PipelineState::Paused) {
+        tracing::info!("Bootstrap: base seeded + SUT activated; streaming mutation phase");
+        etl_pipeline.continue_pipeline()?;
+    } else if let Some(steps) = checkpoint_steps {
         tracing::info!(checkpoint_steps = steps, "Using checkpoint-aware ETL mode");
         etl_pipeline.run(steps).await?;
     } else {

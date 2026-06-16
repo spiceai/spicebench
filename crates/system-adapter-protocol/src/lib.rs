@@ -228,6 +228,19 @@ pub struct SetupResponse {
     pub endpoints: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 
+/// Request to activate (start) the SUT for a bootstrap-mode run.
+///
+/// Sent after `setup` (with bootstrap metadata) and after spicebench has seeded
+/// the source. The adapter starts the SUT — which then snapshots the seeded data
+/// — and returns the full [`SetupResponse`] (now including read-side config).
+///
+/// JSON-RPC method: `activate`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivateRequest {
+    /// Unique identifier for the benchmark run to activate
+    pub run_id: Uuid,
+}
+
 /// Request to teardown a benchmark run
 ///
 /// JSON-RPC method: `teardown`
@@ -486,6 +499,16 @@ pub mod methods {
     pub const SETUP: &str = "setup";
     pub const TEARDOWN: &str = "teardown";
     pub const METRICS: &str = "metrics";
+    pub const ACTIVATE: &str = "activate";
     pub const CREATE_STAGING_TABLE: &str = "create_staging_table";
     pub const RPC_METHODS: &str = "rpc.methods";
 }
+
+/// Metadata key (in [`SetupRequest::metadata`]) signalling bootstrap mode.
+///
+/// When set to `true`, `setup` should provision the source and return its
+/// [`SinkConfig`] **without** starting the SUT, so spicebench can seed the
+/// source first; the SUT is then started by a later `activate` call. Adapters
+/// that don't support bootstrap mode ignore this key and start the SUT in
+/// `setup` as usual (and never receive `activate`).
+pub const BOOTSTRAP_METADATA_KEY: &str = "bootstrap";

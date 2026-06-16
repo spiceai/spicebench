@@ -1118,6 +1118,10 @@ pub struct ETLPipeline {
     /// phases. Shared with the background task so the harness can sample
     /// harness-side ingestion throughput.
     ingest_rows_total: Arc<AtomicU64>,
+    /// Whether `SPICEBENCH_SINK_MAX_RECORDS_PER_SEC` applies to `run`/
+    /// `continue_pipeline`. Disabled during the bootstrap base seed so the
+    /// initial load runs unthrottled; re-enabled for the streaming/mutation phase.
+    rate_limit_enabled: bool,
 }
 
 impl ETLPipeline {
@@ -1161,7 +1165,15 @@ impl ETLPipeline {
             last_created_at_us,
             checkpoint_idx: 0,
             ingest_rows_total: Arc::new(AtomicU64::new(0)),
+            rate_limit_enabled: true,
         })
+    }
+
+    /// Enable or disable the sink rate limiter for subsequent `run`/
+    /// `continue_pipeline` calls. Disable for the bootstrap base seed (unthrottled
+    /// load); enable for the streaming/mutation phase.
+    pub fn set_rate_limit_enabled(&mut self, enabled: bool) {
+        self.rate_limit_enabled = enabled;
     }
 
     /// Returns a shared handle to the cumulative count of rows written to the
@@ -1382,16 +1394,16 @@ impl ETLPipeline {
         let _sp = sink_parallelism();
         let _spt = sink_parallelism_per_table();
         let _sc = sink_chunk_rows();
-        let _rps = sink_max_records_per_sec();
         info!(
             sink_parallelism_global = _sp,
             sink_parallelism_per_table = _spt,
             sink_chunk_rows = _sc,
-            sink_max_records_per_sec = _rps.map(|v| v as i64).unwrap_or(-1),
             "ETL init sink semaphore"
         );
         let init_sink_semaphore = Arc::new(tokio::sync::Semaphore::new(_sp));
-        let init_rate_limiter = _rps.map(|r| Arc::new(util::RateLimiter::new(r)));
+        // The init phase (base-table load / bootstrap seed) is never rate-limited;
+        // SPICEBENCH_SINK_MAX_RECORDS_PER_SEC only paces the streaming/changes phase.
+        let init_rate_limiter: Option<Arc<util::RateLimiter>> = None;
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
         for (table_name, first_batch_id) in init_batches {
             let source = Arc::clone(&self.data_storage);
@@ -1666,6 +1678,7 @@ impl ETLPipeline {
         );
 
         let ingest_rows_total = Arc::clone(&self.ingest_rows_total);
+        let rate_limit_enabled = self.rate_limit_enabled;
         let handle = tokio::spawn(async move {
             let outcome = run_pipeline(
                 source,
@@ -1678,6 +1691,7 @@ impl ETLPipeline {
                 table_output_schemas,
                 mutations,
                 ingest_rows_total,
+                rate_limit_enabled,
             )
             .await;
             let _ = state_tx.send(outcome);
@@ -1717,11 +1731,17 @@ async fn run_pipeline(
     table_output_schemas: Arc<HashMap<String, SchemaRef>>,
     mutations: MutationConfig,
     ingest_rows_total: Arc<AtomicU64>,
+    rate_limit_enabled: bool,
 ) -> PipelineState {
     let _sp = sink_parallelism();
     let _spt = sink_parallelism_per_table();
     let _sc = sink_chunk_rows();
-    let _rps = sink_max_records_per_sec();
+    // Rate limiting is suppressed for the bootstrap base seed (unthrottled load).
+    let _rps = if rate_limit_enabled {
+        sink_max_records_per_sec()
+    } else {
+        None
+    };
     info!(
         sink_parallelism_global = _sp,
         sink_parallelism_per_table = _spt,

@@ -40,6 +40,18 @@ on:
         required: false
         default: '0'
         type: string
+      bootstrap:
+        required: false
+        default: false
+        type: boolean
+      bootstrap_mutation_steps:
+        required: false
+        default: '20'
+        type: string
+      bootstrap_churn_fraction:
+        required: false
+        default: '0.17'
+        type: string
     secrets:
       MINIO_ENDPOINT:
         required: true
@@ -85,14 +97,29 @@ on:
         default: '10'
         type: string
       update_ratio:
-        description: 'Ratio of rows to update per step (0.0 to 1.0)'
+        description: 'Ratio of rows to update per step (0.0 to 1.0). For bootstrap, set 0.8.'
         required: false
         default: '0'
         type: string
       delete_ratio:
-        description: 'Ratio of rows to delete per step (0.0 to 1.0)'
+        description: 'Ratio of rows to delete per step (0.0 to 1.0). For bootstrap, set 0.2.'
         required: false
         default: '0'
+        type: string
+      bootstrap:
+        description: 'Bootstrap dataset: base creates-only, then pure-mutation steps (set update/delete ratios, e.g. 0.8/0.2)'
+        required: false
+        default: false
+        type: boolean
+      bootstrap_mutation_steps:
+        description: 'Bootstrap: number of pure-mutation steps appended after the base'
+        required: false
+        default: '20'
+        type: string
+      bootstrap_churn_fraction:
+        description: 'Bootstrap: total fraction of the base to mutate (~0.17 on SF10 ≈ 15M)'
+        required: false
+        default: '0.17'
         type: string
 
 jobs:
@@ -143,6 +170,9 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           UPDATE_RATIO: ${{ inputs.update_ratio || github.event.inputs.update_ratio }}
           DELETE_RATIO: ${{ inputs.delete_ratio || github.event.inputs.delete_ratio }}
+          BOOTSTRAP: ${{ inputs.bootstrap || github.event.inputs.bootstrap || 'false' }}
+          BOOTSTRAP_MUTATION_STEPS: ${{ inputs.bootstrap_mutation_steps || github.event.inputs.bootstrap_mutation_steps || '20' }}
+          BOOTSTRAP_CHURN_FRACTION: ${{ inputs.bootstrap_churn_fraction || github.event.inputs.bootstrap_churn_fraction || '0.17' }}
           RUST_LOG: info
         run: |
           ARGS="--dataset ${SCENARIO}"
@@ -160,6 +190,12 @@ jobs:
           if [ -n "${DELETE_RATIO}" ]; then
             ARGS="${ARGS} --delete-ratio ${DELETE_RATIO}"
           fi
+          # Bootstrap dataset: full base (creates-only) + pure-mutation steps.
+          if [ "${BOOTSTRAP}" = "true" ]; then
+            ARGS="${ARGS} --bootstrap"
+            ARGS="${ARGS} --bootstrap-mutation-steps ${BOOTSTRAP_MUTATION_STEPS}"
+            ARGS="${ARGS} --bootstrap-churn-fraction ${BOOTSTRAP_CHURN_FRACTION}"
+          fi
 
           echo "Running: spicebench generate ${ARGS}"
           ~/.spice/bin/spicebench generate ${ARGS}
@@ -172,11 +208,19 @@ jobs:
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           CHECKPOINT_INTERVAL_STEPS: ${{ inputs.checkpoint_interval_steps || github.event.inputs.checkpoint_interval_steps || '100' }}
+          BOOTSTRAP: ${{ inputs.bootstrap || github.event.inputs.bootstrap || 'false' }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
+          # Checkpoint generation for the bootstrap (base + mutations) dataset is not
+          # yet supported; skip it. Run the bootstrap benchmark with validation off.
+          if [ "${BOOTSTRAP}" = "true" ]; then
+            echo "Bootstrap dataset: skipping checkpoint generation (not yet supported)"
+            exit 0
+          fi
+
           VERSION=$(python3 - <<'PY'
           import os
 

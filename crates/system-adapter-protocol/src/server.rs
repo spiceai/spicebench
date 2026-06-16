@@ -17,9 +17,9 @@ limitations under the License.
 //! Server implementations for system adapter JSON-RPC protocol.
 
 use crate::{
-    CreateStagingTableRequest, CreateStagingTableResponse, DatasetConfig, JsonRpcError,
-    JsonRpcResponse, MetricsRequest, MetricsResponse, SetupRequest, SetupResponse, TeardownRequest,
-    TeardownResponse, error_codes, methods,
+    ActivateRequest, CreateStagingTableRequest, CreateStagingTableResponse, DatasetConfig,
+    JsonRpcError, JsonRpcResponse, MetricsRequest, MetricsResponse, SetupRequest, SetupResponse,
+    TeardownRequest, TeardownResponse, error_codes, methods,
 };
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -102,6 +102,19 @@ pub trait Handler: Send + Sync {
     ) -> std::result::Result<MetricsResponse, String> {
         let _ = (run_id, final_scrape);
         Ok(MetricsResponse::default())
+    }
+
+    /// Start (activate) the SUT for a bootstrap-mode run.
+    ///
+    /// Called after `setup` (with `bootstrap` metadata) and after spicebench has
+    /// seeded the source. The adapter starts the SUT — which snapshots the seeded
+    /// data — and returns the full [`SetupResponse`] including read-side config.
+    ///
+    /// Default implementation errors: adapters that don't support bootstrap mode
+    /// start the SUT in `setup` and never receive `activate`.
+    async fn activate(&mut self, run_id: Uuid) -> std::result::Result<SetupResponse, String> {
+        let _ = run_id;
+        Err("activate (bootstrap mode) is not supported by this adapter".to_string())
     }
 
     /// List available RPC methods
@@ -202,6 +215,7 @@ impl<H: Handler> Server<H> {
         // Dispatch to appropriate handler
         let result = match method {
             methods::SETUP => self.handle_setup(&request, id.clone()).await,
+            methods::ACTIVATE => self.handle_activate(&request, id.clone()).await,
             methods::TEARDOWN => self.handle_teardown(&request, id.clone()).await,
             methods::METRICS => self.handle_metrics(&request, id.clone()).await,
             methods::CREATE_STAGING_TABLE => {
@@ -271,6 +285,18 @@ impl<H: Handler> Server<H> {
                 .await,
             id,
         )
+    }
+
+    async fn handle_activate(
+        &mut self,
+        request: &serde_json::Value,
+        id: serde_json::Value,
+    ) -> serde_json::Value {
+        let req: ActivateRequest = match Self::parse_params(request, &id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        Self::handler_response(self.handler.activate(req.run_id).await, id)
     }
 
     async fn handle_teardown(

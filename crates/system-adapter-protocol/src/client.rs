@@ -203,6 +203,19 @@ impl Client {
             .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
     }
 
+    /// Activate (start) the SUT for a bootstrap-mode run.
+    ///
+    /// Call after `setup` (with bootstrap metadata) and after seeding the source.
+    /// Returns the full [`SetupResponse`] including read-side config.
+    pub async fn activate(&mut self, run_id: uuid::Uuid) -> Result<crate::SetupResponse> {
+        let request = crate::ActivateRequest { run_id };
+        let rpc_request = JsonRpcRequest::new(1, crate::methods::ACTIVATE, request);
+        let response = self.call_typed(rpc_request).await?;
+        response
+            .result
+            .ok_or_else(|| ClientError::InvalidResponse("Missing result".to_string()))
+    }
+
     /// Teardown a benchmark run.
     /// Pass `preserve_resources: true` to keep provisioned cloud resources
     /// (EC2 instances, DynamoDB tables, SCP app) alive for post-run inspection.
