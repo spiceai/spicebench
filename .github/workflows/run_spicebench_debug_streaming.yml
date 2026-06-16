@@ -58,6 +58,9 @@ on:
       validate_results:
         type: boolean
         default: true
+      bootstrap:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       environment:
@@ -167,6 +170,11 @@ on:
         required: false
         default: true
         type: boolean
+      bootstrap:
+        description: 'Bootstrap mode: seed the base into the source, snapshot it, then stream pure mutations (requires a bootstrap-generated dataset). Uses row-count data validation instead of checkpoints.'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   run-spicebench:
@@ -219,11 +227,16 @@ jobs:
           SCALE_FACTOR: ${{ inputs.scale_factor || '1' }}
           NUM_QUERY_CLIENTS: ${{ inputs.num_query_clients || '2' }}
           ETL_BUCKET: spicebench
-          ETL_PREFIX: ${{ inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
+          # Bootstrap datasets are generated under their own prefix (base + pure
+          # mutations); otherwise changes→data-gen-mutable, events→data-gen.
+          ETL_PREFIX: ${{ inputs.bootstrap && 'data-gen-bootstrap' || (inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen') }}
           ETL_REGION: us-east-1
           ETL_SINK: adbc
           SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
-          VALIDATE_CHECKPOINT_RESULTS: ${{ inputs.validate_results != false && 'true' || 'false' }}
+          BOOTSTRAP: ${{ inputs.bootstrap || 'false' }}
+          # Bootstrap uses intrinsic row-count data validation (no checkpoints), so
+          # checkpoint-query validation is always off for bootstrap runs.
+          VALIDATE_CHECKPOINT_RESULTS: ${{ (inputs.bootstrap != true && inputs.validate_results != false) && 'true' || 'false' }}
           CHECKPOINT_VALIDATION_TIMEOUT: ${{ inputs.checkpoint_validation_timeout || '3600' }}
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
@@ -273,6 +286,9 @@ jobs:
 
           NO_TEARDOWN_ARG=""
           [ "${DISABLE_TEARDOWN}" = "true" ] && NO_TEARDOWN_ARG="--no-teardown"
+
+          BOOTSTRAP_ARG=""
+          [ "${BOOTSTRAP}" = "true" ] && BOOTSTRAP_ARG="--bootstrap"
 
           # Map system_under_test → spidapter scenario + whether EC2 env vars are needed
           case "${SYSTEM_UNDER_TEST}" in
@@ -349,6 +365,7 @@ jobs:
             --table-format parquet \
             ${VALIDATION_ARGS} \
             ${SUT_METRICS_ARGS} \
+            ${BOOTSTRAP_ARG} \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             --system-adapter-env "SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}" \
