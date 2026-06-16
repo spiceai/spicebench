@@ -61,6 +61,9 @@ on:
       bootstrap:
         type: boolean
         default: false
+      ready_wait_seconds:
+        type: string
+        default: '1200'
   workflow_dispatch:
     inputs:
       environment:
@@ -175,6 +178,11 @@ on:
         required: false
         default: false
         type: boolean
+      ready_wait_seconds:
+        description: 'Seconds to wait for the Spice Cloud SUT deployment to become ready (raise for slow cold starts / large snapshots)'
+        required: false
+        default: '1200'
+        type: string
 
 jobs:
   run-spicebench:
@@ -353,7 +361,7 @@ jobs:
           [ -n "${CUSTOM_IMAGE_TAG}" ]                            && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
           [ "${{ inputs.enable_spice_debug }}" = "true" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SPICE_DEBUG=true"
 
-          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose"
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose --ready-wait ${{ inputs.ready_wait_seconds || '1200' }}"
 
           set -x
           ~/.spice/bin/spicebench run \
