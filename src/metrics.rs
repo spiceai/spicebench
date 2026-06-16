@@ -151,3 +151,21 @@ pub static E2E_LATENCY_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
         .with_unit("ms")
         .build()
 });
+
+/// Wall-clock seconds to make the bootstrapped base dataset queryable in the SUT
+/// (SUT start + initial snapshot of existing data, until row counts match).
+pub static BOOTSTRAP_LOAD_SECONDS: LazyLock<Gauge<f64>> = LazyLock::new(|| {
+    meter()
+        .f64_gauge("bench_bootstrap_load_seconds")
+        .with_description("Time to load the existing base dataset into the SUT during bootstrap (activate + initial snapshot).")
+        .with_unit("s")
+        .build()
+});
+
+/// Initial-load throughput during bootstrap: base rows / bootstrap load seconds.
+pub static BOOTSTRAP_LOAD_ROWS_PER_SEC: LazyLock<Gauge<f64>> = LazyLock::new(|| {
+    meter()
+        .f64_gauge("bench_bootstrap_load_rows_per_sec")
+        .with_description("Initial-load throughput during bootstrap (base rows / bootstrap load seconds).")
+        .build()
+});

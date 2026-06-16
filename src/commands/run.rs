@@ -293,9 +293,12 @@ async fn run_benchmark(
 
     // In bootstrap mode the SUT was not started during setup. The full base is now
     // seeded, so start the SUT — which snapshots the seeded data — and take the real
-    // read-side config from `activate`.
+    // read-side config from `activate`. Stamp the start so the bootstrap load
+    // duration/throughput (activate + snapshot) can be measured in `load::run`.
+    let mut bootstrap_activate_start: Option<std::time::Instant> = None;
     let (read_driver_name, mut read_db_kwargs, query_catalog_namespace) = if common.bootstrap {
         tracing::info!("Bootstrap: activating SUT (snapshot of existing data)...");
+        bootstrap_activate_start = Some(std::time::Instant::now());
         let resp = system_adapter_client
             .lock()
             .await
@@ -356,6 +359,7 @@ async fn run_benchmark(
             .map(std::path::Path::new)
             .or_else(|| Some(checkpoint_dir.path())),
         query_catalog_namespace,
+        bootstrap_activate_start,
         shutdown,
     )
     .await?;

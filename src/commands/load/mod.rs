@@ -985,6 +985,9 @@ pub(crate) async fn run(
     checkpoint_steps: Option<usize>,
     checkpoint_dir: Option<&Path>,
     query_catalog_namespace: Option<String>,
+    // In bootstrap mode, the instant `activate` was called — used to measure
+    // the bootstrap load duration/throughput (activate + initial snapshot).
+    bootstrap_activate_start: Option<std::time::Instant>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let metric_attributes = run_metric_attributes(common_args, run_id, version_metadata.etl_type());
@@ -1161,12 +1164,16 @@ pub(crate) async fn run(
     // Period/timeout reused for both checkpoint and bootstrap data validation.
     let validation_period = Duration::from_secs(common_args.checkpoint_validation_period);
     let validation_timeout = Duration::from_secs(common_args.checkpoint_validation_timeout);
+    // Bootstrap initial-load metric: (seconds, rows_per_sec), emitted post-loop.
+    let mut bootstrap_load: Option<(f64, f64)> = None;
     if bootstrap {
         // 1) Snapshot validation gate: wait until the SUT has fully ingested the
         //    seeded base (accelerator row counts match what we wrote).
         let expected = etl_pipeline.expected_row_counts();
+        let base_rows: u64 = expected.values().map(|&c| c as u64).sum();
         tracing::info!(
             tables = expected.len(),
+            base_rows,
             "Bootstrap: validating snapshot — waiting for SUT to ingest the base..."
         );
         match await_row_count_convergence(
@@ -1180,12 +1187,22 @@ pub(crate) async fn run(
         )
         .await
         {
-            RowCountConvergence::Converged { e2e_latency_ms } => {
-                // Snapshot convergence is initial-load latency, tracked separately
-                // from per-checkpoint mutation e2e latency.
+            RowCountConvergence::Converged { .. } => {
+                // Bootstrap load = activate + initial snapshot, until counts match.
+                let load_seconds = bootstrap_activate_start
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
+                let rows_per_sec = if load_seconds > 0.0 {
+                    base_rows as f64 / load_seconds
+                } else {
+                    0.0
+                };
+                bootstrap_load = Some((load_seconds, rows_per_sec));
                 tracing::info!(
-                    snapshot_convergence_ms = e2e_latency_ms,
-                    "Bootstrap: snapshot validated; streaming mutations"
+                    base_rows,
+                    load_seconds = format!("{load_seconds:.1}"),
+                    rows_per_sec = format!("{rows_per_sec:.0}"),
+                    "Bootstrap load complete: base dataset ingested by SUT; streaming mutations"
                 );
             }
             RowCountConvergence::Interrupted => {
@@ -1547,6 +1564,10 @@ pub(crate) async fn run(
     // Record deferred metrics now that outcome is available.
     for sample in &checkpoint_e2e_latency_samples {
         crate::metrics::E2E_LATENCY_MS.record(*sample, &metric_attributes);
+    }
+    if let Some((load_seconds, rows_per_sec)) = bootstrap_load {
+        crate::metrics::BOOTSTRAP_LOAD_SECONDS.record(load_seconds, &metric_attributes);
+        crate::metrics::BOOTSTRAP_LOAD_ROWS_PER_SEC.record(rows_per_sec, &metric_attributes);
     }
 
     test.get_query_durations().statistical_set()?;
