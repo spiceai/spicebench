@@ -497,7 +497,10 @@ const BOOTSTRAP_VALIDATION_INTERVAL_STEPS: usize = 2;
 /// Outcome of waiting for the SUT's per-table row counts to match the expected
 /// counts (bootstrap data validation).
 enum RowCountConvergence {
-    Converged,
+    /// Converged; `e2e_latency_ms` is the time from the validation start (≈ when
+    /// the data was written to the source) until the SUT's counts matched — i.e.
+    /// the CDC replication latency at this checkpoint.
+    Converged { e2e_latency_ms: f64 },
     TimedOut,
     Interrupted,
 }
@@ -516,7 +519,9 @@ async fn await_row_count_convergence(
     shutdown: &CancellationToken,
 ) -> RowCountConvergence {
     if expected.is_empty() {
-        return RowCountConvergence::Converged;
+        return RowCountConvergence::Converged {
+            e2e_latency_ms: 0.0,
+        };
     }
     let start = std::time::Instant::now();
     let mut ticker = tokio::time::interval(period);
@@ -530,8 +535,12 @@ async fn await_row_count_convergence(
         if validate_checkpoint_table_row_counts(executor, expected, 0, query_catalog_namespace)
             .await
         {
-            tracing::info!("{label}: row counts converged after {attempt} attempt(s)");
-            return RowCountConvergence::Converged;
+            let e2e_latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            tracing::info!(
+                "{label}: row counts converged after {attempt} attempt(s), e2e latency {:.0}ms",
+                e2e_latency_ms
+            );
+            return RowCountConvergence::Converged { e2e_latency_ms };
         }
         if start.elapsed() >= timeout {
             tracing::error!(
@@ -1171,8 +1180,13 @@ pub(crate) async fn run(
         )
         .await
         {
-            RowCountConvergence::Converged => {
-                tracing::info!("Bootstrap: snapshot validated; streaming mutations");
+            RowCountConvergence::Converged { e2e_latency_ms } => {
+                // Snapshot convergence is initial-load latency, tracked separately
+                // from per-checkpoint mutation e2e latency.
+                tracing::info!(
+                    snapshot_convergence_ms = e2e_latency_ms,
+                    "Bootstrap: snapshot validated; streaming mutations"
+                );
             }
             RowCountConvergence::Interrupted => {
                 etl_pipeline.cancel();
@@ -1238,7 +1252,9 @@ pub(crate) async fn run(
                             )
                             .await
                             {
-                                RowCountConvergence::Converged => {}
+                                RowCountConvergence::Converged { e2e_latency_ms } => {
+                                    checkpoint_e2e_latency_samples.push(e2e_latency_ms);
+                                }
                                 RowCountConvergence::Interrupted => {
                                     shutdown_token.cancel();
                                     etl_pipeline.cancel();
@@ -1330,6 +1346,37 @@ pub(crate) async fn run(
                     }
                     PipelineState::Stopped(StopReason::Completed) => {
                         tracing::info!("ETL pipeline completed");
+
+                        // --- Final bootstrap data validation ---
+                        // The last mutation chunk completes via Stopped (not
+                        // Paused), so validate the final state here to confirm the
+                        // SUT has fully ingested all mutations.
+                        if bootstrap {
+                            let expected = etl_pipeline.expected_row_counts();
+                            match await_row_count_convergence(
+                                &validation_executor,
+                                &expected,
+                                "Bootstrap final validation",
+                                validation_period,
+                                validation_timeout,
+                                query_catalog_namespace.as_deref(),
+                                &shutdown_token,
+                            )
+                            .await
+                            {
+                                RowCountConvergence::Converged { e2e_latency_ms } => {
+                                    checkpoint_e2e_latency_samples.push(e2e_latency_ms);
+                                }
+                                RowCountConvergence::Interrupted => {
+                                    shutdown_token.cancel();
+                                    break Some(RunOutcome::Cancelled);
+                                }
+                                RowCountConvergence::TimedOut => {
+                                    shutdown_token.cancel();
+                                    break Some(RunOutcome::ValidationTimeout);
+                                }
+                            }
+                        }
 
                         // --- Final checkpoint validation ---
                         // The pipeline transitions directly from Running →
@@ -1474,6 +1521,28 @@ pub(crate) async fn run(
     // Add outcome as a dimension on all subsequently recorded metrics.
     let mut metric_attributes = metric_attributes;
     metric_attributes.push(KeyValue::new("outcome", outcome.as_str()));
+
+    // Log an e2e-latency summary so it's visible locally even when metrics are
+    // not emitted (telemetry disabled).
+    if checkpoint_e2e_latency_samples.is_empty() {
+        tracing::info!("E2E latency: no checkpoint samples collected");
+    } else {
+        let mut sorted = checkpoint_e2e_latency_samples.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len();
+        let pct = |p: f64| sorted[((p * (n - 1) as f64).round() as usize).min(n - 1)];
+        let mean = sorted.iter().sum::<f64>() / n as f64;
+        tracing::info!(
+            samples = n,
+            min_ms = format!("{:.0}", sorted[0]),
+            median_ms = format!("{:.0}", pct(0.5)),
+            p95_ms = format!("{:.0}", pct(0.95)),
+            p99_ms = format!("{:.0}", pct(0.99)),
+            max_ms = format!("{:.0}", sorted[n - 1]),
+            mean_ms = format!("{:.0}", mean),
+            "E2E latency summary (per-checkpoint convergence)"
+        );
+    }
 
     // Record deferred metrics now that outcome is available.
     for sample in &checkpoint_e2e_latency_samples {
