@@ -81,6 +81,8 @@ async fn run_benchmark(
         )
     }?;
 
+    // Bootstrap runs also have checkpoints (cp0 = full base, then per mutation
+    // interval), so the manifest is downloaded the same way for all runs.
     let manifest = checkpoint_store
         .download_manifest()
         .await

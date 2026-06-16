@@ -101,7 +101,15 @@ impl VersionMetadata {
 
     /// Creates a [`MutationConfig`] from the stored version metadata.
     pub fn mutation_config(&self) -> MutationConfig {
-        MutationConfig::new(self.mutations.update_ratio, self.mutations.delete_ratio)
+        let cfg = MutationConfig::new(self.mutations.update_ratio, self.mutations.delete_ratio);
+        if self.mutations.bootstrap {
+            cfg.with_bootstrap(
+                self.mutations.num_mutation_steps,
+                self.mutations.churn_fraction,
+            )
+        } else {
+            cfg
+        }
     }
 
     /// Returns the ETL type based on the mutation configuration.
@@ -125,6 +133,15 @@ pub struct MutationsMetadata {
     pub update_ratio: f64,
     /// Ratio of rows that are deletes (0.0–1.0).
     pub delete_ratio: f64,
+    /// Bootstrap dataset: base creates-only followed by pure-mutation steps.
+    #[serde(default)]
+    pub bootstrap: bool,
+    /// Number of pure-mutation steps appended after the base (bootstrap only).
+    #[serde(default)]
+    pub num_mutation_steps: u16,
+    /// Total fraction of the base mutated across all mutation steps (bootstrap only).
+    #[serde(default)]
+    pub churn_fraction: f64,
 }
 
 /// Per-table metadata stored inside `version.json`.

@@ -490,69 +490,6 @@ fn extract_row_count_from_batches(batches: &[RecordBatch]) -> anyhow::Result<usi
         .map_err(|e| anyhow::anyhow!("failed to parse row count '{value}': {e}"))
 }
 
-/// In bootstrap mode, pause the mutation pipeline every N steps to run periodic
-/// row-count validation (and let CDC catch up) before continuing.
-const BOOTSTRAP_VALIDATION_INTERVAL_STEPS: usize = 2;
-
-/// Outcome of waiting for the SUT's per-table row counts to match the expected
-/// counts (bootstrap data validation).
-enum RowCountConvergence {
-    /// Converged; `e2e_latency_ms` is the time from the validation start (≈ when
-    /// the data was written to the source) until the SUT's counts matched — i.e.
-    /// the CDC replication latency at this checkpoint.
-    Converged { e2e_latency_ms: f64 },
-    TimedOut,
-    Interrupted,
-}
-
-/// Polls the SUT's per-table row counts until they match `expected` (the rows
-/// spicebench has written: inserts − deletes), or until `timeout`. Used to
-/// validate the bootstrap snapshot and to validate periodically during mutation
-/// ingestion (waits for CDC to catch up to the source).
-async fn await_row_count_convergence(
-    executor: &dyn QueryExecutor,
-    expected: &HashMap<String, usize>,
-    label: &str,
-    period: Duration,
-    timeout: Duration,
-    query_catalog_namespace: Option<&str>,
-    shutdown: &CancellationToken,
-) -> RowCountConvergence {
-    if expected.is_empty() {
-        return RowCountConvergence::Converged {
-            e2e_latency_ms: 0.0,
-        };
-    }
-    let start = std::time::Instant::now();
-    let mut ticker = tokio::time::interval(period);
-    let mut attempt = 0u64;
-    loop {
-        tokio::select! {
-            () = shutdown.cancelled() => return RowCountConvergence::Interrupted,
-            _ = ticker.tick() => {}
-        }
-        attempt += 1;
-        if validate_checkpoint_table_row_counts(executor, expected, 0, query_catalog_namespace)
-            .await
-        {
-            let e2e_latency_ms = start.elapsed().as_secs_f64() * 1000.0;
-            tracing::info!(
-                "{label}: row counts converged after {attempt} attempt(s), e2e latency {:.0}ms",
-                e2e_latency_ms
-            );
-            return RowCountConvergence::Converged { e2e_latency_ms };
-        }
-        if start.elapsed() >= timeout {
-            tracing::error!(
-                "{label}: row counts did not converge within {}s ({attempt} attempts)",
-                timeout.as_secs()
-            );
-            return RowCountConvergence::TimedOut;
-        }
-        tracing::info!("{label}: not yet converged (attempt {attempt}), retrying");
-    }
-}
-
 async fn validate_checkpoint_table_row_counts(
     executor: &dyn QueryExecutor,
     expected_row_counts: &HashMap<String, usize>,
@@ -614,9 +551,7 @@ async fn validate_checkpoint_table_row_counts(
         }
     }
 
-    tracing::info!(
-        "Checkpoint {checkpoint_idx}: table row counts passed, validating full query set"
-    );
+    tracing::info!("Checkpoint {checkpoint_idx}: table row counts passed");
     true
 }
 
@@ -1167,55 +1102,74 @@ pub(crate) async fn run(
     // Bootstrap initial-load metric: (seconds, rows_per_sec), emitted post-loop.
     let mut bootstrap_load: Option<(f64, f64)> = None;
     if bootstrap {
-        // 1) Snapshot validation gate: wait until the SUT has fully ingested the
-        //    seeded base (accelerator row counts match what we wrote).
-        let expected = etl_pipeline.expected_row_counts();
-        let base_rows: u64 = expected.values().map(|&c| c as u64).sum();
+        // 1) Snapshot validation gate: validate the full-base checkpoint (cp0)
+        //    against the oracle — run_checkpoint_validation waits for the SUT's row
+        //    counts to converge, then verifies query results. The pipeline is
+        //    already Paused (a fresh state watch won't fire for it), so this must
+        //    run before the loop; subsequent mutation checkpoints (cp1+) are handled
+        //    inside the loop.
+        let base_rows: u64 = etl_pipeline
+            .expected_row_counts()
+            .values()
+            .map(|&c| c as u64)
+            .sum();
         tracing::info!(
-            tables = expected.len(),
             base_rows,
-            "Bootstrap: validating snapshot — waiting for SUT to ingest the base..."
+            "Bootstrap: validating snapshot (cp0) — waiting for SUT to ingest the base..."
         );
-        match await_row_count_convergence(
-            &validation_executor,
-            &expected,
-            "Bootstrap snapshot validation",
-            validation_period,
-            validation_timeout,
-            query_catalog_namespace.as_deref(),
-            &shutdown_token,
-        )
-        .await
+        if has_checkpoint_validation
+            && let Some(cp_dir) = checkpoint_dir
         {
-            RowCountConvergence::Converged { .. } => {
-                // Bootstrap load = activate + initial snapshot, until counts match.
-                let load_seconds = bootstrap_activate_start
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                let rows_per_sec = if load_seconds > 0.0 {
-                    base_rows as f64 / load_seconds
-                } else {
-                    0.0
-                };
-                bootstrap_load = Some((load_seconds, rows_per_sec));
-                tracing::info!(
-                    base_rows,
-                    load_seconds = format!("{load_seconds:.1}"),
-                    rows_per_sec = format!("{rows_per_sec:.0}"),
-                    "Bootstrap load complete: base dataset ingested by SUT; streaming mutations"
-                );
-            }
-            RowCountConvergence::Interrupted => {
-                etl_pipeline.cancel();
-                anyhow::bail!("Interrupted during bootstrap snapshot validation");
-            }
-            RowCountConvergence::TimedOut => {
-                etl_pipeline.cancel();
-                anyhow::bail!("Bootstrap snapshot validation timed out");
+            let expected_results =
+                load_checkpoint_results(cp_dir, 0, &query_names).unwrap_or_default();
+            let expected_row_counts = load_checkpoint_row_counts(cp_dir, 0).unwrap_or_default();
+            let pause_time = std::time::Instant::now();
+            match run_checkpoint_validation(
+                &validation_executor,
+                &queries,
+                &expected_results,
+                &expected_row_counts,
+                0,
+                common_args.concurrency,
+                validation_period,
+                validation_timeout,
+                pause_time,
+                query_catalog_namespace.as_deref(),
+                &shutdown,
+            )
+            .await
+            {
+                CheckpointValidationResult::Converged { .. } => {}
+                CheckpointValidationResult::Interrupted => {
+                    etl_pipeline.cancel();
+                    anyhow::bail!("Interrupted during bootstrap snapshot (cp0) validation");
+                }
+                CheckpointValidationResult::TimedOut => {
+                    etl_pipeline.cancel();
+                    anyhow::bail!("Bootstrap snapshot (cp0) validation timed out");
+                }
             }
         }
-        // 2) Pause every N mutation steps so we can validate periodically.
-        etl_pipeline.set_batch_budget(BOOTSTRAP_VALIDATION_INTERVAL_STEPS);
+        // Bootstrap load metric = activate + initial snapshot (until cp0 validated).
+        let load_seconds = bootstrap_activate_start
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+        let rows_per_sec = if load_seconds > 0.0 {
+            base_rows as f64 / load_seconds
+        } else {
+            0.0
+        };
+        bootstrap_load = Some((load_seconds, rows_per_sec));
+        tracing::info!(
+            base_rows,
+            load_seconds = format!("{load_seconds:.1}"),
+            rows_per_sec = format!("{rows_per_sec:.0}"),
+            "Bootstrap load complete: base validated; streaming mutations"
+        );
+        // 2) Mutation phase: pause every `checkpoint_steps` to validate cp1+.
+        if let Some(steps) = checkpoint_steps {
+            etl_pipeline.set_batch_budget(steps);
+        }
         etl_pipeline.continue_pipeline()?;
     } else if let Some(steps) = checkpoint_steps {
         tracing::info!(checkpoint_steps = steps, "Using checkpoint-aware ETL mode");
@@ -1252,40 +1206,9 @@ pub(crate) async fn run(
                             "ETL pipeline paused at checkpoint boundary"
                         );
 
-                        // --- Bootstrap periodic data validation ---
-                        // Wait for the SUT to catch up to the rows written so far
-                        // (inserts - deletes), validating replication correctness at
-                        // each mutation-phase pause.
-                        if bootstrap {
-                            let expected = etl_pipeline.expected_row_counts();
-                            match await_row_count_convergence(
-                                &validation_executor,
-                                &expected,
-                                &format!("Bootstrap validation (checkpoint {checkpoint_idx})"),
-                                validation_period,
-                                validation_timeout,
-                                query_catalog_namespace.as_deref(),
-                                &shutdown_token,
-                            )
-                            .await
-                            {
-                                RowCountConvergence::Converged { e2e_latency_ms } => {
-                                    checkpoint_e2e_latency_samples.push(e2e_latency_ms);
-                                }
-                                RowCountConvergence::Interrupted => {
-                                    shutdown_token.cancel();
-                                    etl_pipeline.cancel();
-                                    break Some(RunOutcome::Cancelled);
-                                }
-                                RowCountConvergence::TimedOut => {
-                                    shutdown_token.cancel();
-                                    etl_pipeline.cancel();
-                                    break Some(RunOutcome::ValidationTimeout);
-                                }
-                            }
-                        }
-
                         // --- Checkpoint validation window ---
+                        // For bootstrap, cp1+ (mutation checkpoints) are validated
+                        // here against the same oracle as normal runs.
                         if has_checkpoint_validation
                             && let Some(cp_dir) = checkpoint_dir
                         {
@@ -1364,38 +1287,9 @@ pub(crate) async fn run(
                     PipelineState::Stopped(StopReason::Completed) => {
                         tracing::info!("ETL pipeline completed");
 
-                        // --- Final bootstrap data validation ---
-                        // The last mutation chunk completes via Stopped (not
-                        // Paused), so validate the final state here to confirm the
-                        // SUT has fully ingested all mutations.
-                        if bootstrap {
-                            let expected = etl_pipeline.expected_row_counts();
-                            match await_row_count_convergence(
-                                &validation_executor,
-                                &expected,
-                                "Bootstrap final validation",
-                                validation_period,
-                                validation_timeout,
-                                query_catalog_namespace.as_deref(),
-                                &shutdown_token,
-                            )
-                            .await
-                            {
-                                RowCountConvergence::Converged { e2e_latency_ms } => {
-                                    checkpoint_e2e_latency_samples.push(e2e_latency_ms);
-                                }
-                                RowCountConvergence::Interrupted => {
-                                    shutdown_token.cancel();
-                                    break Some(RunOutcome::Cancelled);
-                                }
-                                RowCountConvergence::TimedOut => {
-                                    shutdown_token.cancel();
-                                    break Some(RunOutcome::ValidationTimeout);
-                                }
-                            }
-                        }
-
                         // --- Final checkpoint validation ---
+                        // For bootstrap, the final mutation checkpoint is validated
+                        // here too (same oracle path as normal runs).
                         // The pipeline transitions directly from Running →
                         // Completed after the last batch, so the final
                         // checkpoint boundary is never seen as a Paused state.

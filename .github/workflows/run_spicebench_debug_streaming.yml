@@ -171,7 +171,7 @@ on:
         default: true
         type: boolean
       bootstrap:
-        description: 'Bootstrap mode: seed the base into the source, snapshot it, then stream pure mutations (requires a bootstrap-generated dataset). Uses row-count data validation instead of checkpoints.'
+        description: 'Bootstrap mode: seed the base into the source, snapshot it (validated against checkpoint 0), then stream pure mutations validated per checkpoint. Requires a bootstrap-generated dataset (with checkpoints).'
         required: false
         default: false
         type: boolean
@@ -234,9 +234,9 @@ jobs:
           ETL_SINK: adbc
           SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
           BOOTSTRAP: ${{ inputs.bootstrap || 'false' }}
-          # Bootstrap uses intrinsic row-count data validation (no checkpoints), so
-          # checkpoint-query validation is always off for bootstrap runs.
-          VALIDATE_CHECKPOINT_RESULTS: ${{ (inputs.bootstrap != true && inputs.validate_results != false) && 'true' || 'false' }}
+          # Bootstrap datasets have checkpoints too (cp0 = full base, then per
+          # mutation interval), so checkpoint validation applies like normal runs.
+          VALIDATE_CHECKPOINT_RESULTS: ${{ inputs.validate_results != false && 'true' || 'false' }}
           CHECKPOINT_VALIDATION_TIMEOUT: ${{ inputs.checkpoint_validation_timeout || '3600' }}
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}

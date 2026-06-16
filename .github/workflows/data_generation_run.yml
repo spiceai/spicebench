@@ -208,18 +208,16 @@ jobs:
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           CHECKPOINT_INTERVAL_STEPS: ${{ inputs.checkpoint_interval_steps || github.event.inputs.checkpoint_interval_steps || '100' }}
-          BOOTSTRAP: ${{ inputs.bootstrap || github.event.inputs.bootstrap || 'false' }}
           MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
           AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           RUST_LOG: info
         run: |
-          # Checkpoint generation for the bootstrap (base + mutations) dataset is not
-          # yet supported; skip it. Run the bootstrap benchmark with validation off.
-          if [ "${BOOTSTRAP}" = "true" ]; then
-            echo "Bootstrap dataset: skipping checkpoint generation (not yet supported)"
-            exit 0
-          fi
+          # Bootstrap datasets also get checkpoints: the checkpointer replays the
+          # base then the mutation steps (it reads the bootstrap layout from
+          # version.json), producing checkpoint 0 = full base and one checkpoint per
+          # CHECKPOINT_INTERVAL_STEPS mutation steps. CHECKPOINT_INTERVAL_STEPS is the
+          # mutation checkpoint cadence the run must use (e.g. 2).
 
           VERSION=$(python3 - <<'PY'
           import os

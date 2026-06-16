@@ -35,6 +35,9 @@ pub struct VersionConfig {
     pub dataset_type: String,
     pub update_ratio: f64,
     pub delete_ratio: f64,
+    pub bootstrap: bool,
+    pub num_mutation_steps: u16,
+    pub churn_fraction: f64,
 }
 
 pub struct DataGenerator {
@@ -204,6 +207,9 @@ impl DataGenerator {
             mutations: MutationsMetadata {
                 update_ratio: self.version_config.update_ratio,
                 delete_ratio: self.version_config.delete_ratio,
+                bootstrap: self.version_config.bootstrap,
+                num_mutation_steps: self.version_config.num_mutation_steps,
+                churn_fraction: self.version_config.churn_fraction,
             },
             tables: tables_metadata,
         };
@@ -460,6 +466,9 @@ mod tests {
                 dataset_type: "mock".to_string(),
                 update_ratio: 0.0,
                 delete_ratio: 0.0,
+                bootstrap: false,
+                num_mutation_steps: 0,
+                churn_fraction: 0.0,
             },
         );
 
