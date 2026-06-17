@@ -313,7 +313,6 @@ jobs:
 
           # Common docker opts
           ADAPTER_DOCKER_OPTS="run -i"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -v ${{ github.workspace }}/scenarios:/spicebench-scenarios:ro -e SPIDAPTER_SCENARIO_BASE_PATH=/spicebench-scenarios"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=${SYSTEM_UNDER_TEST}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CHANNEL=${SPIDAPTER_CHANNEL}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICE_ACCELERATION=${ACCELERATION}"
