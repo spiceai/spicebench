@@ -283,6 +283,12 @@ jobs:
 
           export SPICEBENCH_ADBC_UPDATE_STRATEGY=${{ inputs.adbc_update_strategy || 'bulk_ingest_upsert' }}
           export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
+          # ADBC sink (spidapter -> Cayenne): writes are heavyweight, so don't
+          # split a segment into many small writes — that floods the executor
+          # with tiny ingests (the prior crash). One write per segment, 1 in-flight
+          # write per table, no global ceiling (tables ingest concurrently).
+          export SPICEBENCH_SINK_CHUNK_ROWS=0
+          export SPICEBENCH_SINK_PARALLELISM_PER_TABLE=1
           if [ "${SPICEBENCH_ADBC_UPDATE_STRATEGY}" = "bulk_ingest_upsert" ]; then
             export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
           else

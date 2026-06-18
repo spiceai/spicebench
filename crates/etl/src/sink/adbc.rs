@@ -172,6 +172,8 @@ pub struct AdbcSink {
     target_db_catalog: Option<String>,
     target_db_schema: Option<String>,
     row_counts: RwLock<HashMap<String, AtomicU64>>,
+    /// Number of `Sink::write` calls currently in flight across all tables.
+    in_flight: Arc<AtomicU64>,
     bulk_ingest_streams: RwLock<HashMap<String, TableBulkIngestStream>>,
     /// Character used to quote SQL identifiers (e.g. '"' for ANSI, '`' for Databricks).
     identifier_quote_char: char,
@@ -287,6 +289,7 @@ impl AdbcSink {
             target_db_catalog,
             target_db_schema,
             row_counts: RwLock::new(HashMap::new()),
+            in_flight: Arc::new(AtomicU64::new(0)),
             bulk_ingest_streams: RwLock::new(HashMap::new()),
             identifier_quote_char,
             bigint_suffix,
@@ -1181,7 +1184,7 @@ impl AdbcSink {
             start = end;
         }
 
-        tracing::debug!(
+        tracing::trace!(
             table = table_ident,
             rows = num_rows,
             statements = statements.len(),
@@ -1286,7 +1289,7 @@ impl AdbcSink {
             .await;
 
         merge_result?;
-        tracing::debug!(
+        tracing::trace!(
             table = %table_name,
             rows,
             elapsed_ms = fn_start.elapsed().as_millis(),
@@ -1366,22 +1369,33 @@ impl Sink for AdbcSink {
         _partition_columns: Vec<String>,
     ) -> anyhow::Result<()> {
         let write_start = Instant::now();
+        let rows = batch.num_rows();
+        let op_label = match &op {
+            InsertOp::Insert => "insert",
+            InsertOp::Update { .. } => "update",
+            InsertOp::Delete { .. } => "delete",
+        };
+
+        let in_flight = self.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::trace!(table = %table_name, op = %op_label, rows, in_flight, "Sink::write started");
+
         if batch.num_rows() == 0 {
+            let in_flight = self.in_flight.fetch_sub(1, Ordering::Relaxed) - 1;
+            let elapsed = write_start.elapsed();
             tracing::debug!(
                 table = %table_name,
-                op = "empty",
-                elapsed_ms = write_start.elapsed().as_millis(),
+                op = %op_label,
+                rows = 0,
+                rows_total = 0,
+                in_flight,
+                elapsed_ms = elapsed.as_millis(),
+                rows_per_sec = "0.0",
                 "Sink::write completed"
             );
             return Ok(());
         }
 
         let rows_current = batch.num_rows() as u64;
-        let op_label = match &op {
-            InsertOp::Insert => "insert",
-            InsertOp::Update { .. } => "update",
-            InsertOp::Delete { .. } => "delete",
-        };
 
         if self.reuse_bulk_ingest_streams {
             let should_flush = match &op {
@@ -1431,7 +1445,7 @@ impl Sink for AdbcSink {
                 } else {
                     0.0
                 };
-                tracing::debug!(
+                tracing::trace!(
                     table = %table_name,
                     rows = batch.num_rows(),
                     num_statements,
@@ -1514,7 +1528,7 @@ impl Sink for AdbcSink {
                 } else {
                     0.0
                 };
-                tracing::debug!(
+                tracing::trace!(
                     table = %table_name,
                     rows = num_rows,
                     strategy = ?self.update_strategy,
@@ -1542,12 +1556,17 @@ impl Sink for AdbcSink {
             Self::apply_row_count_delta(counter, op_label, rows_current)
         };
 
+        let in_flight = self.in_flight.fetch_sub(1, Ordering::Relaxed) - 1;
+        let elapsed = write_start.elapsed();
+        let rows_per_sec = rows_current as f64 / elapsed.as_secs_f64().max(f64::EPSILON);
         tracing::debug!(
             table = %table_name,
-            op = op_label,
+            op = %op_label,
             rows = rows_current,
-            rows_total = rows_total,
-            elapsed_ms = write_start.elapsed().as_millis(),
+            rows_total,
+            in_flight,
+            elapsed_ms = elapsed.as_millis(),
+            rows_per_sec = format!("{rows_per_sec:.1}"),
             "Sink::write completed"
         );
 
