@@ -69,6 +69,7 @@ fn target_batch_rows() -> usize {
 const SINK_CHUNK_ROWS_ENV: &str = "SPICEBENCH_SINK_CHUNK_ROWS";
 const SINK_PARALLELISM_ENV: &str = "SPICEBENCH_SINK_PARALLELISM";
 const SINK_PARALLELISM_PER_TABLE_ENV: &str = "SPICEBENCH_SINK_PARALLELISM_PER_TABLE";
+const SINK_MAX_RECORDS_PER_SEC_ENV: &str = "SPICEBENCH_SINK_MAX_RECORDS_PER_SEC";
 
 /// Chunk size for splitting large segments into separate sink.write() calls.
 ///
@@ -104,6 +105,18 @@ fn sink_parallelism_per_table() -> usize {
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&v| v > 0)
         .unwrap_or(1)
+}
+
+/// Global ceiling on records written to the sink per second, summed across *all*
+/// tables and operation types (insert/update/delete).
+///
+/// Unset or `0` means "no rate limit". A positive value (e.g. `10000`) paces the
+/// aggregate write-dispatch rate to that many records/sec.
+fn sink_max_records_per_sec() -> Option<u64> {
+    std::env::var(SINK_MAX_RECORDS_PER_SEC_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
 }
 
 /// Maximum number of concurrent source logical-batch reads per ETL table task.
@@ -864,6 +877,7 @@ async fn write_segments_for_batch(
     output_schema: &SchemaRef,
     partition_columns: &[String],
     global_sink_semaphore: Arc<tokio::sync::Semaphore>,
+    rate_limiter: Option<Arc<util::RateLimiter>>,
     ingest_rows_total: Arc<AtomicU64>,
 ) -> Result<(), String> {
     let table_name_owned = table_name.to_string();
@@ -924,11 +938,17 @@ async fn write_segments_for_batch(
             let output_schema = Arc::clone(output_schema);
             let table_sem = Arc::clone(&table_sink_semaphore);
             let global_sem = Arc::clone(&global_sink_semaphore);
+            let rate_limiter = rate_limiter.clone();
             let ingest_rows_total = Arc::clone(&ingest_rows_total);
             let chunk_op = op.clone();
 
             op_set.spawn(async move {
                 let chunk_rows = chunk_batch.num_rows();
+                // Rate gate first (paces dispatch independent of concurrency),
+                // then per-table and global concurrency permits.
+                if let Some(limiter) = &rate_limiter {
+                    limiter.acquire(chunk_rows).await;
+                }
                 let output_batch = append_created_at(&chunk_batch, &output_schema, batch_ts)
                     .map_err(|e| {
                         format!("append __created_at to {table_name} batch {batch_id}: {e}")
@@ -1362,13 +1382,16 @@ impl ETLPipeline {
         let _sp = sink_parallelism();
         let _spt = sink_parallelism_per_table();
         let _sc = sink_chunk_rows();
+        let _rps = sink_max_records_per_sec();
         info!(
             sink_parallelism_global = _sp,
             sink_parallelism_per_table = _spt,
             sink_chunk_rows = _sc,
+            sink_max_records_per_sec = _rps.map(|v| v as i64).unwrap_or(-1),
             "ETL init sink semaphore"
         );
         let init_sink_semaphore = Arc::new(tokio::sync::Semaphore::new(_sp));
+        let init_rate_limiter = _rps.map(|r| Arc::new(util::RateLimiter::new(r)));
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
         for (table_name, first_batch_id) in init_batches {
             let source = Arc::clone(&self.data_storage);
@@ -1376,6 +1399,7 @@ impl ETLPipeline {
             let last_created_at = Arc::clone(&self.last_created_at_us);
             let mutations = self.mutations.clone();
             let sink_semaphore = Arc::clone(&init_sink_semaphore);
+            let rate_limiter = init_rate_limiter.clone();
             let ingest_rows_total = Arc::clone(&self.ingest_rows_total);
             let partition_columns = table_partition_columns
                 .get(&table_name)
@@ -1416,6 +1440,7 @@ impl ETLPipeline {
                         &output_schema,
                         &partition_columns,
                         Arc::clone(&sink_semaphore),
+                        rate_limiter.clone(),
                         Arc::clone(&ingest_rows_total),
                     )
                     .await?;
@@ -1696,13 +1721,16 @@ async fn run_pipeline(
     let _sp = sink_parallelism();
     let _spt = sink_parallelism_per_table();
     let _sc = sink_chunk_rows();
+    let _rps = sink_max_records_per_sec();
     info!(
         sink_parallelism_global = _sp,
         sink_parallelism_per_table = _spt,
         sink_chunk_rows = _sc,
+        sink_max_records_per_sec = _rps.map(|v| v as i64).unwrap_or(-1),
         "ETL pipeline sink semaphore"
     );
     let sink_semaphore = Arc::new(tokio::sync::Semaphore::new(_sp));
+    let rate_limiter = _rps.map(|r| Arc::new(util::RateLimiter::new(r)));
     // Take a snapshot of total counts for logging.
     let (total_steps, total_batches) = {
         let state = work_state.lock().expect("work_state lock poisoned");
@@ -1909,6 +1937,7 @@ async fn run_pipeline(
             let sink_write_samples_ms = StdArc::clone(&sink_write_samples_ms);
             let mutations = mutations.clone();
             let sink_semaphore = Arc::clone(&sink_semaphore);
+            let rate_limiter = rate_limiter.clone();
             let ingest_rows_total = Arc::clone(&ingest_rows_total);
             let partition_columns = table_partition_columns
                 .get(&table_name)
@@ -2005,6 +2034,7 @@ async fn run_pipeline(
                         &output_schema,
                         &partition_columns,
                         Arc::clone(&sink_semaphore),
+                        rate_limiter.clone(),
                         Arc::clone(&ingest_rows_total),
                     )
                     .await

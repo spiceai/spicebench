@@ -161,6 +161,18 @@ pub struct RunArgs {
     #[arg(long)]
     pub(crate) etl_endpoint: Option<String>,
 
+    /// Path to a locally generated data archive (e.g. from `spicebench generate --output-archive`).
+    /// When set, skips the S3 download and uses this local .tar.zst file directly.
+    /// --etl-bucket and --etl-endpoint are not required when this is set.
+    #[arg(long)]
+    pub(crate) etl_source_archive: Option<String>,
+
+    /// Path to a local directory containing pre-generated checkpoints (checkpoints.json +
+    /// checkpoints/ sub-tree). When set, skips the S3 checkpoint download.
+    /// Combine with --validate-results for fully offline validation.
+    #[arg(long)]
+    pub(crate) checkpoint_local_dir: Option<String>,
+
     /// Table format propagated through ETL dataset metadata and adapters.
     #[arg(long, value_enum, default_value = "parquet")]
     pub(crate) table_format: TableFormat,
