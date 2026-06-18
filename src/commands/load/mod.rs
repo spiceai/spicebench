@@ -56,6 +56,14 @@ struct SutInstruments {
     ingestion_bytes_total: Gauge<u64>,
     ingestion_rows_per_sec: Gauge<f64>,
     active_connections: Gauge<u64>,
+    // CDC replication: per-table gauges of the cumulative source counters, plus
+    // a derived per-scrape source-wait% gauge. Labeled with a `table` dimension.
+    cdc_source_wait_ms: Gauge<f64>,
+    cdc_apply_ms: Gauge<f64>,
+    cdc_linger_ms: Gauge<f64>,
+    cdc_rows_applied: Gauge<u64>,
+    cdc_bytes_applied: Gauge<u64>,
+    cdc_source_wait_pct: Gauge<f64>,
 }
 
 fn run_metric_attributes(
@@ -176,6 +184,43 @@ fn record_sut_metrics(
         .record(concurrency, attributes);
     if let Some(v) = response.resource.num_compute_nodes {
         crate::metrics::NUM_COMPUTE_NODES.record(v, attributes);
+    }
+
+    // CDC replication metrics: emit per-table gauges with a `table` dimension
+    // appended to the run attributes. The cumulative counters are recorded
+    // as-is (the metrics backend deltas them for rates); the source-wait% is
+    // derived per table as a ratio-of-sums so idle/low-volume tables that are
+    // ~100% wait don't distort it — a table with negligible absolute time
+    // contributes a negligible verdict.
+    if let Some(cdc) = &response.cdc_replication {
+        for t in &cdc.per_table {
+            let mut table_attrs = attributes.to_vec();
+            table_attrs.push(KeyValue::new("table", t.table.clone()));
+            if let Some(v) = t.source_wait_ms {
+                instruments.cdc_source_wait_ms.record(v, &table_attrs);
+            }
+            if let Some(v) = t.apply_ms {
+                instruments.cdc_apply_ms.record(v, &table_attrs);
+            }
+            if let Some(v) = t.linger_ms {
+                instruments.cdc_linger_ms.record(v, &table_attrs);
+            }
+            if let Some(v) = t.rows_applied {
+                instruments.cdc_rows_applied.record(v, &table_attrs);
+            }
+            if let Some(v) = t.bytes_applied {
+                instruments.cdc_bytes_applied.record(v, &table_attrs);
+            }
+            let wait = t.source_wait_ms.unwrap_or(0.0);
+            let apply = t.apply_ms.unwrap_or(0.0);
+            let linger = t.linger_ms.unwrap_or(0.0);
+            let total = wait + apply + linger;
+            if total > 0.0 {
+                instruments
+                    .cdc_source_wait_pct
+                    .record(100.0 * wait / total, &table_attrs);
+            }
+        }
     }
 }
 
@@ -922,6 +967,30 @@ pub(crate) async fn run(
             active_connections: m
                 .u64_gauge("active_connections")
                 .with_description("Number of concurrent query clients the benchmark is driving.")
+                .build(),
+            cdc_source_wait_ms: m
+                .f64_gauge("sut_cdc_source_wait_ms")
+                .with_description("Cumulative ms the CDC consumer blocked waiting for the source to deliver changes (per table).")
+                .build(),
+            cdc_apply_ms: m
+                .f64_gauge("sut_cdc_apply_ms")
+                .with_description("Cumulative ms spent applying CDC changes to the accelerator (per table).")
+                .build(),
+            cdc_linger_ms: m
+                .f64_gauge("sut_cdc_linger_ms")
+                .with_description("Cumulative ms spent in the CDC coalesce/linger window (per table).")
+                .build(),
+            cdc_rows_applied: m
+                .u64_gauge("sut_cdc_rows_applied")
+                .with_description("Cumulative row-level CDC records applied (per table).")
+                .build(),
+            cdc_bytes_applied: m
+                .u64_gauge("sut_cdc_bytes_applied")
+                .with_description("Cumulative bytes of CDC changes applied (per table).")
+                .build(),
+            cdc_source_wait_pct: m
+                .f64_gauge("sut_cdc_source_wait_pct")
+                .with_description("Source-wait as a share of total CDC time (per table): wait/(wait+apply+linger). High = source-bound, low = apply-bound.")
                 .build(),
         };
         let sut_attributes = Arc::new(std::sync::RwLock::new(metric_attributes.clone()));
