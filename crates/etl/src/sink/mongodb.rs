@@ -17,6 +17,7 @@ limitations under the License.
 //! Native MongoDB sink using the mongodb crate directly.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -35,6 +36,8 @@ pub struct MongoDbSink {
     primary_key_columns: HashMap<String, Vec<String>>,
     /// Running row counts per table, updated after each write.
     row_counts: Arc<Mutex<HashMap<String, u64>>>,
+    /// Number of sink.write() calls currently in flight across all tables.
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl MongoDbSink {
@@ -42,19 +45,26 @@ impl MongoDbSink {
         uri: &str,
         primary_key_columns: HashMap<String, Vec<String>>,
     ) -> anyhow::Result<Self> {
-        let options = mongodb::options::ClientOptions::parse(uri)
+        let mut options = mongodb::options::ClientOptions::parse(uri)
             .await
             .map_err(|e| anyhow::anyhow!("MongoDB URI parse error: {e}"))?;
         let db_name = options
             .default_database
             .clone()
             .unwrap_or_else(|| "spicebench".to_string());
+        options.max_pool_size = Some(200);
+        options.min_pool_size = Some(64);
+        options.max_connecting = Some(16);
         let client = mongodb::Client::with_options(options)
             .map_err(|e| anyhow::anyhow!("MongoDB client creation error: {e}"))?;
+
+        tracing::info!("MongoDB sink configured");
+
         Ok(Self {
             db: client.database(&db_name),
             primary_key_columns,
             row_counts: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -64,13 +74,11 @@ impl MongoDbSink {
         match op_label {
             "insert" => *count = count.saturating_add(rows),
             "delete" => *count = count.saturating_sub(rows),
-            _ => {} // update: row count unchanged
+            _ => {}
         }
         *count
     }
 
-    /// Compute the `_id` for a row as a colon-joined string of primary key values.
-    /// For a single key this is just the value; for compound keys it's "v1:v2:...".
     fn compute_id(
         &self,
         table_name: &str,
@@ -82,12 +90,9 @@ impl MongoDbSink {
             .get(table_name)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-
         if pk_cols.is_empty() {
-            // No PK configured — let MongoDB auto-generate _id
             return Ok(Bson::Null);
         }
-
         let schema = batch.schema();
         let parts: Vec<String> = pk_cols
             .iter()
@@ -99,22 +104,11 @@ impl MongoDbSink {
                 Ok(bson_to_string(&arrow_col_to_bson(col.as_ref(), row)))
             })
             .collect::<anyhow::Result<_>>()?;
-
         Ok(if parts.len() == 1 {
             Bson::String(parts.into_iter().next().unwrap())
         } else {
             Bson::String(parts.join(":"))
         })
-    }
-}
-
-fn bson_to_string(b: &Bson) -> String {
-    match b {
-        Bson::Int32(v) => v.to_string(),
-        Bson::Int64(v) => v.to_string(),
-        Bson::Double(v) => v.to_string(),
-        Bson::String(s) => s.clone(),
-        other => other.to_string(),
     }
 }
 
@@ -136,12 +130,15 @@ impl Sink for MongoDbSink {
             InsertOp::Delete { .. } => "delete",
         };
 
+        let in_flight = self.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::trace!(table = %table_name, op = %op_label, rows, in_flight, "Sink::write started");
+
         match op {
             InsertOp::Insert => {
                 let collection = self.db.collection::<Document>(table_name);
                 let schema = batch.schema();
-                let mut docs = Vec::with_capacity(batch.num_rows());
-                for row in 0..batch.num_rows() {
+                let mut docs = Vec::with_capacity(rows);
+                for row in 0..rows {
                     let mut doc = Document::new();
                     let id = self.compute_id(table_name, &batch, row)?;
                     if id != Bson::Null {
@@ -156,21 +153,41 @@ impl Sink for MongoDbSink {
                     docs.push(doc);
                 }
                 if !docs.is_empty() {
-                    collection.insert_many(&docs).await.map_err(|e| {
-                        anyhow::anyhow!("MongoDB insert_many failed for '{table_name}': {e}")
-                    })?;
+                    tracing::trace!(table = %table_name, rows, "insert_many starting");
+                    let t = Instant::now();
+                    // ordered=false: continue past duplicates; treat E11000 as non-fatal
+                    // (the changes dataset can contain the same _id in both the initial
+                    // snapshot and the first change batch — first write wins).
+                    if let Err(e) = collection.insert_many(&docs).ordered(false).await {
+                        let all_duplicates = matches!(
+                            e.kind.as_ref(),
+                            mongodb::error::ErrorKind::InsertMany(ime)
+                                if ime.write_errors.as_ref().map_or(false, |errs| {
+                                    !errs.is_empty() && errs.iter().all(|we| we.code == 11000)
+                                })
+                        );
+                        if !all_duplicates {
+                            return Err(anyhow::anyhow!(
+                                "MongoDB insert_many failed for '{table_name}': {e}"
+                            ));
+                        }
+                        let dup_count = match e.kind.as_ref() {
+                            mongodb::error::ErrorKind::InsertMany(ime) => {
+                                ime.write_errors.as_ref().map_or(0, |v| v.len())
+                            }
+                            _ => 0,
+                        };
+                        tracing::debug!(table = %table_name, dup_count, "insert_many: skipped duplicate _id(s)");
+                    }
+                    tracing::trace!(table = %table_name, rows, elapsed_ms = t.elapsed().as_millis(), "insert_many done");
                 }
             }
             InsertOp::Update { .. } => {
-                // Single round trip using Client::bulk_write (requires MongoDB 8.0+).
-                // Each row becomes a ReplaceOne(upsert=true) model, so the entire batch
-                // lands in one server round trip.
                 let collection = self.db.collection::<Document>(table_name);
                 let namespace = collection.namespace();
                 let schema = batch.schema();
-
-                let mut models: Vec<WriteModel> = Vec::with_capacity(batch.num_rows());
-                for row in 0..batch.num_rows() {
+                let mut models: Vec<WriteModel> = Vec::with_capacity(rows);
+                for row in 0..rows {
                     let id = self.compute_id(table_name, &batch, row)?;
                     let mut doc = Document::new();
                     if id != Bson::Null {
@@ -182,64 +199,79 @@ impl Sink for MongoDbSink {
                             doc.insert(field.name().clone(), arrow_col_to_bson(col.as_ref(), row));
                         }
                     }
-                    let filter = mongodb::bson::doc! { "_id": id };
                     models.push(
                         ReplaceOneModel::builder()
                             .namespace(namespace.clone())
-                            .filter(filter)
+                            .filter(mongodb::bson::doc! { "_id": id })
                             .replacement(doc)
                             .upsert(true)
                             .build()
                             .into(),
                     );
                 }
-
                 if !models.is_empty() {
-                    self.db.client().bulk_write(models).await.map_err(|e| {
-                        anyhow::anyhow!(
-                            "MongoDB bulk_write (update) failed for '{table_name}': {e}"
-                        )
-                    })?;
+                    tracing::trace!(table = %table_name, rows, "bulk_write starting");
+                    let t = Instant::now();
+                    self.db
+                        .client()
+                        .bulk_write(models)
+                        .ordered(false)
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "MongoDB bulk_write (update) failed for '{table_name}': {e}"
+                            )
+                        })?;
+                    tracing::trace!(table = %table_name, rows, elapsed_ms = t.elapsed().as_millis(), "bulk_write done");
                 }
             }
             InsertOp::Delete { .. } => {
-                // Batch all deletes into a single delete_many($in) — 1 round trip.
                 let collection = self.db.collection::<Document>(table_name);
-
-                let mut ids = Vec::with_capacity(batch.num_rows());
-                for row in 0..batch.num_rows() {
+                let mut ids = Vec::with_capacity(rows);
+                for row in 0..rows {
                     let id = self.compute_id(table_name, &batch, row)?;
                     if id != Bson::Null {
                         ids.push(id);
                     }
                 }
                 if !ids.is_empty() {
+                    tracing::trace!(table = %table_name, rows, "delete_many starting");
+                    let t = Instant::now();
                     let filter = mongodb::bson::doc! { "_id": { "$in": ids } };
                     collection.delete_many(filter).await.map_err(|e| {
                         anyhow::anyhow!("MongoDB delete_many failed for '{table_name}': {e}")
                     })?;
+                    tracing::trace!(table = %table_name, rows, elapsed_ms = t.elapsed().as_millis(), "delete_many done");
                 }
             }
         }
 
+        let in_flight = self.in_flight.fetch_sub(1, Ordering::Relaxed) - 1;
         let rows_total = self.update_row_count(table_name, op_label, rows as u64);
         let elapsed = write_start.elapsed();
-        let rows_per_sec = if elapsed.as_secs_f64() > 0.0 {
-            rows as f64 / elapsed.as_secs_f64()
-        } else {
-            0.0
-        };
+        let rows_per_sec = rows as f64 / elapsed.as_secs_f64().max(f64::EPSILON);
         tracing::debug!(
             table = %table_name,
             op = %op_label,
             rows,
             rows_total,
+            in_flight,
             elapsed_ms = elapsed.as_millis(),
             rows_per_sec = format!("{rows_per_sec:.1}"),
             "Sink::write completed"
         );
 
         Ok(())
+    }
+}
+
+fn bson_to_string(b: &Bson) -> String {
+    match b {
+        Bson::Int32(v) => v.to_string(),
+        Bson::Int64(v) => v.to_string(),
+        Bson::Double(v) => v.to_string(),
+        Bson::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 

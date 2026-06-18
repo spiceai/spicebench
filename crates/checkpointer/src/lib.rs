@@ -35,6 +35,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use object_store::aws::AmazonS3Builder;
+use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, PutPayload};
 use serde::{Deserialize, Serialize};
@@ -105,6 +106,84 @@ impl CheckpointStore {
         Ok(Self {
             store,
             prefix: prefix.to_owned(),
+        })
+    }
+
+    /// Build a manifest from an existing local checkpoint directory and write
+    /// `checkpoints.json` directly into it. Used when S3 upload is skipped.
+    ///
+    /// The directory is expected to have the layout produced by the checkpointer:
+    /// `{dir}/{checkpoint_idx}/{query_idx}.parquet`
+    pub fn write_local_manifest(
+        scenario: &str,
+        checkpoint_dir: &std::path::Path,
+        checkpoint_interval_steps: usize,
+    ) -> anyhow::Result<()> {
+        let mut checkpoint_indexes: Vec<usize> = Vec::new();
+        let mut query_indexes_set: std::collections::BTreeSet<usize> =
+            std::collections::BTreeSet::new();
+
+        let mut checkpoint_dirs: Vec<_> = std::fs::read_dir(checkpoint_dir)?
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_dir())
+            .collect();
+        checkpoint_dirs.sort_by_key(|e| e.file_name());
+
+        for checkpoint_entry in &checkpoint_dirs {
+            let checkpoint_idx: usize = checkpoint_entry
+                .file_name()
+                .to_string_lossy()
+                .parse()
+                .unwrap_or(usize::MAX);
+            if checkpoint_idx == usize::MAX {
+                continue;
+            }
+
+            let query_files: Vec<_> = std::fs::read_dir(checkpoint_entry.path())?
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "parquet"))
+                .collect();
+
+            for qf in &query_files {
+                let q_idx: usize = qf
+                    .path()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(usize::MAX);
+                if q_idx != usize::MAX {
+                    query_indexes_set.insert(q_idx);
+                }
+            }
+            checkpoint_indexes.push(checkpoint_idx);
+        }
+
+        let mut manifest = CheckpointManifest::default();
+        manifest.scenarios.insert(
+            scenario.to_owned(),
+            ScenarioCheckpoint {
+                checkpoint_indexes,
+                query_indexes: query_indexes_set.into_iter().collect(),
+                checkpoint_interval_steps,
+            },
+        );
+
+        let manifest_path = checkpoint_dir.join("checkpoints.json");
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+        Ok(())
+    }
+
+    /// Build a `CheckpointStore` backed by a local directory.
+    ///
+    /// `root` is the directory that contains `checkpoints.json` and the
+    /// `checkpoints/` sub-tree — i.e. the extracted version directory.
+    /// `prefix` should be left empty when the root already points directly
+    /// at the version directory.
+    pub fn new_local(root: &std::path::Path) -> anyhow::Result<Self> {
+        let store = Arc::new(LocalFileSystem::new_with_prefix(root)?);
+        Ok(Self {
+            store,
+            prefix: String::new(),
         })
     }
 

@@ -23,7 +23,9 @@ use std::{
 pub use backoff::Error as RetryError;
 pub use backoff::ExponentialBackoff;
 pub use backoff::future::retry;
+mod rate_limiter;
 mod tracing_util;
+pub use rate_limiter::RateLimiter;
 use tokio::{sync::oneshot, time::Instant};
 pub use tracing_util::in_tracing_context;
 
