@@ -135,6 +135,7 @@ clap.workspace = true
 data-generation = { path = "crates/data-generation" }
 etl = { path = "crates/etl", features = ["dynamodb", "mongodb"] }
 futures.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 system-adapter-protocol = { path = "crates/system-adapter-protocol" }

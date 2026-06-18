@@ -52,6 +52,12 @@ on:
       disable_teardown:
         type: boolean
         default: false
+      run_tag:
+        type: string
+        default: ''
+      validate_results:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       environment:
@@ -69,8 +75,8 @@ on:
         type: choice
         options:
           - postgres-wal
-          - dynamodb-streams
           - mongodb-streams
+          - dynamodb-streams
       acceleration:
         description: 'Acceleration engine'
         required: true
@@ -151,6 +157,16 @@ on:
         required: false
         default: false
         type: boolean
+      run_tag:
+        description: 'Optional suffix appended to the adapter_name metric label (e.g. "analyze-fix"). Used to differentiate runs in Grafana.'
+        required: false
+        default: ''
+        type: string
+      validate_results:
+        description: 'Validate checkpoint results (disable to measure raw ETL throughput without waiting for spiced convergence)'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   run-spicebench:
@@ -197,6 +213,7 @@ jobs:
           SPICE_CLOUD_API_URL: ${{ inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SYSTEM_UNDER_TEST: ${{ inputs.system_under_test }}
           SYSTEM_ADAPTER: ${{ inputs.system_under_test }}-${{ inputs.acceleration }}
+          RUN_TAG: ${{ inputs.run_tag || '' }}
           ACCELERATION: ${{ inputs.acceleration }}
           SCENARIO: ${{ inputs.scenario || 'tpch' }}
           SCALE_FACTOR: ${{ inputs.scale_factor || '1' }}
@@ -206,7 +223,7 @@ jobs:
           ETL_REGION: us-east-1
           ETL_SINK: adbc
           SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
-          VALIDATE_CHECKPOINT_RESULTS: 'true'
+          VALIDATE_CHECKPOINT_RESULTS: ${{ inputs.validate_results != false && 'true' || 'false' }}
           CHECKPOINT_VALIDATION_TIMEOUT: ${{ inputs.checkpoint_validation_timeout || '3600' }}
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
@@ -220,6 +237,7 @@ jobs:
           EC2_AMI_ID: ${{ vars.EC2_AMI_ID }}
           EC2_INSTANCE_TYPE: ${{ inputs.ec2_instance_type || vars.EC2_INSTANCE_TYPE }}
           EC2_IAM_INSTANCE_PROFILE: ${{ vars.EC2_IAM_INSTANCE_PROFILE }}
+          MONGODB_ATLAS_URI: ${{ secrets.MONGODB_ATLAS_URI }}
           SPIDAPTER_APP_MEMORY_LIMIT: ${{ inputs.app_memory_limit || '64Gi' }}
           ENABLE_MODULE_DEBUG_LOGGING: ${{ inputs.enable_module_debug_logging || 'false' }}
           DISABLE_TEARDOWN: ${{ inputs.disable_teardown || 'false' }}
@@ -228,7 +246,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
-            export RUST_LOG='info,etl=debug,spicebench=debug,data_generation=debug,etl::sink::adbc=debug,etl::sink::dynamodb=debug,etl::sink::mongodb=debug'
+            export RUST_LOG='info,spicebench=debug,data_generation=debug,etl::sink::adbc=debug,etl::sink::dynamodb=debug,etl::sink::mongodb=debug'
           else
             export RUST_LOG='info'
           fi
@@ -260,16 +278,11 @@ jobs:
           case "${SYSTEM_UNDER_TEST}" in
             postgres-wal)
               USE_EC2=true
-              export SPICEBENCH_TARGET_BATCH_ROWS=50000
+              export SPICEBENCH_TARGET_BATCH_ROWS=100000
+              export SPICEBENCH_SINK_PARALLELISM_PER_TABLE=8
+              export SPICEBENCH_SINK_CHUNK_ROWS=20000
+              export SPICEBENCH_SINK_PARALLELISM=8
               export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=5000
-              export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
-              export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
-              export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
-              ;;
-            postgres-debezium)
-              USE_EC2=true
-              export SPICEBENCH_TARGET_BATCH_ROWS=50000
-              export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=10000
               export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
               export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
               export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
@@ -279,8 +292,19 @@ jobs:
               export SPICEBENCH_TARGET_BATCH_ROWS=50000
               ;;
             mongodb-streams)
-              USE_EC2=true
-              export SPICEBENCH_TARGET_BATCH_ROWS=50000
+              # Connect to the existing MongoDB Atlas cluster (MONGODB_ATLAS_URI)
+              # instead of provisioning EC2 — no EC2 env vars needed.
+              USE_EC2=false
+              export SPICEBENCH_TARGET_BATCH_ROWS=320000
+              # Mongo writes are light and benefit from many concurrent small
+              # writes. Keep chunking; allow up to 32 in-flight writes per table
+              # (the new per-table default is 1, which would otherwise serialize
+              # a single hot table) and cap the aggregate at 32 globally.
+              export SPICEBENCH_SINK_CHUNK_ROWS=5000
+              export SPICEBENCH_SINK_PARALLELISM_PER_TABLE=64
+              export SPICEBENCH_SINK_PARALLELISM=64
+              # Throttle aggregate ingestion to 10k records/sec across all tables.
+              export SPICEBENCH_SINK_MAX_RECORDS_PER_SEC=0
               ;;
           esac
 
@@ -300,6 +324,12 @@ jobs:
 
           if [ "${USE_EC2}" = "true" ]; then
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e EC2_SUBNET_ID -e EC2_SECURITY_GROUP_ID -e EC2_AMI_ID -e EC2_INSTANCE_TYPE -e EC2_DISK_SIZE_GB -e EC2_IAM_INSTANCE_PROFILE -e AWS_REGION=us-west-2"
+          fi
+
+          # MongoDB connects to the existing Atlas cluster; pass the URI secret
+          # into the adapter container so the scenario can interpolate it.
+          if [ "${SYSTEM_UNDER_TEST}" = "mongodb-streams" ]; then
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e MONGODB_ATLAS_URI"
           fi
 
           [ "${USE_PRIVATE_CLUSTER}" = "true" ]                   && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG=spicehq"

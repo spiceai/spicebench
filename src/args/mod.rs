@@ -105,6 +105,11 @@ pub struct RunArgs {
     #[arg(long, default_value = "system_adapter", env = "SYSTEM_ADAPTER")]
     pub(crate) system_adapter_name: String,
 
+    /// Optional suffix added as a separate `run_tag` metric label for differentiating
+    /// runs in dashboards without changing the adapter_name dimension.
+    #[arg(long, default_value = "", env = "RUN_TAG")]
+    pub(crate) run_tag: String,
+
     /// How to execute when a system adapter transport is configured.
     /// - adapter-command: dispatch spicebench run as a JSON-RPC command (e.g. run.load)
     /// - direct-query: execute load/query path in spicebench directly (ADBC path)
