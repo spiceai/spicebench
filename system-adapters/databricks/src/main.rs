@@ -1605,6 +1605,7 @@ impl DatabricksAdapter {
                 bytes_ingested: None,
                 ..Default::default()
             },
+            cdc_replication: None,
         })
     }
 
@@ -2426,6 +2427,7 @@ impl Handler for DatabricksAdapter {
                 Ok(MetricsResponse {
                     resource,
                     ingestion,
+                    cdc_replication: None,
                 })
             }
             ComputeTarget::Lakebase(cfg) => {

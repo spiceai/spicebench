@@ -306,6 +306,53 @@ pub struct IngestionMetrics {
     pub active_connections: Option<u64>,
 }
 
+/// Per-table CDC replication metrics, vendor-neutral so any change-data-capture
+/// system adapter (MongoDB change streams, Postgres logical replication, Kafka,
+/// Debezium, …) can report the same shape. All durations are cumulative since
+/// the SUT started; the consumer deltas consecutive samples for rates.
+///
+/// The phase split mirrors the universal CDC pipeline: time spent *waiting for
+/// the source to deliver* vs *applying changes downstream*. `recv%` =
+/// `source_wait_ms / (source_wait_ms + apply_ms + linger_ms)` answers "is this
+/// run source-bound or apply-bound." An adapter that can't break down per table
+/// reports a single row with table `__all__`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CdcTableMetrics {
+    /// Table/dataset name. Use `__all__` if the adapter has no per-table split.
+    pub table: String,
+    /// Cumulative ms blocked waiting for the source to deliver the next change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_wait_ms: Option<f64>,
+    /// Cumulative ms spent applying coalesced changes to the accelerator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apply_ms: Option<f64>,
+    /// Number of apply bursts (denominator for avg apply duration).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apply_count: Option<u64>,
+    /// Cumulative ms spent in the deliberate coalesce/linger window (neither
+    /// source-wait nor apply — a batching-strategy cost). Optional; sources
+    /// without a linger phase omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linger_ms: Option<f64>,
+    /// Cumulative row-level change records applied (true throughput denominator).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_applied: Option<u64>,
+    /// Cumulative bytes applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_applied: Option<u64>,
+}
+
+/// CDC replication metrics for the whole SUT: one timestamped sample carrying
+/// cumulative per-table counters. Periodic sampling by the consumer yields a
+/// time series (delta consecutive samples); a single final sample yields the
+/// run snapshot. Global rollups are derived by the consumer (ratio-of-sums),
+/// never transmitted, so idle low-volume tables can't skew the headline.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CdcReplicationMetrics {
+    /// Per-table cumulative counters at scrape time.
+    pub per_table: Vec<CdcTableMetrics>,
+}
+
 /// Response containing current SUT metrics
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct MetricsResponse {
@@ -313,6 +360,9 @@ pub struct MetricsResponse {
     pub resource: ResourceMetrics,
     /// Ingestion progress metrics
     pub ingestion: IngestionMetrics,
+    /// CDC replication metrics (optional; only CDC-capable adapters populate it).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cdc_replication: Option<CdcReplicationMetrics>,
 }
 
 /// Standard JSON-RPC 2.0 request envelope
