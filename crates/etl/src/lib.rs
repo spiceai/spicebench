@@ -66,9 +66,45 @@ fn target_batch_rows() -> usize {
     })
 }
 
-/// Maximum number of in-flight sink writes allowed per table task when the
-/// current segment set is insert-only.
-const MAX_IN_FLIGHT_TABLE_WRITES: usize = 1;
+const SINK_CHUNK_ROWS_ENV: &str = "SPICEBENCH_SINK_CHUNK_ROWS";
+const SINK_PARALLELISM_ENV: &str = "SPICEBENCH_SINK_PARALLELISM";
+const SINK_PARALLELISM_PER_TABLE_ENV: &str = "SPICEBENCH_SINK_PARALLELISM_PER_TABLE";
+
+/// Chunk size for splitting large segments into separate sink.write() calls.
+///
+/// Set to `0` to disable splitting entirely — each op-segment is written in a
+/// single sink.write() call (the pre-chunking behavior). Unset defaults to 5000.
+fn sink_chunk_rows() -> usize {
+    std::env::var(SINK_CHUNK_ROWS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(5_000)
+}
+
+/// Global cap on concurrent sink.write() calls across *all* tables and operation
+/// types. This is the ceiling that protects the target system from overload.
+///
+/// Unset means "no global ceiling" (a [`Semaphore::MAX_PERMITS`] semaphore that
+/// never binds); concurrency is then bounded only by [`sink_parallelism_per_table`]
+/// times the number of concurrently-ingesting tables.
+fn sink_parallelism() -> usize {
+    std::env::var(SINK_PARALLELISM_ENV)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(tokio::sync::Semaphore::MAX_PERMITS)
+}
+
+/// Cap on concurrent sink.write() calls *within a single table's batch*. Lets
+/// tables ingest concurrently (each up to this many in-flight writes) while the
+/// global [`sink_parallelism`] ceiling still bounds the aggregate. Unset → 1.
+fn sink_parallelism_per_table() -> usize {
+    std::env::var(SINK_PARALLELISM_PER_TABLE_ENV)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(1)
+}
 
 /// Maximum number of concurrent source logical-batch reads per ETL table task.
 const MAX_IN_FLIGHT_SOURCE_BATCH_READS: usize = 2;
@@ -827,6 +863,8 @@ async fn write_segments_for_batch(
     segments: Vec<OpSegment>,
     output_schema: &SchemaRef,
     partition_columns: &[String],
+    global_sink_semaphore: Arc<tokio::sync::Semaphore>,
+    ingest_rows_total: Arc<AtomicU64>,
 ) -> Result<(), String> {
     let table_name_owned = table_name.to_string();
 
@@ -843,7 +881,7 @@ async fn write_segments_for_batch(
                 InsertOp::Delete { .. } => delete_rows += n,
             }
         }
-        tracing::info!(
+        tracing::debug!(
             table = %table_name,
             batch_id,
             segments = segments.len(),
@@ -854,78 +892,74 @@ async fn write_segments_for_batch(
         );
     }
 
-    let insert_only = segments
-        .iter()
-        .all(|segment| matches!(segment.op, InsertOp::Insert));
+    // Process segments preserving insert→update→delete ordering within a table.
+    // Each operation type is split into chunks (when chunking is enabled) that are
+    // written concurrently — all chunks of one type complete before the next type
+    // begins. Each chunk write acquires the per-table permit first, then the global
+    // permit (consistent order across all tasks → no cross-table deadlock).
+    let chunk_size = sink_chunk_rows();
+    let table_sink_semaphore = Arc::new(tokio::sync::Semaphore::new(sink_parallelism_per_table()));
 
-    if !insert_only {
-        for segment in segments {
-            let output_batch =
-                append_created_at(&segment.batch, output_schema, batch_ts).map_err(|e| {
-                    format!("append __created_at to {table_name_owned} batch {batch_id}: {e}")
-                })?;
-
-            data_sink
-                .write(
-                    &table_name_owned,
-                    batch_id,
-                    output_batch,
-                    segment.op,
-                    partition_columns.to_vec(),
-                )
-                .await
-                .map_err(|e| format!("write {table_name_owned} batch {batch_id}: {e:#}"))?;
-        }
-
-        return Ok(());
-    }
-
-    let mut join_set: JoinSet<Result<(), String>> = JoinSet::new();
     for segment in segments {
-        while join_set.len() >= MAX_IN_FLIGHT_TABLE_WRITES {
-            let result = join_set
-                .join_next()
-                .await
-                .ok_or_else(|| format!("No in-flight write task available for {table_name_owned}"))
-                .and_then(|r| {
-                    r.map_err(|e| {
-                        format!(
-                            "Sink write task panicked for {table_name_owned} batch {batch_id}: {e}"
-                        )
-                    })
-                })?;
-            result?;
+        let op = segment.op.clone();
+        let n = segment.batch.num_rows();
+        let chunks: Vec<_> = if chunk_size > 0 && n > chunk_size {
+            (0..n)
+                .step_by(chunk_size)
+                .map(|start| {
+                    segment
+                        .batch
+                        .slice(start, (start + chunk_size).min(n) - start)
+                })
+                .collect()
+        } else {
+            vec![segment.batch.clone()]
+        };
+
+        let mut op_set: JoinSet<Result<(), String>> = JoinSet::new();
+        for chunk_batch in chunks {
+            let data_sink = Arc::clone(&data_sink);
+            let table_name = table_name_owned.clone();
+            let partition_columns = partition_columns.to_vec();
+            let output_schema = Arc::clone(output_schema);
+            let table_sem = Arc::clone(&table_sink_semaphore);
+            let global_sem = Arc::clone(&global_sink_semaphore);
+            let ingest_rows_total = Arc::clone(&ingest_rows_total);
+            let chunk_op = op.clone();
+
+            op_set.spawn(async move {
+                let chunk_rows = chunk_batch.num_rows();
+                let output_batch = append_created_at(&chunk_batch, &output_schema, batch_ts)
+                    .map_err(|e| {
+                        format!("append __created_at to {table_name} batch {batch_id}: {e}")
+                    })?;
+                let _table_permit = table_sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| format!("per-table sink semaphore closed: {e}"))?;
+                let _global_permit = global_sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| format!("global sink semaphore closed: {e}"))?;
+                data_sink
+                    .write(
+                        &table_name,
+                        batch_id,
+                        output_batch,
+                        chunk_op,
+                        partition_columns,
+                    )
+                    .await
+                    .map_err(|e| format!("write {table_name} batch {batch_id}: {e:#}"))?;
+                // Count rows actually dispatched to the sink (harness-side throughput).
+                ingest_rows_total.fetch_add(chunk_rows as u64, Ordering::Relaxed);
+                Ok(())
+            });
         }
-
-        let data_sink = Arc::clone(&data_sink);
-        let table_name = table_name_owned.clone();
-        let partition_columns = partition_columns.to_vec();
-        let output_schema = Arc::clone(output_schema);
-
-        join_set.spawn(async move {
-            let output_batch = append_created_at(&segment.batch, &output_schema, batch_ts)
-                .map_err(|e| {
-                    format!("append __created_at to {table_name} batch {batch_id}: {e}")
-                })?;
-
-            data_sink
-                .write(
-                    &table_name,
-                    batch_id,
-                    output_batch,
-                    segment.op,
-                    partition_columns,
-                )
-                .await
-                .map_err(|e| format!("write {table_name} batch {batch_id}: {e:#}"))
-        });
-    }
-
-    while let Some(result) = join_set.join_next().await {
-        let inner = result.map_err(|e| {
-            format!("Sink write task panicked for {table_name_owned} batch {batch_id}: {e}")
-        })?;
-        inner?;
+        // Await all chunks for this operation type before proceeding to the next.
+        while let Some(result) = op_set.join_next().await {
+            result.map_err(|e| format!("op chunk task panicked for {table_name_owned}: {e}"))??;
+        }
     }
 
     Ok(())
@@ -1060,6 +1094,10 @@ pub struct ETLPipeline {
     /// Only meaningful when the pipeline was started with
     /// [`run`](ETLPipeline::run) (i.e. with a step budget).
     checkpoint_idx: usize,
+    /// Cumulative count of rows written to the sink across the init and run
+    /// phases. Shared with the background task so the harness can sample
+    /// harness-side ingestion throughput.
+    ingest_rows_total: Arc<AtomicU64>,
 }
 
 impl ETLPipeline {
@@ -1102,7 +1140,15 @@ impl ETLPipeline {
             })),
             last_created_at_us,
             checkpoint_idx: 0,
+            ingest_rows_total: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Returns a shared handle to the cumulative count of rows written to the
+    /// sink (init + run phases). The harness samples this to emit a
+    /// harness-side ingestion-throughput metric.
+    pub fn ingest_rows_total(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.ingest_rows_total)
     }
 
     pub fn with_target_config(mut self, target_config: TargetConfig) -> Self {
@@ -1313,12 +1359,24 @@ impl ETLPipeline {
             })
         };
 
+        let _sp = sink_parallelism();
+        let _spt = sink_parallelism_per_table();
+        let _sc = sink_chunk_rows();
+        info!(
+            sink_parallelism_global = _sp,
+            sink_parallelism_per_table = _spt,
+            sink_chunk_rows = _sc,
+            "ETL init sink semaphore"
+        );
+        let init_sink_semaphore = Arc::new(tokio::sync::Semaphore::new(_sp));
         let mut join_set: JoinSet<Result<String, String>> = JoinSet::new();
         for (table_name, first_batch_id) in init_batches {
             let source = Arc::clone(&self.data_storage);
             let target = Arc::clone(&self.data_sink);
             let last_created_at = Arc::clone(&self.last_created_at_us);
             let mutations = self.mutations.clone();
+            let sink_semaphore = Arc::clone(&init_sink_semaphore);
+            let ingest_rows_total = Arc::clone(&self.ingest_rows_total);
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
@@ -1357,6 +1415,8 @@ impl ETLPipeline {
                         segments,
                         &output_schema,
                         &partition_columns,
+                        Arc::clone(&sink_semaphore),
+                        Arc::clone(&ingest_rows_total),
                     )
                     .await?;
 
@@ -1580,6 +1640,7 @@ impl ETLPipeline {
                 .collect::<HashMap<_, _>>(),
         );
 
+        let ingest_rows_total = Arc::clone(&self.ingest_rows_total);
         let handle = tokio::spawn(async move {
             let outcome = run_pipeline(
                 source,
@@ -1591,6 +1652,7 @@ impl ETLPipeline {
                 table_partition_columns,
                 table_output_schemas,
                 mutations,
+                ingest_rows_total,
             )
             .await;
             let _ = state_tx.send(outcome);
@@ -1629,7 +1691,18 @@ async fn run_pipeline(
     table_partition_columns: Arc<HashMap<String, Vec<String>>>,
     table_output_schemas: Arc<HashMap<String, SchemaRef>>,
     mutations: MutationConfig,
+    ingest_rows_total: Arc<AtomicU64>,
 ) -> PipelineState {
+    let _sp = sink_parallelism();
+    let _spt = sink_parallelism_per_table();
+    let _sc = sink_chunk_rows();
+    info!(
+        sink_parallelism_global = _sp,
+        sink_parallelism_per_table = _spt,
+        sink_chunk_rows = _sc,
+        "ETL pipeline sink semaphore"
+    );
+    let sink_semaphore = Arc::new(tokio::sync::Semaphore::new(_sp));
     // Take a snapshot of total counts for logging.
     let (total_steps, total_batches) = {
         let state = work_state.lock().expect("work_state lock poisoned");
@@ -1835,6 +1908,8 @@ async fn run_pipeline(
             let batch_retrieval_samples_ms = StdArc::clone(&batch_retrieval_samples_ms);
             let sink_write_samples_ms = StdArc::clone(&sink_write_samples_ms);
             let mutations = mutations.clone();
+            let sink_semaphore = Arc::clone(&sink_semaphore);
+            let ingest_rows_total = Arc::clone(&ingest_rows_total);
             let partition_columns = table_partition_columns
                 .get(&table_name)
                 .cloned()
@@ -1929,6 +2004,8 @@ async fn run_pipeline(
                         segments,
                         &output_schema,
                         &partition_columns,
+                        Arc::clone(&sink_semaphore),
+                        Arc::clone(&ingest_rows_total),
                     )
                     .await
                     {

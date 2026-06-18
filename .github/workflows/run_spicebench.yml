@@ -217,6 +217,12 @@ jobs:
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
             export SPICEBENCH_ADBC_UPDATE_STRATEGY=staging_table
             export SPICEBENCH_TARGET_BATCH_ROWS=500000
+            # ADBC writes are heavyweight (staging-parquet upload + MERGE), so
+            # splitting a segment into many small writes hurts: disable chunking
+            # (one write per segment) and let each table do 1 in-flight write with
+            # no global ceiling (tables ingest concurrently). Mirrors trunk.
+            export SPICEBENCH_SINK_CHUNK_ROWS=0
+            export SPICEBENCH_SINK_PARALLELISM_PER_TABLE=1
             export SPICEBENCH_ADBC_MAX_INGEST_BATCH_BYTES=1268435456
             export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
             export SPICEBENCH_ADBC_ANALYZE_STAGING_BEFORE_MERGE=true
