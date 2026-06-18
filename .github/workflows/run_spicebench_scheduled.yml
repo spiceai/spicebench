@@ -47,7 +47,6 @@ jobs:
       etl_type: events
       scale_factor: '10'
       spidapter_image_tag: latest
-      custom_image_tag: latest
       use_private_cluster: true
       app_memory_limit: '64Gi'
       checkpoint_validation_timeout: '3600'
@@ -63,7 +62,6 @@ jobs:
       etl_type: changes
       scale_factor: '10'
       spidapter_image_tag: latest
-      custom_image_tag: latest
       use_private_cluster: true
       app_memory_limit: '64Gi'
       checkpoint_validation_timeout: '3600'
