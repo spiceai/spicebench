@@ -318,7 +318,6 @@ async fn run_benchmark(
 }
 
 pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
-
     let scenario_name = args.scenario.to_string();
     let derived_version = format_scale_factor(args.scale_factor);
     let version_prefix = build_version_prefix(&args.etl_prefix, &scenario_name, &derived_version);
