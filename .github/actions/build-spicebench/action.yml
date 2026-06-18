@@ -33,8 +33,8 @@ runs:
       shell: bash
       run: |
         mkdir -p ~/.spice/bin
-        cargo build -p spicebench
-        install -m 755 target/debug/spicebench ~/.spice/bin/spicebench
+        cargo build -p spicebench --release
+        install -m 755 target/release/spicebench ~/.spice/bin/spicebench
 
     - name: Save spicebench cache
       if: steps.build-spicebench.outcome == 'success'

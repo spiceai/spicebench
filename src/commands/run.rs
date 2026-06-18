@@ -317,7 +317,44 @@ async fn run_benchmark(
     Ok(())
 }
 
+/// Best-effort lookup of the machine's public egress IP, logged at run start so
+/// operators can allowlist it in a source/database firewall (e.g. the MongoDB
+/// Atlas Network Access List). Non-fatal — a failure just logs a warning.
+async fn log_public_egress_ip() {
+    const ENDPOINTS: [&str; 3] = [
+        "https://api.ipify.org",
+        "https://checkip.amazonaws.com",
+        "https://ifconfig.me/ip",
+    ];
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Could not build HTTP client to detect public egress IP: {e}");
+            return;
+        }
+    };
+    for url in ENDPOINTS {
+        if let Ok(resp) = client.get(url).send().await
+            && let Ok(body) = resp.text().await
+        {
+            let ip = body.trim();
+            if !ip.is_empty() {
+                tracing::info!(
+                    public_egress_ip = %ip,
+                    "Public egress IP — allowlist this in your source/database firewall (e.g. MongoDB Atlas Network Access List)"
+                );
+                return;
+            }
+        }
+    }
+    tracing::warn!("Could not determine public egress IP (all lookup endpoints failed)");
+}
+
 pub async fn execute(args: &RunArgs) -> anyhow::Result<()> {
+    log_public_egress_ip().await;
 
     let scenario_name = args.scenario.to_string();
     let derived_version = format_scale_factor(args.scale_factor);
