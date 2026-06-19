@@ -575,7 +575,10 @@ impl Dataset for TpchDataset {
                     ((num_creates as f64) * self.mutations.update_ratio).round() as usize;
                 let base_deletes =
                     ((num_creates as f64) * self.mutations.delete_ratio).round() as usize;
-                (jitter(base_updates, &mut rng), jitter(base_deletes, &mut rng))
+                (
+                    jitter(base_updates, &mut rng),
+                    jitter(base_deletes, &mut rng),
+                )
             };
 
             // Cap mutations to available distinct keys.

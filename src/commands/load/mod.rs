@@ -233,6 +233,7 @@ fn record_sut_metrics(
 ///
 /// Returns a `JoinHandle` that resolves to the last `MetricsResponse` received
 /// (or `None` if no successful scrape occurred).
+#[expect(clippy::too_many_arguments)]
 fn spawn_sut_metrics_scraper(
     adapter: Arc<Mutex<system_adapter_protocol::Client>>,
     run_id: uuid::Uuid,
@@ -1117,9 +1118,7 @@ pub(crate) async fn run(
             base_rows,
             "Bootstrap: validating snapshot (cp0) — waiting for SUT to ingest the base..."
         );
-        if has_checkpoint_validation
-            && let Some(cp_dir) = checkpoint_dir
-        {
+        if has_checkpoint_validation && let Some(cp_dir) = checkpoint_dir {
             let expected_results =
                 load_checkpoint_results(cp_dir, 0, &query_names).unwrap_or_default();
             let expected_row_counts = load_checkpoint_row_counts(cp_dir, 0).unwrap_or_default();

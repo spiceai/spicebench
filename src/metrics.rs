@@ -166,6 +166,8 @@ pub static BOOTSTRAP_LOAD_SECONDS: LazyLock<Gauge<f64>> = LazyLock::new(|| {
 pub static BOOTSTRAP_LOAD_ROWS_PER_SEC: LazyLock<Gauge<f64>> = LazyLock::new(|| {
     meter()
         .f64_gauge("bench_bootstrap_load_rows_per_sec")
-        .with_description("Initial-load throughput during bootstrap (base rows / bootstrap load seconds).")
+        .with_description(
+            "Initial-load throughput during bootstrap (base rows / bootstrap load seconds).",
+        )
         .build()
 });
