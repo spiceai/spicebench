@@ -1110,7 +1110,9 @@ pub(crate) async fn run(
     // If interrupted (ctrl-c), cancel both the test and the ETL pipeline.
     // Collect checkpoint E2E latency samples during the loop, then emit
     // them post-loop so they carry the final `outcome` dimension.
-    let mut checkpoint_e2e_latency_samples: Vec<f64> = Vec::new();
+    // (checkpoint_idx, e2e_latency_ms) per converged mutation checkpoint. The
+    // index is carried so each sample can be emitted as a distinct gauge series.
+    let mut checkpoint_e2e_latency_samples: Vec<(usize, f64)> = Vec::new();
 
     let run_outcome: Option<RunOutcome> = loop {
         tokio::select! {
@@ -1160,7 +1162,7 @@ pub(crate) async fn run(
 
                                     match result {
                                         CheckpointValidationResult::Converged { e2e_latency_ms } => {
-                                            checkpoint_e2e_latency_samples.push(e2e_latency_ms);
+                                            checkpoint_e2e_latency_samples.push((checkpoint_idx, e2e_latency_ms));
                                         }
                                         CheckpointValidationResult::Interrupted => {
                                             tracing::error!("Interrupt received during checkpoint validation, stopping...");
@@ -1244,7 +1246,7 @@ pub(crate) async fn run(
 
                                     match result {
                                         CheckpointValidationResult::Converged { e2e_latency_ms } => {
-                                            checkpoint_e2e_latency_samples.push(e2e_latency_ms);
+                                            checkpoint_e2e_latency_samples.push((checkpoint_idx, e2e_latency_ms));
                                         }
                                         CheckpointValidationResult::Interrupted => {
                                             tracing::error!("Interrupt received during final checkpoint validation, stopping...");
@@ -1349,8 +1351,12 @@ pub(crate) async fn run(
     metric_attributes.push(KeyValue::new("outcome", outcome.as_str()));
 
     // Record deferred metrics now that outcome is available.
-    for sample in &checkpoint_e2e_latency_samples {
-        crate::metrics::E2E_LATENCY_MS.record(*sample, &metric_attributes);
+    for (checkpoint_idx, e2e_latency_ms) in &checkpoint_e2e_latency_samples {
+        crate::metrics::E2E_LATENCY_MS.record(*e2e_latency_ms, &metric_attributes);
+
+        let mut attrs = metric_attributes.clone();
+        attrs.push(KeyValue::new("checkpoint_idx", *checkpoint_idx as i64));
+        crate::metrics::E2E_LATENCY_GAUGE_MS.record(*e2e_latency_ms, &attrs);
     }
 
     test.get_query_durations().statistical_set()?;

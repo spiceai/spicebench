@@ -151,3 +151,17 @@ pub static E2E_LATENCY_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
         .with_unit("ms")
         .build()
 });
+
+// Per-checkpoint convergence latency, recorded once per converged mutation
+// checkpoint with a `checkpoint_idx` attribute so each sample is a distinct
+// gauge series and survives last-value aggregation (a histogram only exports
+// `_sum`/`_count`/buckets, from which a true per-checkpoint value or exact
+// percentile cannot be recovered). Aggregate in the dashboard by grouping over
+// the desired population (e.g. `run_id` or adapter) and applying `quantile`.
+pub static E2E_LATENCY_GAUGE_MS: LazyLock<Gauge<f64>> = LazyLock::new(|| {
+    meter()
+        .f64_gauge("e2e_latency_gauge_ms")
+        .with_description("Per-checkpoint end-to-end convergence latency (CDC replication + apply lag), tagged with checkpoint_idx.")
+        .with_unit("ms")
+        .build()
+});
