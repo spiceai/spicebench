@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use arrow::array::{
     Array, ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, RecordBatch,
-    StringArray, StringViewArray, new_null_array,
+    StringArray, StringViewArray, new_empty_array, new_null_array,
 };
 use arrow::compute;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -463,7 +463,11 @@ impl Dataset for TpchDataset {
             return 1;
         }
 
-        // One batch per step for all other tables.
+        // One batch per step for all other tables. In bootstrap mode, append
+        // `num_mutation_steps` extra pure-mutation steps after the base.
+        if self.mutations.bootstrap {
+            return u64::from(self.num_steps) + u64::from(self.mutations.num_mutation_steps);
+        }
         u64::from(self.num_steps)
     }
 
@@ -475,39 +479,57 @@ impl Dataset for TpchDataset {
             .ok_or_else(|| anyhow::anyhow!("Unknown TPC-H table: {table}"))?;
 
         let current_step = step_counter.fetch_add(1, Ordering::SeqCst);
-        // Region and nation do not support part/part_count partitioning in tpchgen.
-        // Emit them only on the first step to avoid duplicate primary keys.
-        if matches!(table, "region" | "nation") {
-            if current_step > 0 {
-                return Ok(None);
-            }
-        } else if current_step >= self.num_steps {
-            return Ok(None); // all parts exhausted for this table
-        }
 
-        // Generate the raw batch using tpchgen part/part_count for correct partitioning.
-        // Parts are 1-indexed in tpchgen; part_count = num_steps.
-        let (part, part_count) = if matches!(table, "region" | "nation") {
-            (1, 1)
+        // Region and nation are emitted once (base only); they are dimension
+        // tables and are never mutated.
+        let is_dim = matches!(table, "region" | "nation");
+        let bootstrap = self.mutations.bootstrap;
+        // Total steps for this table: base steps, plus pure-mutation steps in
+        // bootstrap mode (not for dimension tables).
+        let total_steps: u16 = if bootstrap && !is_dim {
+            self.num_steps
+                .saturating_add(self.mutations.num_mutation_steps)
+        } else if is_dim {
+            1
         } else {
-            (i32::from(current_step) + 1, i32::from(self.num_steps))
+            self.num_steps
         };
-        let batch = generate_raw_batch(table, self.scale_factor, part, part_count);
-        let num_creates = batch.num_rows();
-
-        if num_creates == 0 {
-            return Ok(None);
+        if current_step >= total_steps {
+            return Ok(None); // all parts/mutation-steps exhausted for this table
         }
+        // Bootstrap: steps `[num_steps, total_steps)` emit pure mutations only.
+        let in_mutation_phase = bootstrap && !is_dim && current_step >= self.num_steps;
 
-        // --- Primary key tracking and mutation planning ---
         let pk_columns = self.primary_key(table);
-        let create_pks = extract_pk_values(&batch, &pk_columns)?;
-
         let key_set_mutex = self
             .key_sets
             .get(table)
             .ok_or_else(|| anyhow::anyhow!("No key set for table: {table}"))?;
 
+        // --- Creates (base phase only) ---
+        let creates_batch: Option<RecordBatch> = if in_mutation_phase {
+            None
+        } else {
+            // Generate the raw batch using tpchgen part/part_count for correct
+            // partitioning. Parts are 1-indexed; part_count = num_steps.
+            let (part, part_count) = if is_dim {
+                (1, 1)
+            } else {
+                (i32::from(current_step) + 1, i32::from(self.num_steps))
+            };
+            let b = generate_raw_batch(table, self.scale_factor, part, part_count);
+            if b.num_rows() == 0 {
+                return Ok(None);
+            }
+            Some(b)
+        };
+        let num_creates = creates_batch.as_ref().map_or(0, RecordBatch::num_rows);
+        let create_pks = match &creates_batch {
+            Some(b) => extract_pk_values(b, &pk_columns)?,
+            None => Vec::new(),
+        };
+
+        // --- Primary key tracking and mutation planning ---
         let (num_updates, num_deletes, update_keys, delete_keys) = {
             let mut ks = key_set_mutex
                 .lock()
@@ -519,28 +541,49 @@ impl Dataset for TpchDataset {
             }
 
             let existing_count = ks.len();
-
             let mut rng = rand::rng();
-            let jitter = |base: usize, rng: &mut rand::rngs::ThreadRng| -> usize {
-                if base == 0 {
-                    return 0;
-                }
-                let lo = (base as f64 * 0.75).floor() as usize;
-                let hi = (base as f64 * 1.25).ceil() as usize;
-                rng.random_range(lo..=hi.max(lo))
+
+            // Base phase in bootstrap mode: creates only, no mutations.
+            let plan_mutations = !(bootstrap && !in_mutation_phase);
+
+            let (mut num_updates, mut num_deletes) = if !plan_mutations {
+                (0usize, 0usize)
+            } else if in_mutation_phase {
+                // Pure mutations: churn a fraction of the base per mutation step.
+                let steps = f64::from(self.mutations.num_mutation_steps.max(1));
+                let per_step = ((existing_count as f64) * self.mutations.churn_fraction / steps)
+                    .round() as usize;
+                let ratio_total = self.mutations.update_ratio + self.mutations.delete_ratio;
+                let upd_weight = if ratio_total > 0.0 {
+                    self.mutations.update_ratio / ratio_total
+                } else {
+                    1.0
+                };
+                let num_updates = ((per_step as f64) * upd_weight).round() as usize;
+                (num_updates, per_step.saturating_sub(num_updates))
+            } else {
+                // Non-bootstrap: mutations sized relative to this step's creates.
+                let jitter = |base: usize, rng: &mut rand::rngs::ThreadRng| -> usize {
+                    if base == 0 {
+                        return 0;
+                    }
+                    let lo = (base as f64 * 0.75).floor() as usize;
+                    let hi = (base as f64 * 1.25).ceil() as usize;
+                    rng.random_range(lo..=hi.max(lo))
+                };
+                let base_updates =
+                    ((num_creates as f64) * self.mutations.update_ratio).round() as usize;
+                let base_deletes =
+                    ((num_creates as f64) * self.mutations.delete_ratio).round() as usize;
+                (
+                    jitter(base_updates, &mut rng),
+                    jitter(base_deletes, &mut rng),
+                )
             };
-
-            let base_updates =
-                ((num_creates as f64) * self.mutations.update_ratio).round() as usize;
-            let base_deletes =
-                ((num_creates as f64) * self.mutations.delete_ratio).round() as usize;
-
-            let mut num_updates = jitter(base_updates, &mut rng);
-            let mut num_deletes = jitter(base_deletes, &mut rng);
 
             // Cap mutations to available distinct keys.
             if num_updates + num_deletes > existing_count {
-                let scale = existing_count as f64 / (num_updates + num_deletes) as f64;
+                let scale = existing_count as f64 / (num_updates + num_deletes).max(1) as f64;
                 num_updates = (num_updates as f64 * scale).floor() as usize;
                 num_deletes = (num_deletes as f64 * scale).floor() as usize;
             }
@@ -555,6 +598,12 @@ impl Dataset for TpchDataset {
 
             (num_updates, num_deletes, update_keys, delete_keys)
         };
+
+        // A bootstrap mutation step may produce zero mutations (e.g. churn=0);
+        // signal end-of-stream so the table doesn't spin on empty batches.
+        if num_creates + num_updates + num_deletes == 0 {
+            return Ok(None);
+        }
 
         let total_rows = num_creates + num_updates + num_deletes;
 
@@ -571,7 +620,12 @@ impl Dataset for TpchDataset {
 
         for col_idx in 0..native_field_count {
             let field = &schema.fields()[col_idx];
-            let creates_col = batch.column(col_idx);
+            // Creates column: the generated batch in the base phase, or an empty
+            // array in a pure-mutation step.
+            let creates_col: ArrayRef = match &creates_batch {
+                Some(b) => Arc::clone(b.column(col_idx)),
+                None => new_empty_array(field.data_type()),
+            };
             let pk_col_position = pk_columns.iter().position(|n| n == field.name());
 
             // Update values: PK columns use sampled keys, others get random data.
@@ -721,6 +775,87 @@ mod tests {
                 "unexpected total row count for table '{table}' at SF1"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn tpch_bootstrap_base_then_pure_mutations() {
+        let num_steps = 2u16;
+        let num_mutation_steps = 3u16;
+        let churn = 0.5;
+        let dataset = TpchDataset::new(
+            &DatasetConfig {
+                dataset_type: "tpch".to_string(),
+                scale_factor: 0.1,
+                num_steps,
+            },
+            &MutationConfig::new(0.8, 0.2).with_bootstrap(num_mutation_steps, churn),
+            Arc::new(NoopStorage),
+        )
+        .expect("failed to construct bootstrap TpchDataset");
+
+        let table = "orders";
+        let mut batch_idx = 0usize;
+        let mut base_creates = 0u64;
+        let mut total_updates = 0u64;
+        let mut total_deletes = 0u64;
+
+        while let Some(batch) = dataset
+            .raw_next_batch(table)
+            .await
+            .expect("raw_next_batch should not fail")
+        {
+            let op = batch
+                .column_by_name("_op")
+                .expect("_op column")
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("_op is Utf8");
+            let (mut c, mut u, mut d) = (0u64, 0u64, 0u64);
+            for i in 0..op.len() {
+                match op.value(i) {
+                    "c" => c += 1,
+                    "u" => u += 1,
+                    "d" => d += 1,
+                    other => panic!("unexpected op {other}"),
+                }
+            }
+
+            if batch_idx < num_steps as usize {
+                // Base phase: creates only.
+                assert!(c > 0, "base batch {batch_idx} had no creates");
+                assert_eq!(u + d, 0, "base batch {batch_idx} must have no mutations");
+                base_creates += c;
+            } else {
+                // Mutation phase: pure mutations (no creates).
+                assert_eq!(c, 0, "mutation batch {batch_idx} must have no creates");
+                assert!(u + d > 0, "mutation batch {batch_idx} was empty");
+                total_updates += u;
+                total_deletes += d;
+            }
+            batch_idx += 1;
+        }
+
+        assert_eq!(
+            batch_idx,
+            (num_steps + num_mutation_steps) as usize,
+            "expected base + mutation steps"
+        );
+        assert!(base_creates > 0, "no base rows generated");
+
+        let total_mutations = total_updates + total_deletes;
+        // ~80/20 update/delete split.
+        let upd_frac = total_updates as f64 / total_mutations as f64;
+        assert!(
+            (0.65..=0.95).contains(&upd_frac),
+            "update fraction {upd_frac} not ~0.8 (u={total_updates}, d={total_deletes})"
+        );
+        // churn≈0.5 of base over the mutation steps (generous tolerance for
+        // per-step rounding and delete-driven shrinkage).
+        let expected = (base_creates as f64 * churn) as u64;
+        assert!(
+            total_mutations >= expected / 2 && total_mutations <= expected * 2,
+            "total_mutations={total_mutations} not near expected≈{expected} (base={base_creates})"
+        );
     }
 
     #[tokio::test]

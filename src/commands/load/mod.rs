@@ -233,6 +233,7 @@ fn record_sut_metrics(
 ///
 /// Returns a `JoinHandle` that resolves to the last `MetricsResponse` received
 /// (or `None` if no successful scrape occurred).
+#[expect(clippy::too_many_arguments)]
 fn spawn_sut_metrics_scraper(
     adapter: Arc<Mutex<system_adapter_protocol::Client>>,
     run_id: uuid::Uuid,
@@ -551,9 +552,7 @@ async fn validate_checkpoint_table_row_counts(
         }
     }
 
-    tracing::info!(
-        "Checkpoint {checkpoint_idx}: table row counts passed, validating full query set"
-    );
+    tracing::info!("Checkpoint {checkpoint_idx}: table row counts passed");
     true
 }
 
@@ -922,6 +921,9 @@ pub(crate) async fn run(
     checkpoint_steps: Option<usize>,
     checkpoint_dir: Option<&Path>,
     query_catalog_namespace: Option<String>,
+    // In bootstrap mode, the instant `activate` was called — used to measure
+    // the bootstrap load duration/throughput (activate + initial snapshot).
+    bootstrap_activate_start: Option<std::time::Instant>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let metric_attributes = run_metric_attributes(common_args, run_id, version_metadata.etl_type());
@@ -1090,7 +1092,85 @@ pub(crate) async fn run(
     // all remaining batches without pausing.
     tracing::info!("Starting ETL pipeline (remaining batches)...");
     let mut etl_state_rx = etl_pipeline.state_watch();
-    if let Some(steps) = checkpoint_steps {
+    // Bootstrap mode seeds the base before this point and leaves the pipeline
+    // Paused at the base→mutation boundary (SUT already activated). Resume the
+    // mutation phase with `continue_pipeline` — calling `run` here would rebuild
+    // the work plan and re-process the already-seeded base.
+    let bootstrap = matches!(etl_pipeline.state(), PipelineState::Paused);
+    // Period/timeout reused for both checkpoint and bootstrap data validation.
+    let validation_period = Duration::from_secs(common_args.checkpoint_validation_period);
+    let validation_timeout = Duration::from_secs(common_args.checkpoint_validation_timeout);
+    // Bootstrap initial-load metric: (seconds, rows_per_sec), emitted post-loop.
+    let mut bootstrap_load: Option<(f64, f64)> = None;
+    if bootstrap {
+        // 1) Snapshot validation gate: validate the full-base checkpoint (cp0)
+        //    against the oracle — run_checkpoint_validation waits for the SUT's row
+        //    counts to converge, then verifies query results. The pipeline is
+        //    already Paused (a fresh state watch won't fire for it), so this must
+        //    run before the loop; subsequent mutation checkpoints (cp1+) are handled
+        //    inside the loop.
+        let base_rows: u64 = etl_pipeline
+            .expected_row_counts()
+            .values()
+            .map(|&c| c as u64)
+            .sum();
+        tracing::info!(
+            base_rows,
+            "Bootstrap: validating snapshot (cp0) — waiting for SUT to ingest the base..."
+        );
+        if has_checkpoint_validation && let Some(cp_dir) = checkpoint_dir {
+            let expected_results =
+                load_checkpoint_results(cp_dir, 0, &query_names).unwrap_or_default();
+            let expected_row_counts = load_checkpoint_row_counts(cp_dir, 0).unwrap_or_default();
+            let pause_time = std::time::Instant::now();
+            match run_checkpoint_validation(
+                &validation_executor,
+                &queries,
+                &expected_results,
+                &expected_row_counts,
+                0,
+                common_args.concurrency,
+                validation_period,
+                validation_timeout,
+                pause_time,
+                query_catalog_namespace.as_deref(),
+                &shutdown,
+            )
+            .await
+            {
+                CheckpointValidationResult::Converged { .. } => {}
+                CheckpointValidationResult::Interrupted => {
+                    etl_pipeline.cancel();
+                    anyhow::bail!("Interrupted during bootstrap snapshot (cp0) validation");
+                }
+                CheckpointValidationResult::TimedOut => {
+                    etl_pipeline.cancel();
+                    anyhow::bail!("Bootstrap snapshot (cp0) validation timed out");
+                }
+            }
+        }
+        // Bootstrap load metric = activate + initial snapshot (until cp0 validated).
+        let load_seconds = bootstrap_activate_start
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+        let rows_per_sec = if load_seconds > 0.0 {
+            base_rows as f64 / load_seconds
+        } else {
+            0.0
+        };
+        bootstrap_load = Some((load_seconds, rows_per_sec));
+        tracing::info!(
+            base_rows,
+            load_seconds = format!("{load_seconds:.1}"),
+            rows_per_sec = format!("{rows_per_sec:.0}"),
+            "Bootstrap load complete: base validated; streaming mutations"
+        );
+        // 2) Mutation phase: pause every `checkpoint_steps` to validate cp1+.
+        if let Some(steps) = checkpoint_steps {
+            etl_pipeline.set_batch_budget(steps);
+        }
+        etl_pipeline.continue_pipeline()?;
+    } else if let Some(steps) = checkpoint_steps {
         tracing::info!(checkpoint_steps = steps, "Using checkpoint-aware ETL mode");
         etl_pipeline.run(steps).await?;
     } else {
@@ -1128,6 +1208,8 @@ pub(crate) async fn run(
                         );
 
                         // --- Checkpoint validation window ---
+                        // For bootstrap, cp1+ (mutation checkpoints) are validated
+                        // here against the same oracle as normal runs.
                         if has_checkpoint_validation
                             && let Some(cp_dir) = checkpoint_dir
                         {
@@ -1207,6 +1289,8 @@ pub(crate) async fn run(
                         tracing::info!("ETL pipeline completed");
 
                         // --- Final checkpoint validation ---
+                        // For bootstrap, the final mutation checkpoint is validated
+                        // here too (same oracle path as normal runs).
                         // The pipeline transitions directly from Running →
                         // Completed after the last batch, so the final
                         // checkpoint boundary is never seen as a Paused state.
@@ -1350,11 +1434,40 @@ pub(crate) async fn run(
     let mut metric_attributes = metric_attributes;
     metric_attributes.push(KeyValue::new("outcome", outcome.as_str()));
 
+    // Log an e2e-latency summary so it's visible locally even when metrics are
+    // not emitted (telemetry disabled).
+    if checkpoint_e2e_latency_samples.is_empty() {
+        tracing::info!("E2E latency: no checkpoint samples collected");
+    } else {
+        let mut sorted: Vec<f64> = checkpoint_e2e_latency_samples
+            .iter()
+            .map(|(_, ms)| *ms)
+            .collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len();
+        let pct = |p: f64| sorted[((p * (n - 1) as f64).round() as usize).min(n - 1)];
+        let mean = sorted.iter().sum::<f64>() / n as f64;
+        tracing::info!(
+            samples = n,
+            min_ms = format!("{:.0}", sorted[0]),
+            median_ms = format!("{:.0}", pct(0.5)),
+            p95_ms = format!("{:.0}", pct(0.95)),
+            p99_ms = format!("{:.0}", pct(0.99)),
+            max_ms = format!("{:.0}", sorted[n - 1]),
+            mean_ms = format!("{:.0}", mean),
+            "E2E latency summary (per-checkpoint convergence)"
+        );
+    }
+
     // Record deferred metrics now that outcome is available.
     for (checkpoint_idx, e2e_latency_ms) in &checkpoint_e2e_latency_samples {
         let mut attrs = metric_attributes.clone();
         attrs.push(KeyValue::new("checkpoint_idx", *checkpoint_idx as i64));
         crate::metrics::E2E_LATENCY_GAUGE_MS.record(*e2e_latency_ms, &attrs);
+    }
+    if let Some((load_seconds, rows_per_sec)) = bootstrap_load {
+        crate::metrics::BOOTSTRAP_LOAD_SECONDS.record(load_seconds, &metric_attributes);
+        crate::metrics::BOOTSTRAP_LOAD_ROWS_PER_SEC.record(rows_per_sec, &metric_attributes);
     }
 
     test.get_query_durations().statistical_set()?;

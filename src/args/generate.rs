@@ -63,4 +63,19 @@ pub struct GenerateArgs {
     /// Ratio of delete mutations per batch (0.0 to 1.0)
     #[arg(long, default_value_t = 0.0)]
     pub delete_ratio: f64,
+
+    /// Bootstrap mode: generate the full base as creates-only, then append
+    /// `--bootstrap-mutation-steps` steps of pure mutations (updates/deletes only)
+    /// over the seeded base. Use with `--update-ratio 0.8 --delete-ratio 0.2`.
+    #[arg(long, default_value_t = false)]
+    pub bootstrap: bool,
+
+    /// Number of pure-mutation steps appended after the base (bootstrap only).
+    #[arg(long, default_value_t = 20)]
+    pub bootstrap_mutation_steps: u16,
+
+    /// Total fraction of the base to mutate across all mutation steps (bootstrap
+    /// only). ~0.17 on SF10 (~86M rows) ≈ 15M mutations.
+    #[arg(long, default_value_t = 0.17)]
+    pub bootstrap_churn_fraction: f64,
 }

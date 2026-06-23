@@ -142,6 +142,15 @@ impl DatasetTable {
 pub struct MutationConfig {
     pub update_ratio: f64,
     pub delete_ratio: f64,
+    /// Bootstrap mode: generate the full base as creates-only across the normal
+    /// steps, then emit `num_mutation_steps` extra steps of **pure mutations**
+    /// (updates/deletes only) sampled from the seeded base keys.
+    pub bootstrap: bool,
+    /// Number of extra pure-mutation steps appended after the base (bootstrap only).
+    pub num_mutation_steps: u16,
+    /// Total fraction of the base to mutate across all mutation steps (bootstrap
+    /// only). e.g. `0.17` on SF10 (~86M rows) ≈ 15M mutations.
+    pub churn_fraction: f64,
 }
 
 impl MutationConfig {
@@ -154,7 +163,20 @@ impl MutationConfig {
         Self {
             update_ratio,
             delete_ratio,
+            bootstrap: false,
+            num_mutation_steps: 0,
+            churn_fraction: 0.0,
         }
+    }
+
+    /// Enable bootstrap mode: base is creates-only, followed by `num_mutation_steps`
+    /// pure-mutation steps mutating `churn_fraction` of the base in total.
+    #[must_use]
+    pub fn with_bootstrap(mut self, num_mutation_steps: u16, churn_fraction: f64) -> Self {
+        self.bootstrap = true;
+        self.num_mutation_steps = num_mutation_steps;
+        self.churn_fraction = churn_fraction;
+        self
     }
 }
 

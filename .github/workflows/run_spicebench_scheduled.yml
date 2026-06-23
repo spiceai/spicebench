@@ -14,7 +14,7 @@ jobs:
       environment: prod
       system_under_test: spice_cloud
       etl_type: events
-      scale_factor: '1'
+      scale_factor: '10'
       spidapter_version: latest
       custom_image_tag: latest
       use_private_cluster: true
@@ -29,7 +29,7 @@ jobs:
       environment: prod
       system_under_test: spice_cloud
       etl_type: changes
-      scale_factor: '1'
+      scale_factor: '10'
       spidapter_version: latest
       custom_image_tag: latest
       use_private_cluster: true
@@ -45,7 +45,7 @@ jobs:
       system_under_test: mongodb-streams
       acceleration: cayenne
       etl_type: events
-      scale_factor: '1'
+      scale_factor: '10'
       spidapter_image_tag: latest
       use_private_cluster: true
       app_memory_limit: '64Gi'
@@ -60,7 +60,7 @@ jobs:
       system_under_test: mongodb-streams
       acceleration: cayenne
       etl_type: changes
-      scale_factor: '1'
+      scale_factor: '10'
       spidapter_image_tag: latest
       use_private_cluster: true
       app_memory_limit: '64Gi'

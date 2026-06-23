@@ -264,10 +264,17 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
         "Starting Checkpointer"
     );
 
+    let interval = args.checkpoint_interval_steps as usize;
     pipeline.initialize().await?;
-    pipeline
-        .run(args.checkpoint_interval_steps as usize)
-        .await?;
+    if mutations.bootstrap {
+        // Phase identically to the bootstrap run so checkpoint indices align:
+        // checkpoint 0 = the full base (all base steps), then one checkpoint every
+        // `interval` mutation steps.
+        let base_remainder = usize::from(version_metadata.num_steps).saturating_sub(1);
+        pipeline.run(base_remainder.max(1)).await?;
+    } else {
+        pipeline.run(interval).await?;
+    }
 
     let mut checkpoint_idx: usize = 0;
 
@@ -296,6 +303,11 @@ async fn execute_duckdb(args: &CheckpointArgs) -> anyhow::Result<()> {
                 .await?;
                 checkpoint_idx += 1;
 
+                // Bootstrap: after the full-base checkpoint (cp0), switch the pause
+                // cadence to the mutation checkpoint interval.
+                if mutations.bootstrap {
+                    pipeline.set_batch_budget(interval);
+                }
                 pipeline.continue_pipeline()?;
             }
             PipelineState::Stopped(StopReason::Completed) => {

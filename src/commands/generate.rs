@@ -77,7 +77,12 @@ pub async fn execute(args: &GenerateArgs) -> anyhow::Result<()> {
         "Configuration"
     );
 
-    let mutations_config = MutationConfig::new(args.update_ratio, args.delete_ratio);
+    let mutations_config = if args.bootstrap {
+        MutationConfig::new(args.update_ratio, args.delete_ratio)
+            .with_bootstrap(args.bootstrap_mutation_steps, args.bootstrap_churn_fraction)
+    } else {
+        MutationConfig::new(args.update_ratio, args.delete_ratio)
+    };
 
     // Generate data to a temporary working directory on disk.
     let work_dir = tempfile::tempdir()?;
@@ -99,6 +104,9 @@ pub async fn execute(args: &GenerateArgs) -> anyhow::Result<()> {
         dataset_type: args.dataset.clone(),
         update_ratio: mutations_config.update_ratio,
         delete_ratio: mutations_config.delete_ratio,
+        bootstrap: mutations_config.bootstrap,
+        num_mutation_steps: mutations_config.num_mutation_steps,
+        churn_fraction: mutations_config.churn_fraction,
     };
 
     let ingestor = DataGenerator::new(

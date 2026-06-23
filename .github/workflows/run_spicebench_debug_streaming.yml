@@ -58,6 +58,12 @@ on:
       validate_results:
         type: boolean
         default: true
+      bootstrap:
+        type: boolean
+        default: false
+      ready_wait_seconds:
+        type: string
+        default: '1200'
   workflow_dispatch:
     inputs:
       environment:
@@ -167,6 +173,16 @@ on:
         required: false
         default: true
         type: boolean
+      bootstrap:
+        description: 'Bootstrap mode: seed the base into the source, snapshot it (validated against checkpoint 0), then stream pure mutations validated per checkpoint. Requires a bootstrap-generated dataset (with checkpoints).'
+        required: false
+        default: false
+        type: boolean
+      ready_wait_seconds:
+        description: 'Seconds to wait for the Spice Cloud SUT deployment to become ready (raise for slow cold starts / large snapshots)'
+        required: false
+        default: '1200'
+        type: string
 
 jobs:
   run-spicebench:
@@ -219,10 +235,15 @@ jobs:
           SCALE_FACTOR: ${{ inputs.scale_factor || '1' }}
           NUM_QUERY_CLIENTS: ${{ inputs.num_query_clients || '2' }}
           ETL_BUCKET: spicebench
-          ETL_PREFIX: ${{ inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen' }}
+          # Bootstrap datasets are generated under their own prefix (base + pure
+          # mutations); otherwise changes→data-gen-mutable, events→data-gen.
+          ETL_PREFIX: ${{ inputs.bootstrap && 'data-gen-bootstrap' || (inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen') }}
           ETL_REGION: us-east-1
           ETL_SINK: adbc
           SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
+          BOOTSTRAP: ${{ inputs.bootstrap || 'false' }}
+          # Bootstrap datasets have checkpoints too (cp0 = full base, then per
+          # mutation interval), so checkpoint validation applies like normal runs.
           VALIDATE_CHECKPOINT_RESULTS: ${{ inputs.validate_results != false && 'true' || 'false' }}
           CHECKPOINT_VALIDATION_TIMEOUT: ${{ inputs.checkpoint_validation_timeout || '3600' }}
           SCRAPE_SUT_METRICS: 'true'
@@ -274,6 +295,9 @@ jobs:
           NO_TEARDOWN_ARG=""
           [ "${DISABLE_TEARDOWN}" = "true" ] && NO_TEARDOWN_ARG="--no-teardown"
 
+          BOOTSTRAP_ARG=""
+          [ "${BOOTSTRAP}" = "true" ] && BOOTSTRAP_ARG="--bootstrap"
+
           # Map system_under_test → spidapter scenario + whether EC2 env vars are needed
           case "${SYSTEM_UNDER_TEST}" in
             postgres-wal)
@@ -313,6 +337,8 @@ jobs:
 
           # Common docker opts
           ADAPTER_DOCKER_OPTS="run -i"
+          # Scenarios are baked into the spidapter image (SPIDAPTER_SCENARIO_BASE_PATH
+          # defaults to /app/scenarios there), so we only select the scenario here.
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=${SYSTEM_UNDER_TEST}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CHANNEL=${SPIDAPTER_CHANNEL}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICE_ACCELERATION=${ACCELERATION}"
@@ -336,7 +362,7 @@ jobs:
           [ -n "${CUSTOM_IMAGE_TAG}" ]                            && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_IMAGE_TAG=${CUSTOM_IMAGE_TAG}"
           [ "${{ inputs.enable_spice_debug }}" = "true" ] && ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SPICE_DEBUG=true"
 
-          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose"
+          ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose --ready-wait ${{ inputs.ready_wait_seconds || '1200' }}"
 
           set -x
           ~/.spice/bin/spicebench run \
@@ -348,6 +374,7 @@ jobs:
             --table-format parquet \
             ${VALIDATION_ARGS} \
             ${SUT_METRICS_ARGS} \
+            ${BOOTSTRAP_ARG} \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             --system-adapter-env "SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}" \

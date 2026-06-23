@@ -81,6 +81,8 @@ async fn run_benchmark(
         )
     }?;
 
+    // Bootstrap runs also have checkpoints (cp0 = full base, then per mutation
+    // interval), so the manifest is downloaded the same way for all runs.
     let manifest = checkpoint_store
         .download_manifest()
         .await
@@ -165,7 +167,16 @@ async fn run_benchmark(
         }
     }
 
-    // --- Step 1: setup — create tables/collections, start spiced, get write + read config ---
+    // --- Step 1: setup — create source, (optionally) start spiced, get write config ---
+    // In bootstrap mode, setup provisions the source and returns its sink WITHOUT
+    // starting the SUT; the SUT is started later by `activate` (after the seed).
+    let mut setup_metadata = setup_metadata;
+    if common.bootstrap {
+        setup_metadata.insert(
+            system_adapter_protocol::BOOTSTRAP_METADATA_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
     let setup_response = system_adapter_client
         .lock()
         .await
@@ -249,9 +260,66 @@ async fn run_benchmark(
         }
     }
 
-    let read_driver_name = setup_response.read_driver.to_string();
-    let mut read_db_kwargs = setup_response.read_db_kwargs;
-    let query_catalog_namespace = setup_response.catalog_namespace;
+    // --- Bootstrap: seed the FULL base into the source before starting the SUT ---
+    // `initialize` wrote only batch 0; run the remaining base steps (batch_ids
+    // 1..num_steps) so the SUT's initial snapshot sees the complete base. This runs
+    // unthrottled and with the SUT not yet started. The streaming/mutation batches
+    // (batch_ids num_steps..) are left paused for `load::run`, which resumes the
+    // pipeline via `continue_pipeline`.
+    if common.bootstrap {
+        let base_remainder = usize::from(generation_config.num_steps).saturating_sub(1);
+        if base_remainder > 0 {
+            tracing::info!(
+                base_remainder_steps = base_remainder,
+                "Bootstrap: seeding full base into source (unthrottled, SUT not started)..."
+            );
+            // The base seed must not be rate-limited (only the mutation phase is).
+            pipeline.set_rate_limit_enabled(false);
+            tokio::select! {
+                r = async {
+                    pipeline.run(base_remainder).await?;
+                    Ok::<_, anyhow::Error>(pipeline.wait().await)
+                } => {
+                    let seed_state = r?;
+                    tracing::info!(?seed_state, "Bootstrap: full base seeded");
+                }
+                _ = shutdown.cancelled() => {
+                    pipeline.cancel();
+                    return Err(anyhow::anyhow!("Interrupted during bootstrap base seed"));
+                }
+            }
+            // Re-enable rate limiting for the streaming/mutation phase.
+            pipeline.set_rate_limit_enabled(true);
+        }
+    }
+
+    // In bootstrap mode the SUT was not started during setup. The full base is now
+    // seeded, so start the SUT — which snapshots the seeded data — and take the real
+    // read-side config from `activate`. Stamp the start so the bootstrap load
+    // duration/throughput (activate + snapshot) can be measured in `load::run`.
+    let mut bootstrap_activate_start: Option<std::time::Instant> = None;
+    let (read_driver_name, mut read_db_kwargs, query_catalog_namespace) = if common.bootstrap {
+        tracing::info!("Bootstrap: activating SUT (snapshot of existing data)...");
+        bootstrap_activate_start = Some(std::time::Instant::now());
+        let resp = system_adapter_client
+            .lock()
+            .await
+            .activate(run_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("activate failed: {e}"))?;
+        tracing::info!("Bootstrap: SUT activated; snapshot of existing data in progress");
+        (
+            resp.read_driver.to_string(),
+            resp.read_db_kwargs,
+            resp.catalog_namespace,
+        )
+    } else {
+        (
+            setup_response.read_driver.to_string(),
+            setup_response.read_db_kwargs,
+            setup_response.catalog_namespace,
+        )
+    };
 
     if read_driver_name.eq_ignore_ascii_case("flightsql") {
         read_db_kwargs
@@ -293,6 +361,7 @@ async fn run_benchmark(
             .map(std::path::Path::new)
             .or_else(|| Some(checkpoint_dir.path())),
         query_catalog_namespace,
+        bootstrap_activate_start,
         shutdown,
     )
     .await?;

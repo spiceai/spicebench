@@ -210,6 +210,15 @@ pub struct RunArgs {
     /// triggering adapter-side cleanup (e.g. for debugging spice_cloud deployments).
     #[arg(long, default_value_t = false)]
     pub(crate) no_teardown: bool,
+
+    /// Bootstrap mode: seed the base dataset into the source, then start the SUT
+    /// (which snapshots the seeded data) before streaming the mutation workload.
+    ///
+    /// Requires an adapter that supports the `activate` RPC (e.g. spidapter
+    /// mongodb-streams). The base load runs unthrottled; only the streaming phase
+    /// is rate-limited (see `SPICEBENCH_SINK_MAX_RECORDS_PER_SEC`).
+    #[arg(long, env = "SPICEBENCH_BOOTSTRAP", default_value_t = false)]
+    pub(crate) bootstrap: bool,
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
