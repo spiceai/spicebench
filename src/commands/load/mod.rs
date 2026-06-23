@@ -1439,7 +1439,10 @@ pub(crate) async fn run(
     if checkpoint_e2e_latency_samples.is_empty() {
         tracing::info!("E2E latency: no checkpoint samples collected");
     } else {
-        let mut sorted = checkpoint_e2e_latency_samples.clone();
+        let mut sorted: Vec<f64> = checkpoint_e2e_latency_samples
+            .iter()
+            .map(|(_, ms)| *ms)
+            .collect();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let n = sorted.len();
         let pct = |p: f64| sorted[((p * (n - 1) as f64).round() as usize).min(n - 1)];
