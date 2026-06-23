@@ -31,6 +31,31 @@ use crate::dataset::simple_sequence::SimpleSequenceDataset;
 use crate::dataset::tpch::TpchDataset;
 use crate::storage::DataStorage;
 
+/// ETL mode derived from mutation ratios.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EtlType {
+    /// Append-only data (no updates/deletes).
+    Events,
+    /// Change-data mode (updates and/or deletes present).
+    Changes,
+}
+
+impl EtlType {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Events => "events",
+            Self::Changes => "changes",
+        }
+    }
+}
+
+impl std::fmt::Display for EtlType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Metadata about a table in a dataset.
 #[derive(Debug, Clone)]
 pub struct DatasetTable {
@@ -154,6 +179,15 @@ impl MutationConfig {
         Self {
             update_ratio,
             delete_ratio,
+        }
+    }
+
+    #[must_use]
+    pub fn etl_type(&self) -> EtlType {
+        if self.update_ratio == 0.0 && self.delete_ratio == 0.0 {
+            EtlType::Events
+        } else {
+            EtlType::Changes
         }
     }
 }

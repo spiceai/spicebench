@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::DatasetConfig;
-use crate::dataset::MutationConfig;
+use crate::dataset::{EtlType, MutationConfig};
 
 /// Converts an Arrow [`SchemaRef`] to a JSON-compatible representation
 /// using Arrow's built-in IPC JSON serialization (the "Schema" portion
@@ -105,16 +105,9 @@ impl VersionMetadata {
     }
 
     /// Returns the ETL type based on the mutation configuration.
-    ///
-    /// - `"events"` — append-only data (no updates or deletes).
-    /// - `"changes"` — data with mutations (updates and/or deletes).
     #[must_use]
-    pub fn etl_type(&self) -> &'static str {
-        if self.mutations.update_ratio == 0.0 && self.mutations.delete_ratio == 0.0 {
-            "events"
-        } else {
-            "changes"
-        }
+    pub fn etl_type(&self) -> EtlType {
+        self.mutation_config().etl_type()
     }
 }
 
