@@ -144,14 +144,6 @@ pub static EFFICIENCY_QUERIES_PER_CORE: LazyLock<Gauge<f64>> = LazyLock::new(|| 
 
 // --- E2E Latency ---
 
-pub static E2E_LATENCY_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
-    meter()
-        .f64_histogram("e2e_latency_ms")
-        .with_description("End-to-end latency from event creation to the event being queryable.")
-        .with_unit("ms")
-        .build()
-});
-
 // Per-checkpoint convergence latency, recorded once per converged mutation
 // checkpoint with a `checkpoint_idx` attribute so each sample is a distinct
 // gauge series and survives last-value aggregation (a histogram only exports

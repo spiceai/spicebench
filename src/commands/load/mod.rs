@@ -1352,8 +1352,6 @@ pub(crate) async fn run(
 
     // Record deferred metrics now that outcome is available.
     for (checkpoint_idx, e2e_latency_ms) in &checkpoint_e2e_latency_samples {
-        crate::metrics::E2E_LATENCY_MS.record(*e2e_latency_ms, &metric_attributes);
-
         let mut attrs = metric_attributes.clone();
         attrs.push(KeyValue::new("checkpoint_idx", *checkpoint_idx as i64));
         crate::metrics::E2E_LATENCY_GAUGE_MS.record(*e2e_latency_ms, &attrs);
