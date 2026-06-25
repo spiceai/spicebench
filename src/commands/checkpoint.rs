@@ -58,6 +58,21 @@ async fn run_checkpoint_queries(
     let resolved_checkpoint_dir = checkpoint_dir.join(checkpoint_idx.to_string());
     fs::create_dir_all(&resolved_checkpoint_dir)?;
 
+    // Rowcount-only mode (SPICEBENCH_VALIDATE_ROWCOUNTS_ONLY / TABLE_ALLOWLIST):
+    // the analytical query oracle is never consumed (run-time validation
+    // converges on row counts alone), and generating it over a large SF is the
+    // dominant cost — e.g. SF10 spends hours running 21 TPC-H queries × N
+    // checkpoints in DuckDB. Skip it; `write_checkpoint_row_counts` (the cheap
+    // COUNT(*) per table, called separately) still runs and is all the
+    // resurrection check needs.
+    if super::load::rowcount_only_validation() {
+        tracing::info!(
+            checkpoint = checkpoint_idx,
+            "Rowcount-only mode: skipping checkpoint query-oracle generation"
+        );
+        return Ok(());
+    }
+
     for (query_idx, sql) in checkpoint_queries.iter().enumerate() {
         tracing::info!(
             checkpoint = checkpoint_idx,

@@ -90,8 +90,26 @@ pub(crate) async fn build_test_with_validation(
         query_catalog_namespace,
     )?;
 
+    // Rowcount-only mode (single-table allowlist / SPICEBENCH_VALIDATE_ROWCOUNTS_ONLY):
+    // the multi-table TPC-H worker query set floods with "table 'spice.public.X'
+    // not found" for every non-ingested table. Replace the worker workload with a
+    // single trivial no-op so the workers neither error-spam nor busy-loop on an
+    // empty set; correctness is validated by checkpoint row counts instead.
+    let worker_queries = if load::rowcount_only_validation() {
+        tracing::info!(
+            "Rowcount-only mode: replacing the multi-table worker query workload with a no-op (SELECT 1)"
+        );
+        vec![test_framework::queries::Query::new(
+            "rowcount_only_noop".into(),
+            "SELECT 1".into(),
+            false,
+        )]
+    } else {
+        queries
+    };
+
     let test_builder = test_builder
-        .with_query_set(queries)
+        .with_query_set(worker_queries)
         .with_query_set_type(query_set.clone());
 
     Ok((query_set, test_builder))

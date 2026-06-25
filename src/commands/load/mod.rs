@@ -447,6 +447,32 @@ fn load_checkpoint_results(
     Ok(results)
 }
 
+/// Optional comma-separated table allowlist from `SPICEBENCH_TABLE_ALLOWLIST`.
+/// When set, checkpoint validation only considers these tables' row counts —
+/// the validation-side twin of the data generator's allowlist, used to
+/// reproduce CDC issues against a single table (e.g. `orders`).
+pub(crate) fn table_allowlist() -> Option<std::collections::HashSet<String>> {
+    let raw = std::env::var("SPICEBENCH_TABLE_ALLOWLIST").ok()?;
+    let set: std::collections::HashSet<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    (!set.is_empty()).then_some(set)
+}
+
+/// True when checkpoint validation should converge on row-count match ALONE,
+/// skipping the analytical query workload. The query set is multi-table and
+/// floods/fails on an allowlisted single table, so this is enabled by
+/// `SPICEBENCH_VALIDATE_ROWCOUNTS_ONLY` (`1`/`true`/`yes`) OR implied whenever a
+/// `SPICEBENCH_TABLE_ALLOWLIST` is set.
+pub(crate) fn rowcount_only_validation() -> bool {
+    let explicit = std::env::var("SPICEBENCH_VALIDATE_ROWCOUNTS_ONLY")
+        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes"))
+        .unwrap_or(false);
+    explicit || table_allowlist().is_some()
+}
+
 fn load_checkpoint_row_counts(
     checkpoint_dir: &Path,
     checkpoint_idx: usize,
@@ -457,7 +483,14 @@ fn load_checkpoint_row_counts(
         return Ok(HashMap::new());
     }
 
-    Ok(serde_json::from_slice(&std::fs::read(row_counts_path)?)?)
+    let mut counts: HashMap<String, usize> =
+        serde_json::from_slice(&std::fs::read(row_counts_path)?)?;
+    // Restrict validation to the allowlist (if any), so a single-table run only
+    // checks that table's row count even when row_counts.json covers all tables.
+    if let Some(allow) = table_allowlist() {
+        counts.retain(|table, _| allow.contains(table));
+    }
+    Ok(counts)
 }
 
 fn checkpoint_count_query(
@@ -792,16 +825,7 @@ async fn run_checkpoint_validation(
     shutdown: &CancellationToken,
 ) -> CheckpointValidationResult {
     let deadline = tokio::time::Instant::now() + max_wait;
-
-    // Use query2 as the probe query.  Query1 is too slow.
-    let probe_query = &queries[1];
-    let Some(probe_expected) = expected_results.get(&probe_query.name) else {
-        tracing::error!(
-            "Checkpoint {checkpoint_idx}: no expected results for probe query '{}', skipping validation",
-            probe_query.name
-        );
-        return CheckpointValidationResult::TimedOut;
-    };
+    let rowcount_only = rowcount_only_validation();
 
     // Phase 0: validate table row counts first as a fast correctness probe.
     // Row count queries are cheap and immediately surface data loss/duplication
@@ -844,6 +868,32 @@ async fn run_checkpoint_validation(
             );
         }
     }
+
+    // Rowcount-only mode (single-table allowlist / SPICEBENCH_VALIDATE_ROWCOUNTS_ONLY):
+    // the analytical query set is multi-table and floods/fails on an allowlisted
+    // single table, so converge on row-count match alone. NOTE: latency here is
+    // measured at row-count convergence, a DIFFERENT measurement point than the
+    // probe-send-time path below (see docs/e2e-latency-metric-issue.md).
+    if rowcount_only {
+        let latency_ms = checkpoint_pause_time.elapsed().as_secs_f64() * 1000.0;
+        tracing::info!(
+            "Checkpoint {checkpoint_idx} converged (rowcount-only): E2E latency = {:.1}s (query validation skipped)",
+            latency_ms / 1000.0
+        );
+        return CheckpointValidationResult::Converged {
+            e2e_latency_ms: latency_ms,
+        };
+    }
+
+    // Use query2 as the probe query.  Query1 is too slow.
+    let probe_query = &queries[1];
+    let Some(probe_expected) = expected_results.get(&probe_query.name) else {
+        tracing::error!(
+            "Checkpoint {checkpoint_idx}: no expected results for probe query '{}', skipping validation",
+            probe_query.name
+        );
+        return CheckpointValidationResult::TimedOut;
+    };
 
     tracing::info!(
         "Checkpoint {checkpoint_idx}: row counts passed, probing '{}' every {}s",
@@ -1214,7 +1264,10 @@ pub(crate) async fn run(
                             && let Some(cp_dir) = checkpoint_dir
                         {
                             match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
-                                Ok(expected_results) if !expected_results.is_empty() => {
+                                Ok(expected_results)
+                                    if !expected_results.is_empty()
+                                        || rowcount_only_validation() =>
+                                {
                                     let expected_row_counts =
                                         load_checkpoint_row_counts(cp_dir, checkpoint_idx)
                                             .unwrap_or_default();
@@ -1300,7 +1353,10 @@ pub(crate) async fn run(
                         {
                             let checkpoint_idx = etl_pipeline.checkpoint_idx();
                             match load_checkpoint_results(cp_dir, checkpoint_idx, &query_names) {
-                                Ok(expected_results) if !expected_results.is_empty() => {
+                                Ok(expected_results)
+                                    if !expected_results.is_empty()
+                                        || rowcount_only_validation() =>
+                                {
                                     let expected_row_counts =
                                         load_checkpoint_row_counts(cp_dir, checkpoint_idx)
                                             .unwrap_or_default();

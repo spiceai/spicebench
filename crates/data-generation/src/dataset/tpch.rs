@@ -72,6 +72,20 @@ const SF1_ROW_COUNTS: &[(&str, u64)] = &[
     ("lineitem", 6_001_215),
 ];
 
+/// Optional comma-separated table allowlist from `SPICEBENCH_TABLE_ALLOWLIST`.
+/// When set, only these TPC-H tables are generated/ingested — used to reproduce
+/// CDC issues against a single table (e.g. `orders`) without running the full
+/// multi-table suite. Returns `None` when unset/empty (all tables active).
+fn table_allowlist() -> Option<std::collections::HashSet<String>> {
+    let raw = std::env::var("SPICEBENCH_TABLE_ALLOWLIST").ok()?;
+    let set: std::collections::HashSet<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    (!set.is_empty()).then_some(set)
+}
+
 /// Returns the expected total number of rows for a given table at the
 /// specified scale factor.
 fn total_rows_for_table(table: &str, scale_factor: f64) -> u64 {
@@ -665,8 +679,10 @@ impl Dataset for TpchDataset {
     }
 
     fn tables(&self) -> HashMap<String, DatasetTable> {
+        let allowlist = table_allowlist();
         TPCH_TABLES
             .iter()
+            .filter(|(name, _)| allowlist.as_ref().is_none_or(|a| a.contains(*name)))
             .map(|(name, time_col)| {
                 (
                     (*name).to_string(),
