@@ -1,0 +1,6 @@
+compute: local
+acceleration: ${SPICE_ACCELERATION:-cayenne}
+source:
+  mongodb_streams:
+    connect:
+      uri: ${MONGODB_URI:-mongodb://localhost:27017/spicebench?directConnection=true&replicaSet=rs0&tls=false}
