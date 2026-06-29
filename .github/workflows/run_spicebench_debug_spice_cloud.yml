@@ -149,11 +149,15 @@ on:
         required: false
         default: false
         type: boolean
+concurrency:
+  group: spicebench-spicehq-cluster
+  cancel-in-progress: false
+
 jobs:
   run-spicebench:
     name: Run spicebench
     runs-on: spiceai-dev-runners
-    timeout-minutes: 600
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
