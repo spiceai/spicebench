@@ -1,0 +1,24 @@
+compute: local
+acceleration: ${SPICE_ACCELERATION:-cayenne}
+source:
+  postgres_wal:
+    connect:
+      host: ${PG_HOST:-localhost}
+      port: ${PG_PORT:-5432}
+      user: ${PG_USER:-postgres}
+      password: ${PG_PASSWORD:-password}
+      database: ${PG_DATABASE:-spicebench}
+
+acceleration_params:
+  cayenne_tuning: ${SPIDAPTER_CAYENNE_TUNING:-auto}
+
+runtime:
+  params:
+    cdc_prefetch_buffer: '1024'
+    cdc_max_coalesced_envelopes: '4096'
+    cayenne_footer_cache_mb: '1024'
+  query:
+    target_partitions: 64
+  results_cache:
+    enabled: false
+
