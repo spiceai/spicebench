@@ -3,15 +3,12 @@ run-name: Scheduled - ${{ github.event_name }}
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch: {}  # allow manual trigger for testing
 
 jobs:
   spice-cloud-events:
     name: spice_cloud SF1 events
-    concurrency:
-      group: spicebench-scheduled-${{ github.ref }}-spice_cloud
-      cancel-in-progress: false
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
@@ -27,9 +24,8 @@ jobs:
 
   spice-cloud-changes:
     name: spice_cloud SF1 changes
-    concurrency:
-      group: spicebench-scheduled-${{ github.ref }}-spice_cloud
-      cancel-in-progress: false
+    needs: spice-cloud-events
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
@@ -45,9 +41,8 @@ jobs:
 
   mongodb-events:
     name: mongodb SF1 events
-    concurrency:
-      group: spicebench-scheduled-${{ github.ref }}-mongodb-streams
-      cancel-in-progress: false
+    needs: spice-cloud-changes
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
     with:
       environment: production
@@ -63,9 +58,8 @@ jobs:
 
   mongodb-changes:
     name: mongodb SF1 changes
-    concurrency:
-      group: spicebench-scheduled-${{ github.ref }}-mongodb-streams
-      cancel-in-progress: false
+    needs: mongodb-events
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
     with:
       environment: production
