@@ -2,16 +2,19 @@ name: Scheduled Benchmark Runs
 run-name: Scheduled - ${{ github.event_name }}
 
 on:
-  # PAUSED: the local trunk cayenne-perf campaign is currently the single writer
-  # to the shared cluster. Keeping the schedule off guarantees exactly one
-  # spicebench run targets the cluster at a time. Uncomment to resume.
-  # schedule:
-  #   - cron: '0 */6 * * *'
+  schedule:
+    - cron: '0 */6 * * *'
   workflow_dispatch: {}  # allow manual trigger for testing
 
+# NOTE: the spice_cloud jobs are PAUSED on the schedule while the local trunk
+# cayenne-perf campaign is the single writer to the shared cluster (that campaign
+# already covers spice_cloud at 96Gi / trunk-<sha>). They still run on manual
+# workflow_dispatch. The mongodb-streams jobs continue to run on the schedule.
+# To resume scheduled spice_cloud, drop the `github.event_name != 'schedule'` guards.
 jobs:
   spice-cloud-events:
     name: spice_cloud SF10 events
+    if: ${{ github.event_name != 'schedule' }}
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
@@ -31,7 +34,7 @@ jobs:
   spice-cloud-changes:
     name: spice_cloud SF10 changes
     needs: spice-cloud-events
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'schedule' }}
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
