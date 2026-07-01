@@ -2,13 +2,16 @@ name: Scheduled Benchmark Runs
 run-name: Scheduled - ${{ github.event_name }}
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'
+  # PAUSED: the local trunk cayenne-perf campaign is currently the single writer
+  # to the shared cluster. Keeping the schedule off guarantees exactly one
+  # spicebench run targets the cluster at a time. Uncomment to resume.
+  # schedule:
+  #   - cron: '0 */6 * * *'
   workflow_dispatch: {}  # allow manual trigger for testing
 
 jobs:
   spice-cloud-events:
-    name: spice_cloud SF1 events
+    name: spice_cloud SF10 events
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
@@ -18,12 +21,15 @@ jobs:
       spidapter_version: latest
       custom_image_tag: latest
       use_private_cluster: true
-      app_memory_limit: '16Gi'
-      executor_memory_limit: '16Gi'
+      num_query_clients: '2'
+      adbc_update_strategy: bulk_ingest_upsert
+      executor_replicas: '3'
+      app_memory_limit: '96Gi'
+      executor_memory_limit: '96Gi'
     secrets: inherit
 
   spice-cloud-changes:
-    name: spice_cloud SF1 changes
+    name: spice_cloud SF10 changes
     needs: spice-cloud-events
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
@@ -35,12 +41,15 @@ jobs:
       spidapter_version: latest
       custom_image_tag: latest
       use_private_cluster: true
-      app_memory_limit: '16Gi'
-      executor_memory_limit: '16Gi'
+      num_query_clients: '2'
+      adbc_update_strategy: bulk_ingest_upsert
+      executor_replicas: '3'
+      app_memory_limit: '96Gi'
+      executor_memory_limit: '96Gi'
     secrets: inherit
 
   mongodb-events:
-    name: mongodb SF1 events
+    name: mongodb SF10 events
     needs: spice-cloud-changes
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
@@ -57,7 +66,7 @@ jobs:
     secrets: inherit
 
   mongodb-changes:
-    name: mongodb SF1 changes
+    name: mongodb SF10 changes
     needs: mongodb-events
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
