@@ -39,12 +39,25 @@ on:
           - '0.1'
           - '1'
           - '10'
+          - '100'
+          - '1000'
+      mongo_pod:
+        description: 'MongoDB CDC acceleration pod (spice_cloud only). off = default cayenne source; generate = MongoDB source with a generated pod; tuned = hand-tuned pod for the scale factor (SF 10/100/1000 only); adaptive = Cayenne closed-loop tuner.'
+        required: false
+        default: 'off'
+        type: choice
+        options:
+          - 'off'
+          - 'generate'
+          - 'tuned'
+          - 'adaptive'
 
 env:
   SCENARIO: ${{ github.event.inputs.scenario || 'tpch' }}
   SYSTEM_UNDER_TEST: ${{ github.event.inputs.system_under_test || 'spice_cloud' }}
   ETL_TYPE: ${{ github.event.inputs.etl_type || 'changes' }}
   SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
+  MONGO_POD: ${{ github.event.inputs.mongo_pod || 'off' }}
 
 jobs:
   run-spicebench:
@@ -169,6 +182,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
           S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          MONGODB_ATLAS_URI: ${{ secrets.MONGODB_ATLAS_URI }}
           SPIDAPTER_APP_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB: '256Gi'
@@ -196,10 +210,36 @@ jobs:
             export SPICEBENCH_ADBC_FLUSH_STREAM_BEFORE_UPSERT=true
             export SPICEBENCH_ADBC_DELETE_BATCH_SIZE=50000
 
+            # Source + acceleration-pod selection. MONGO_POD=off keeps the default
+            # cayenne direct-ingest source; any other value runs MongoDB CDC
+            # (SPIDAPTER_SCENARIO=mongodb-streams) and optionally deploys a tuned/
+            # adaptive spicepod baked into the image at /app/scenarios/pods/mongo/.
+            # The mongodb-streams scenario reads MONGO_SPICEPOD_PATH (empty -> generate).
+            SPIDAPTER_SCENARIO=cayenne
+            export MONGO_SPICEPOD_PATH=""
+            case "${MONGO_POD}" in
+              off)      ;;
+              generate) SPIDAPTER_SCENARIO=mongodb-streams ;;
+              adaptive) SPIDAPTER_SCENARIO=mongodb-streams
+                        export MONGO_SPICEPOD_PATH=/app/scenarios/pods/mongo/mongo-adaptive.yaml ;;
+              tuned)    SPIDAPTER_SCENARIO=mongodb-streams
+                        if ! printf '10 100 1000' | grep -qw "${SCALE_FACTOR}"; then
+                          echo "ERROR: mongo_pod=tuned only has pods for SF 10/100/1000 (got ${SCALE_FACTOR}); use adaptive or generate." >&2
+                          exit 1
+                        fi
+                        export MONGO_SPICEPOD_PATH="/app/scenarios/pods/mongo/mongo-sf${SCALE_FACTOR}-tuned.yaml" ;;
+              *)        echo "ERROR: unknown mongo_pod '${MONGO_POD}'" >&2; exit 1 ;;
+            esac
+
             ADAPTER_DOCKER_OPTS="run -i"
             # Scenarios are baked into the spidapter image (SPIDAPTER_SCENARIO_BASE_PATH
             # defaults to /app/scenarios there), so we only select the scenario here.
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=cayenne"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=${SPIDAPTER_SCENARIO}"
+            # MongoDB CDC: forward the Atlas connection URI + optional pod path into the
+            # container so the mongodb-streams scenario can resolve them.
+            if [ "${SPIDAPTER_SCENARIO}" = "mongodb-streams" ]; then
+              ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e MONGODB_ATLAS_URI -e MONGO_SPICEPOD_PATH"
+            fi
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SCHEDULER_STATE_LOCATION"
