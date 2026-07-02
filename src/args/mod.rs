@@ -110,6 +110,12 @@ pub struct RunArgs {
     #[arg(long, default_value = "", env = "RUN_TAG")]
     pub(crate) run_tag: String,
 
+    /// spicebench git branch this run was executed from, added as a `branch`
+    /// metric label for dashboard filtering. Populated from BRANCH in CI
+    /// (github.ref_name); empty for ad-hoc local runs.
+    #[arg(long, default_value = "", env = "BRANCH")]
+    pub(crate) branch: String,
+
     /// How to execute when a system adapter transport is configured.
     /// - adapter-command: dispatch spicebench run as a JSON-RPC command (e.g. run.load)
     /// - direct-query: execute load/query path in spicebench directly (ADBC path)

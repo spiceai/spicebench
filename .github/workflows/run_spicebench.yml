@@ -142,6 +142,8 @@ jobs:
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://api.spice.ai
+          # spicebench branch this run executed from, added as a `branch` metric label.
+          BRANCH: ${{ github.ref_name }}
           DATABRICKS_ENDPOINT: ${{ secrets.DATABRICKS_ENDPOINT }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}

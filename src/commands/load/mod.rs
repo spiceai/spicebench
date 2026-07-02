@@ -943,6 +943,8 @@ pub(crate) async fn run(
             ),
             KeyValue::new("scale_factor", version_metadata.scale_factor.to_string()),
             KeyValue::new("etl_type", version_metadata.etl_type()),
+            KeyValue::new("branch", common_args.branch.clone()),
+            KeyValue::new("is_bootstrap", common_args.bootstrap.to_string()),
         ])
         .build();
 

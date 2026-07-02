@@ -230,6 +230,10 @@ jobs:
           SYSTEM_UNDER_TEST: ${{ inputs.system_under_test }}
           SYSTEM_ADAPTER: ${{ inputs.system_under_test }}-${{ inputs.acceleration }}
           RUN_TAG: ${{ inputs.run_tag || '' }}
+          # spicebench branch this run executed from (github.ref_name), added as a
+          # `branch` metric label. In a reusable (workflow_call) invocation this is
+          # inherited from the caller's context, so scheduled runs report `trunk`.
+          BRANCH: ${{ github.ref_name }}
           ACCELERATION: ${{ inputs.acceleration }}
           SCENARIO: ${{ inputs.scenario || 'tpch' }}
           SCALE_FACTOR: ${{ inputs.scale_factor || '1' }}

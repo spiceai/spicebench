@@ -214,6 +214,9 @@ jobs:
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: ${{ inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+          # spicebench branch this run executed from, added as a `branch` metric
+          # label. Inherited from the caller's context in reusable invocations.
+          BRANCH: ${{ github.ref_name }}
           SCENARIO: ${{ inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ inputs.system_under_test || 'spice_cloud' }}
           SYSTEM_ADAPTER: ${{ inputs.system_under_test || 'spice_cloud' }}
