@@ -95,6 +95,26 @@ SPICED="${SPICED:-$SPICEAI_REPO/target/release/spiced}"
 # in the spidapter image at tools/spidapter/scenarios, so don't default to those.
 SCENARIO_BASE_PATH="${SCENARIO_BASE_PATH:-$REPO_ROOT/scripts/local-scenarios}"
 MONGO_URI="${MONGO_URI:-mongodb://localhost:27017/spicebench?directConnection=true&replicaSet=rs0&tls=false}"
+
+# Optional acceleration pod selection. The `mongodb-streams` scenario deploys a full
+# spicepod verbatim when MONGO_SPICEPOD_PATH is set (else it generates the default).
+#   MONGO_POD=            -> generate default pod (previous behaviour)
+#   MONGO_POD=tuned       -> mongo-sf${SF}-tuned.yaml (hand-tuned, pinned actuators)
+#   MONGO_POD=adaptive    -> mongo-adaptive.yaml (Cayenne closed-loop tuner)
+#   MONGO_POD=<name>      -> mongo-<name>.yaml
+SPIDAPTER_DIR="$(cd "$(dirname "$SPIDAPTER_MANIFEST")" && pwd)"
+MONGO_SPICEPOD_DIR="$SPIDAPTER_DIR/scenarios/pods/mongo"
+case "${MONGO_POD:-}" in
+  "")       MONGO_SPICEPOD_PATH="" ;;
+  tuned)    MONGO_SPICEPOD_PATH="$MONGO_SPICEPOD_DIR/mongo-sf${SF}-tuned.yaml" ;;
+  adaptive) MONGO_SPICEPOD_PATH="$MONGO_SPICEPOD_DIR/mongo-adaptive.yaml" ;;
+  *)        MONGO_SPICEPOD_PATH="$MONGO_SPICEPOD_DIR/mongo-${MONGO_POD}.yaml" ;;
+esac
+if [ -n "$MONGO_SPICEPOD_PATH" ] && [ ! -f "$MONGO_SPICEPOD_PATH" ]; then
+  echo "ERROR: MONGO_POD='$MONGO_POD' resolves to a missing pod: $MONGO_SPICEPOD_PATH"
+  echo "       Available: $(ls "$MONGO_SPICEPOD_DIR" 2>/dev/null | tr '\n' ' ')"
+  exit 1
+fi
 # Atlas (mongodb+srv / *.mongodb.net) is a managed replica set — skip the local
 # replica-set bring-up. Auto-detected from the URI; override with IS_ATLAS=true/false.
 case "$MONGO_URI" in
@@ -171,8 +191,13 @@ else
   echo "      saved to $DATA_ARCHIVE"
 fi
 
-# Generate checkpoints if not cached — required for validation
-if [ -f "$CHECKPOINT_DIR/checkpoints.json" ]; then
+# Generate checkpoints if not cached — required for validation.
+# SKIP_VALIDATION=1 (perf mode) skips this entirely; the run then proceeds
+# without result validation and CDC is characterized purely from the scraped
+# spiced/Mongo metrics (staleness, apply phases, recv-wait vs apply, serverStatus).
+if [ "${SKIP_VALIDATION:-}" = "1" ]; then
+  echo "[2b/4] SKIP_VALIDATION=1 — skipping checkpoint generation (perf mode; no result validation)"
+elif [ -f "$CHECKPOINT_DIR/checkpoints.json" ]; then
   echo "[2b/4] Using cached checkpoints: $CHECKPOINT_DIR"
 else
   echo "[2b/4] Generating bootstrap checkpoints from local archive (cp0 = full base, then per mutation interval)..."
@@ -268,6 +293,11 @@ echo ""
 NO_TEARDOWN_ARG=""
 [ "$NO_TEARDOWN" = "true" ] && NO_TEARDOWN_ARG="--no-teardown"
 
+# Perf mode (SKIP_VALIDATION=1): drop the result-validation flags so the run
+# streams all mutations without pausing to validate against checkpoints.
+VALIDATION_ARGS="--validate-results --checkpoint-local-dir $CHECKPOINT_DIR --checkpoint-validation-timeout $VALIDATION_TIMEOUT"
+[ "${SKIP_VALIDATION:-}" = "1" ] && VALIDATION_ARGS=""
+
 RUSTC_WRAPPER="" \
 SPICEBENCH_TARGET_BATCH_ROWS=640000 \
 SPICEBENCH_SINK_CHUNK_ROWS=5000 \
@@ -281,10 +311,8 @@ RUST_LOG="$RUST_LOG" \
     --etl-sink adbc \
     --etl-source-archive "$DATA_ARCHIVE" \
     --bootstrap \
-    --validate-results \
     --scrape-sut-metrics \
-    --checkpoint-local-dir "$CHECKPOINT_DIR" \
-    --checkpoint-validation-timeout "$VALIDATION_TIMEOUT" \
+    ${VALIDATION_ARGS} \
     ${NO_TEARDOWN_ARG} \
     --system-adapter-stdio-cmd cargo \
     --system-adapter-stdio-args "run --manifest-path $SPIDAPTER_MANIFEST -- stdio \
@@ -294,6 +322,7 @@ RUST_LOG="$RUST_LOG" \
       --spiced-binary $SPICED" \
     --system-adapter-env "SPIDAPTER_METRICS_PORT=${METRICS_PORT}" \
     --system-adapter-env "MONGODB_URI=$MONGO_URI" \
+    --system-adapter-env "MONGO_SPICEPOD_PATH=$MONGO_SPICEPOD_PATH" \
     --system-adapter-env "SPICED_LOG=$SPICED_LOG" \
   2>&1 | tee "$LOG"
 BENCH_EXIT=$?
