@@ -221,6 +221,20 @@ else
     const tables = ["lineitem","orders","customer","part","partsupp","supplier","nation","region"];
     tables.forEach(t => { try { db[t].drop(); print("  dropped: " + t); } catch(e) {} });
   ' 2>/dev/null || true
+  # Drop stale per-run databases left behind by previous (especially interrupted)
+  # runs. spidapter routes each local run to its own `spidapter_<short_id>` database
+  # and only drops it at a clean teardown; a Ctrl+C / crash leaks it. Left to
+  # accumulate, these compete for the WiredTiger cache and thrash the mutation
+  # write path — measured ~24x slowdown (55 -> 1315 _id-upserts/sec) once the
+  # combined working set exceeds the cache. Reap them here so each run starts with
+  # only its own dataset resident.
+  echo "      dropping stale per-run databases (spidapter_*)..."
+  "$MONGOSH" "$MONGO_URI" --quiet --eval '
+    db.getSiblingDB("admin").adminCommand({ listDatabases: 1, nameOnly: true }).databases
+      .map(d => d.name)
+      .filter(n => /^spidapter_/.test(n))
+      .forEach(n => { try { db.getSiblingDB(n).dropDatabase(); print("  dropped db: " + n); } catch(e) {} });
+  ' 2>/dev/null || true
 fi
 echo "      MongoDB ready"
 
