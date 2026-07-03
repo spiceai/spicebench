@@ -194,12 +194,6 @@ jobs:
 
       - uses: ./.github/actions/setup-cc
 
-      - uses: ./.github/actions/management-login
-        with:
-          token-url: ${{ inputs.environment == 'production' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
-          client-id: ${{ inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -225,7 +219,10 @@ jobs:
 
       - name: Run spicebench
         env:
-          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          # spidapter exchanges these client credentials for a fresh OAuth token
+          # (and re-mints it as needed) instead of receiving a static, expiring key.
+          SPICE_CLOUD_CLIENT_ID: ${{ inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          SPICE_CLOUD_CLIENT_SECRET: ${{ inputs.environment == 'production' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
           SPICE_CLOUD_API_URL: ${{ inputs.environment == 'production' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SYSTEM_UNDER_TEST: ${{ inputs.system_under_test }}
           SYSTEM_ADAPTER: ${{ inputs.system_under_test }}-${{ inputs.acceleration }}
@@ -342,7 +339,7 @@ jobs:
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=${SYSTEM_UNDER_TEST}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_CHANNEL=${SPIDAPTER_CHANNEL}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICE_ACCELERATION=${ACCELERATION}"
-          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+          ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICE_CLOUD_CLIENT_ID -e SPICE_CLOUD_CLIENT_SECRET -e SPICE_CLOUD_API_URL"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT"
           ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB=${STREAMING_EPHEMERAL_STORAGE_LIMIT_GB}Gi"
