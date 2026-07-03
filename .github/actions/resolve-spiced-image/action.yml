@@ -22,12 +22,12 @@ inputs:
   github_token:
     description: "Token with packages:read for the OSS spiceai-dev image (internal channel)."
     required: true
-  spicehq_app_id:
-    description: "spicehq GitHub App id used to read the enterprise nightly image."
+  app_id:
+    description: "GitHub App id or client id (package-reader App) used to read the enterprise nightly image."
     required: false
     default: ""
-  spicehq_app_private_key:
-    description: "spicehq GitHub App private key."
+  app_private_key:
+    description: "GitHub App private key (package-reader App)."
     required: false
     default: ""
   dev_repo:
@@ -78,8 +78,8 @@ runs:
       if: ${{ inputs.custom_image_tag == '' }}
       uses: actions/create-github-app-token@v2
       with:
-        app-id: ${{ inputs.spicehq_app_id }}
-        private-key: ${{ inputs.spicehq_app_private_key }}
+        app-id: ${{ inputs.app_id }}
+        private-key: ${{ inputs.app_private_key }}
         owner: spicehq
 
     - name: Resolve spiced image + provenance labels
@@ -108,7 +108,7 @@ runs:
           CHANNEL=nightly;  REPO="${NIGHTLY_REPO}"; TAG="${NIGHTLY_TAG}";      TOKEN="${GHCR_SPICEHQ_TOKEN}"; REPO_LABEL=Enterprise
         fi
         if [ -z "${TOKEN}" ]; then
-          echo "::error::no GHCR token for channel=${CHANNEL} (is the spicehq GitHub App configured with SPICEHQ_GHCR_APP_ID / SPICEHQ_GHCR_APP_PRIVATE_KEY?)"
+          echo "::error::no GHCR token for channel=${CHANNEL} (is the package-reader GitHub App configured with SPICEBENCH_PACKAGE_READER_APP_ID / SPICEBENCH_PACKAGE_READER_PRIVATE_KEY?)"
           exit 1
         fi
 
