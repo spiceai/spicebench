@@ -145,8 +145,6 @@ jobs:
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
-          # spicebench branch this run executed from, added as a `branch` metric label.
-          BRANCH: ${{ github.ref_name }}
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '1' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

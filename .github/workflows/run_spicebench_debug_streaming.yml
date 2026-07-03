@@ -223,6 +223,18 @@ jobs:
         with:
           drivers: flightsql
 
+      # Resolve the exact spiced runtime image that will be benchmarked and read
+      # its OCI provenance labels (commit + on_trunk + ref) for both channels.
+      - name: Resolve spiced image + provenance labels
+        id: spice_image
+        uses: ./.github/actions/resolve-spiced-image
+        with:
+          custom_image_tag: ${{ inputs.custom_image_tag || '' }}
+          nightly_tag: ${{ vars.SPICE_NIGHTLY_TAG || 'latest' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          spicehq_app_id: ${{ vars.SPICEHQ_GHCR_APP_ID }}
+          spicehq_app_private_key: ${{ secrets.SPICEHQ_GHCR_APP_PRIVATE_KEY }}
+
       - name: Run spicebench
         env:
           SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
@@ -230,9 +242,6 @@ jobs:
           SYSTEM_UNDER_TEST: ${{ inputs.system_under_test }}
           SYSTEM_ADAPTER: ${{ inputs.system_under_test }}-${{ inputs.acceleration }}
           RUN_TAG: ${{ inputs.run_tag || '' }}
-          # spicebench branch this run executed from (github.ref_name), added as a
-          # `branch` metric label. In a reusable (workflow_call) invocation this is
-          # inherited from the caller's context, so scheduled runs report `trunk`.
           BRANCH: ${{ github.ref_name }}
           ACCELERATION: ${{ inputs.acceleration }}
           SCENARIO: ${{ inputs.scenario || 'tpch' }}
@@ -268,6 +277,9 @@ jobs:
           DISABLE_TEARDOWN: ${{ inputs.disable_teardown || 'false' }}
           CUSTOM_IMAGE_TAG: ${{ inputs.custom_image_tag || '' }}
           USE_PRIVATE_CLUSTER: ${{ inputs.use_private_cluster || 'true' }}
+          # Resolved spiced runtime provenance (see the resolve step) as ready-made
+          # `--metric-label spice_*=...` args, so every metric is attributable to a build.
+          SPICE_METRIC_LABELS: ${{ steps.spice_image.outputs.metric_label_args }}
         run: |
           set -euo pipefail
           if [ "${ENABLE_MODULE_DEBUG_LOGGING}" = "true" ]; then
@@ -368,6 +380,12 @@ jobs:
 
           ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose --ready-wait ${{ inputs.ready_wait_seconds || '1200' }}"
 
+          # spice_* provenance from the resolve action, plus workflow-level labels.
+          METRIC_LABEL_ARGS="${SPICE_METRIC_LABELS:-}"
+          add_metric_label() { [ -n "${2:-}" ] && METRIC_LABEL_ARGS="${METRIC_LABEL_ARGS} --metric-label $1=$2"; return 0; }
+          add_metric_label spibench_branch "${BRANCH:-}"
+          add_metric_label run_tag         "${RUN_TAG:-}"
+
           set -x
           ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}" \
@@ -379,6 +397,7 @@ jobs:
             ${VALIDATION_ARGS} \
             ${SUT_METRICS_ARGS} \
             ${BOOTSTRAP_ARG} \
+            ${METRIC_LABEL_ARGS} \
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             --system-adapter-env "SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}" \
