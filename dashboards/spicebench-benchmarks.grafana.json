@@ -2434,7 +2434,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "SpiceBench benchmark insights (temp)",
+  "title": "SpiceBench benchmark insights",
+  "uid": "afdqis05ydnuod",
   "version": 10,
   "weekStart": ""
 }
