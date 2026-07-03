@@ -43,6 +43,9 @@ outputs:
   channel:
     description: "Resolved channel (internal|nightly)."
     value: ${{ steps.resolve.outputs.channel }}
+  repo:
+    description: "Source repo family: OSS (spiceai-dev) | Enterprise (enterprise-nightly)."
+    value: ${{ steps.resolve.outputs.repo }}
   image_tag:
     description: "Resolved image tag."
     value: ${{ steps.resolve.outputs.image_tag }}
@@ -100,9 +103,9 @@ runs:
         CRANE=/tmp/crane
 
         if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
-          CHANNEL=internal; REPO="${DEV_REPO}";     TAG="${CUSTOM_IMAGE_TAG}"; TOKEN="${GHCR_SPICEAI_TOKEN}"
+          CHANNEL=internal; REPO="${DEV_REPO}";     TAG="${CUSTOM_IMAGE_TAG}"; TOKEN="${GHCR_SPICEAI_TOKEN}"; REPO_LABEL=OSS
         else
-          CHANNEL=nightly;  REPO="${NIGHTLY_REPO}"; TAG="${NIGHTLY_TAG}";      TOKEN="${GHCR_SPICEHQ_TOKEN}"
+          CHANNEL=nightly;  REPO="${NIGHTLY_REPO}"; TAG="${NIGHTLY_TAG}";      TOKEN="${GHCR_SPICEHQ_TOKEN}"; REPO_LABEL=Enterprise
         fi
         if [ -z "${TOKEN}" ]; then
           echo "::error::no GHCR token for channel=${CHANNEL} (is the spicehq GitHub App configured with SPICEHQ_GHCR_APP_ID / SPICEHQ_GHCR_APP_PRIVATE_KEY?)"
@@ -135,6 +138,7 @@ runs:
         # Combined --metric-label args (spice_* provenance) for spicebench run.
         LABEL_ARGS=""
         add() { [ -n "${2:-}" ] && LABEL_ARGS="${LABEL_ARGS} --metric-label $1=$2"; return 0; }
+        add spice_repo         "${REPO_LABEL}"
         add spice_channel      "${CHANNEL}"
         add spice_image_tag    "${TAG}"
         add spice_image_digest "${DIGEST}"
@@ -145,6 +149,7 @@ runs:
 
         {
           echo "channel=${CHANNEL}"
+          echo "repo=${REPO_LABEL}"
           echo "image_tag=${TAG}"
           echo "digest=${DIGEST}"
           echo "commit=${rev}"
