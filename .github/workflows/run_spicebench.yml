@@ -46,6 +46,10 @@ env:
   ETL_TYPE: ${{ github.event.inputs.etl_type || 'changes' }}
   SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
 
+concurrency:
+  group: "${{ inputs.system_under_test == 'spice_cloud' && 'spicebench-spicehq-cluster' || format('run-{0}', github.run_id) }}"
+  cancel-in-progress: false
+
 jobs:
   run-spicebench:
     name: Run spicebench

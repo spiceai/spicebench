@@ -3,15 +3,13 @@ run-name: Scheduled - ${{ github.event_name }}
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch: {}  # allow manual trigger for testing
 
 jobs:
   spice-cloud-events:
-    name: spice_cloud SF1 events
-    concurrency:
-      group: spicebench-scheduled-${{ github.ref }}-spice_cloud
-      cancel-in-progress: false
+    name: spice_cloud SF10 events
+    if: ${{ github.event_name != 'schedule' }}
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
@@ -21,15 +19,17 @@ jobs:
       spidapter_version: latest
       custom_image_tag: latest
       use_private_cluster: true
-      app_memory_limit: '16Gi'
-      executor_memory_limit: '16Gi'
+      num_query_clients: '2'
+      adbc_update_strategy: bulk_ingest_upsert
+      executor_replicas: '3'
+      app_memory_limit: '96Gi'
+      executor_memory_limit: '96Gi'
     secrets: inherit
 
   spice-cloud-changes:
-    name: spice_cloud SF1 changes
-    concurrency:
-      group: spicebench-scheduled-${{ github.ref }}-spice_cloud
-      cancel-in-progress: false
+    name: spice_cloud SF10 changes
+    needs: spice-cloud-events
+    if: ${{ !cancelled() && github.event_name != 'schedule' }}
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
@@ -39,15 +39,17 @@ jobs:
       spidapter_version: latest
       custom_image_tag: latest
       use_private_cluster: true
-      app_memory_limit: '16Gi'
-      executor_memory_limit: '16Gi'
+      num_query_clients: '2'
+      adbc_update_strategy: bulk_ingest_upsert
+      executor_replicas: '3'
+      app_memory_limit: '96Gi'
+      executor_memory_limit: '96Gi'
     secrets: inherit
 
   mongodb-events:
-    name: mongodb SF1 events
-    concurrency:
-      group: spicebench-scheduled-${{ github.ref }}-mongodb-streams
-      cancel-in-progress: false
+    name: mongodb SF10 events
+    needs: spice-cloud-changes
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
     with:
       environment: production
@@ -62,10 +64,9 @@ jobs:
     secrets: inherit
 
   mongodb-changes:
-    name: mongodb SF1 changes
-    concurrency:
-      group: spicebench-scheduled-${{ github.ref }}-mongodb-streams
-      cancel-in-progress: false
+    name: mongodb SF10 changes
+    needs: mongodb-events
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
     with:
       environment: production

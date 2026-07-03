@@ -184,11 +184,15 @@ on:
         default: '1200'
         type: string
 
+concurrency:
+  group: spicebench-spicehq-cluster
+  cancel-in-progress: false
+
 jobs:
   run-spicebench:
     name: Run spicebench (streaming - ${{ inputs.system_under_test }})
     runs-on: spiceai-dev-runners
-    timeout-minutes: 600
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v6
 
