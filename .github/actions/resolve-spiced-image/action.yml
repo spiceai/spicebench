@@ -6,7 +6,7 @@ description: >-
     internal channel (custom_image_tag set) -> ghcr.io/spiceai/spiceai-dev
       (same org; read with the built-in GITHUB_TOKEN)
     nightly channel  (custom_image_tag empty) -> ghcr.io/spicehq/spiceai-enterprise-nightly
-      (cross-org; read with a spicehq GitHub App installation token)
+      (cross-org private package; read with a classic read:packages PAT)
   Emits the fields both individually and as a ready-to-splice
   `--metric-label spice_*=...` string for `spicebench run`.
 
@@ -22,12 +22,11 @@ inputs:
   github_token:
     description: "Token with packages:read for the OSS spiceai-dev image (internal channel)."
     required: true
-  app_id:
-    description: "GitHub App id or client id (package-reader App) used to read the enterprise nightly image."
-    required: false
-    default: ""
-  app_private_key:
-    description: "GitHub App private key (package-reader App)."
+  package_read_token:
+    description: >-
+      PAT with `read:packages` for the enterprise nightly image (nightly channel).
+      GITHUB_TOKEN can't read a cross-org private package and GitHub App installation
+      tokens aren't a supported GHCR read path, so a PAT is required here.
     required: false
     default: ""
   dev_repo:
@@ -71,17 +70,6 @@ outputs:
 runs:
   using: composite
   steps:
-    # Cross-org read of the enterprise nightly image needs a spicehq App token;
-    # the internal channel uses the caller's github_token, so skip this there.
-    - name: Mint spicehq GHCR token
-      id: spicehq_token
-      if: ${{ inputs.custom_image_tag == '' }}
-      uses: actions/create-github-app-token@v2
-      with:
-        app-id: ${{ inputs.app_id }}
-        private-key: ${{ inputs.app_private_key }}
-        owner: spicehq
-
     - name: Resolve spiced image + provenance labels
       id: resolve
       shell: bash
@@ -90,8 +78,11 @@ runs:
         DEV_REPO: ${{ inputs.dev_repo }}
         NIGHTLY_REPO: ${{ inputs.nightly_repo }}
         NIGHTLY_TAG: ${{ inputs.nightly_tag }}
+        # internal (OSS spiceai-dev) = caller's GITHUB_TOKEN; nightly (cross-org
+        # enterprise) = a classic read:packages PAT. GHCR only supports classic
+        # PATs; GITHUB_TOKEN / App tokens can't read a cross-org private package.
         GHCR_SPICEAI_TOKEN: ${{ inputs.github_token }}
-        GHCR_SPICEHQ_TOKEN: ${{ steps.spicehq_token.outputs.token }}
+        GHCR_ENTERPRISE_TOKEN: ${{ inputs.package_read_token }}
       run: |
         set -euo pipefail
 
@@ -103,12 +94,12 @@ runs:
         CRANE=/tmp/crane
 
         if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
-          CHANNEL=internal; REPO="${DEV_REPO}";     TAG="${CUSTOM_IMAGE_TAG}"; TOKEN="${GHCR_SPICEAI_TOKEN}"; REPO_LABEL=OSS
+          CHANNEL=internal; REPO="${DEV_REPO}";     TAG="${CUSTOM_IMAGE_TAG}"; TOKEN="${GHCR_SPICEAI_TOKEN}";    REPO_LABEL=OSS
         else
-          CHANNEL=nightly;  REPO="${NIGHTLY_REPO}"; TAG="${NIGHTLY_TAG}";      TOKEN="${GHCR_SPICEHQ_TOKEN}"; REPO_LABEL=Enterprise
+          CHANNEL=nightly;  REPO="${NIGHTLY_REPO}"; TAG="${NIGHTLY_TAG}";      TOKEN="${GHCR_ENTERPRISE_TOKEN}"; REPO_LABEL=Enterprise
         fi
         if [ -z "${TOKEN}" ]; then
-          echo "::error::no GHCR token for channel=${CHANNEL} (is the package-reader GitHub App configured with SPICEBENCH_PACKAGE_READER_APP_ID / SPICEBENCH_PACKAGE_READER_PRIVATE_KEY?)"
+          echo "::error::no GHCR token for channel=${CHANNEL} (is the SPICEBENCH_PACKAGE_READER_TOKEN secret set with a classic read:packages PAT?)"
           exit 1
         fi
 

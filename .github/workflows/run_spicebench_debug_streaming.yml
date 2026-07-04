@@ -232,8 +232,7 @@ jobs:
           custom_image_tag: ${{ inputs.custom_image_tag || '' }}
           nightly_tag: ${{ vars.SPICE_NIGHTLY_TAG || 'latest' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          app_id: ${{ vars.SPICEBENCH_PACKAGE_READER_APP_ID }}
-          app_private_key: ${{ secrets.SPICEBENCH_PACKAGE_READER_PRIVATE_KEY }}
+          package_read_token: ${{ secrets.SPICEBENCH_PACKAGE_READER_TOKEN }}
 
       - name: Run spicebench
         env:
