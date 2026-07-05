@@ -104,11 +104,6 @@ jobs:
 
       - uses: ./.github/actions/setup-cc
 
-      - uses: ./.github/actions/management-login
-        with:
-          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -143,7 +138,10 @@ jobs:
       - name: Run spicebench
         if: ${{ false }}
         env:
-          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          # spidapter exchanges these client credentials for a fresh OAuth token
+          # (and re-mints it as needed) instead of receiving a static, expiring key.
+          SPICE_CLOUD_CLIENT_ID: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          SPICE_CLOUD_CLIENT_SECRET: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
           SPICE_CLOUD_API_URL: https://dev-api.spice.ai
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '1' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -160,4 +158,4 @@ jobs:
             --scale-factor 0.001 \
             --etl-region us-east-1 \
             --system-adapter-stdio-cmd docker \
-            --system-adapter-stdio-args "run -i -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SPIDAPTER_CHANNEL=nightly -e SPIDAPTER_SCENARIO=cayenne ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            --system-adapter-stdio-args "run -i -e SPICE_CLOUD_CLIENT_ID -e SPICE_CLOUD_CLIENT_SECRET -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SPIDAPTER_CHANNEL=nightly -e SPIDAPTER_SCENARIO=cayenne ghcr.io/spiceai/spidapter:latest stdio --verbose"
