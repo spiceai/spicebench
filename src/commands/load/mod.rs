@@ -930,20 +930,28 @@ pub(crate) async fn run(
 
     scenario.load_query_set()?;
 
+    let mut resource_attributes = vec![
+        KeyValue::new("service.name", "spicebench"),
+        KeyValue::new("type", "spicebench"),
+        KeyValue::new("adapter_name", common_args.system_adapter_name.clone()),
+        KeyValue::new("scenario", scenario.to_string()),
+        KeyValue::new(
+            "data_gen_version",
+            data_generation::config::format_scale_factor(common_args.scale_factor),
+        ),
+        KeyValue::new("scale_factor", version_metadata.scale_factor.to_string()),
+        KeyValue::new("etl_type", version_metadata.etl_type()),
+        KeyValue::new("is_bootstrap", common_args.bootstrap.to_string()),
+    ];
+    // Arbitrary caller-supplied dimensions (e.g. resolved spice runtime image
+    // provenance: spice_commit / spice_on_trunk / spice_ref_name). Attached to
+    // the resource so they stamp onto every metric, like the fixed labels above.
+    for (key, value) in &common_args.metric_label {
+        resource_attributes.push(KeyValue::new(key.clone(), value.clone()));
+    }
+
     let load_resource = Resource::builder_empty()
-        .with_attributes(vec![
-            KeyValue::new("service.name", "spicebench"),
-            KeyValue::new("type", "spicebench"),
-            KeyValue::new("adapter_name", common_args.system_adapter_name.clone()),
-            KeyValue::new("run_tag", common_args.run_tag.clone()),
-            KeyValue::new("scenario", scenario.to_string()),
-            KeyValue::new(
-                "data_gen_version",
-                data_generation::config::format_scale_factor(common_args.scale_factor),
-            ),
-            KeyValue::new("scale_factor", version_metadata.scale_factor.to_string()),
-            KeyValue::new("etl_type", version_metadata.etl_type()),
-        ])
+        .with_attributes(resource_attributes)
         .build();
 
     // Create telemetry with resource upfront, before any metrics calls

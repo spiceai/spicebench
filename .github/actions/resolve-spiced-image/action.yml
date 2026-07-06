@@ -1,0 +1,151 @@
+name: Resolve spiced image
+description: >-
+  Resolve the exact spiced runtime image a spice_cloud/SCP benchmark run will use
+  and read its OCI provenance labels, so every metric is attributable to a spice
+  build (commit + on_trunk + ref). Handles both channels:
+    internal channel (custom_image_tag set) -> ghcr.io/spiceai/spiceai-dev
+      (same org; read with the built-in GITHUB_TOKEN)
+    nightly channel  (custom_image_tag empty) -> ghcr.io/spicehq/spiceai-enterprise-nightly
+      (cross-org private package; read with a classic read:packages PAT)
+  Emits the fields both individually and as a ready-to-splice
+  `--metric-label spice_*=...` string for `spicebench run`.
+
+inputs:
+  custom_image_tag:
+    description: "Pinned spiceai-dev tag -> internal channel; empty -> nightly channel."
+    required: false
+    default: ""
+  nightly_tag:
+    description: "Floating tag the SCP nightly channel tracks (override if not 'latest')."
+    required: false
+    default: "latest"
+  github_token:
+    description: "Token with packages:read for the OSS spiceai-dev image (internal channel)."
+    required: true
+  package_read_token:
+    description: >-
+      PAT with `read:packages` for the enterprise nightly image (nightly channel).
+      GITHUB_TOKEN can't read a cross-org private package and GitHub App installation
+      tokens aren't a supported GHCR read path, so a PAT is required here.
+    required: false
+    default: ""
+  dev_repo:
+    description: "OSS runtime image repo (internal channel)."
+    required: false
+    default: "ghcr.io/spiceai/spiceai-dev"
+  nightly_repo:
+    description: "Enterprise runtime image repo (nightly channel)."
+    required: false
+    default: "ghcr.io/spicehq/spiceai-enterprise-nightly"
+
+outputs:
+  channel:
+    description: "Resolved channel (internal|nightly)."
+    value: ${{ steps.resolve.outputs.channel }}
+  repo:
+    description: "Source repo family: OSS (spiceai-dev) | Enterprise (enterprise-nightly)."
+    value: ${{ steps.resolve.outputs.repo }}
+  image_tag:
+    description: "Resolved image tag."
+    value: ${{ steps.resolve.outputs.image_tag }}
+  digest:
+    description: "Resolved image digest."
+    value: ${{ steps.resolve.outputs.digest }}
+  commit:
+    description: "spiced build commit (org.opencontainers.image.revision)."
+    value: ${{ steps.resolve.outputs.commit }}
+  on_trunk:
+    description: "build.on_trunk label (true|false)."
+    value: ${{ steps.resolve.outputs.on_trunk }}
+  ref_type:
+    description: "build.ref_type label (branch|tag)."
+    value: ${{ steps.resolve.outputs.ref_type }}
+  ref_name:
+    description: "build.ref_name label."
+    value: ${{ steps.resolve.outputs.ref_name }}
+  metric_label_args:
+    description: "Ready-to-splice `--metric-label spice_*=...` args for `spicebench run`."
+    value: ${{ steps.resolve.outputs.metric_label_args }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve spiced image + provenance labels
+      id: resolve
+      shell: bash
+      env:
+        CUSTOM_IMAGE_TAG: ${{ inputs.custom_image_tag }}
+        DEV_REPO: ${{ inputs.dev_repo }}
+        NIGHTLY_REPO: ${{ inputs.nightly_repo }}
+        NIGHTLY_TAG: ${{ inputs.nightly_tag }}
+        # internal (OSS spiceai-dev) = caller's GITHUB_TOKEN; nightly (cross-org
+        # enterprise) = a classic read:packages PAT. GHCR only supports classic
+        # PATs; GITHUB_TOKEN / App tokens can't read a cross-org private package.
+        GHCR_SPICEAI_TOKEN: ${{ inputs.github_token }}
+        GHCR_ENTERPRISE_TOKEN: ${{ inputs.package_read_token }}
+      run: |
+        set -euo pipefail
+
+        # crane: robust OCI config/label reader (handles multi-arch indexes),
+        # pulled as a pinned static binary so we don't depend on runner tooling.
+        CRANE_VERSION=v0.20.2
+        curl -sSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+          | tar -xz -C /tmp crane
+        CRANE=/tmp/crane
+
+        if [ -n "${CUSTOM_IMAGE_TAG}" ]; then
+          CHANNEL=internal; REPO="${DEV_REPO}";     TAG="${CUSTOM_IMAGE_TAG}"; TOKEN="${GHCR_SPICEAI_TOKEN}";    REPO_LABEL=OSS
+        else
+          CHANNEL=nightly;  REPO="${NIGHTLY_REPO}"; TAG="${NIGHTLY_TAG}";      TOKEN="${GHCR_ENTERPRISE_TOKEN}"; REPO_LABEL=Enterprise
+        fi
+        if [ -z "${TOKEN}" ]; then
+          echo "::error::no GHCR token for channel=${CHANNEL} (is the SPICEBENCH_PACKAGE_READER_TOKEN secret set with a classic read:packages PAT?)"
+          exit 1
+        fi
+
+        # Isolate crane's auth in a scratch docker config so we don't clobber
+        # the docker login used to run the spidapter image.
+        export DOCKER_CONFIG="$(mktemp -d)"
+        "${CRANE}" auth login ghcr.io -u x-access-token -p "${TOKEN}"
+
+        DIGEST="$(${CRANE} digest "${REPO}:${TAG}")"
+        LABELS="$(${CRANE} config --platform linux/amd64 "${REPO}@${DIGEST}" | jq -c '.config.Labels // {}')"
+
+        rev="$(jq -r '."org.opencontainers.image.revision" // ""' <<<"${LABELS}")"
+        on_trunk="$(jq -r '."build.on_trunk" // ""' <<<"${LABELS}")"
+        ref_type="$(jq -r '."build.ref_type" // ""' <<<"${LABELS}")"
+        ref_name="$(jq -r '."build.ref_name" // ""' <<<"${LABELS}")"
+
+        for pair in "org.opencontainers.image.revision=${rev}" "build.on_trunk=${on_trunk}" "build.ref_type=${ref_type}" "build.ref_name=${ref_name}"; do
+          if [ -z "${pair#*=}" ]; then
+            echo "::error::missing label '${pair%%=*}' on ${REPO}@${DIGEST}"
+            exit 1
+          fi
+        done
+
+        echo "Resolved spiced image: ${REPO}:${TAG} (${DIGEST})"
+        echo "  channel=${CHANNEL} commit=${rev} on_trunk=${on_trunk} ref=${ref_type}/${ref_name}"
+
+        # Combined --metric-label args (spice_* provenance) for spicebench run.
+        LABEL_ARGS=""
+        add() { [ -n "${2:-}" ] && LABEL_ARGS="${LABEL_ARGS} --metric-label $1=$2"; return 0; }
+        add spice_repo         "${REPO_LABEL}"
+        add spice_channel      "${CHANNEL}"
+        add spice_image_tag    "${TAG}"
+        add spice_image_digest "${DIGEST}"
+        add spice_commit       "${rev}"
+        add spice_on_trunk     "${on_trunk}"
+        add spice_ref_type     "${ref_type}"
+        add spice_ref_name     "${ref_name}"
+
+        {
+          echo "channel=${CHANNEL}"
+          echo "repo=${REPO_LABEL}"
+          echo "image_tag=${TAG}"
+          echo "digest=${DIGEST}"
+          echo "commit=${rev}"
+          echo "on_trunk=${on_trunk}"
+          echo "ref_type=${ref_type}"
+          echo "ref_name=${ref_name}"
+          echo "metric_label_args=${LABEL_ARGS# }"
+        } >> "${GITHUB_OUTPUT}"

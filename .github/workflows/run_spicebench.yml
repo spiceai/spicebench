@@ -135,6 +135,17 @@ jobs:
         with:
           drivers: flightsql
 
+      # Only spice_cloud runs a spiced runtime to attribute; databricks SUTs skip this.
+      - name: Resolve spiced image + provenance labels
+        id: spice_image
+        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
+        uses: ./.github/actions/resolve-spiced-image
+        with:
+          custom_image_tag: ''
+          nightly_tag: ${{ vars.SPICE_NIGHTLY_TAG || 'latest' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          package_read_token: ${{ secrets.SPICEBENCH_PACKAGE_READER_TOKEN }}
+
       - name: Run spicebench
         env:
           # spidapter exchanges these client credentials for a fresh OAuth token
@@ -142,6 +153,8 @@ jobs:
           SPICE_CLOUD_CLIENT_ID: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
           SPICE_CLOUD_CLIENT_SECRET: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
           SPICE_CLOUD_API_URL: https://api.spice.ai
+          BRANCH: ${{ github.ref_name }}
+          SPICE_METRIC_LABELS: ${{ steps.spice_image.outputs.metric_label_args }}
           DATABRICKS_ENDPOINT: ${{ secrets.DATABRICKS_ENDPOINT }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
@@ -254,6 +267,8 @@ jobs:
           ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}" \
             --scenario "${SCENARIO}" \
+            --metric-label "spibench_branch=${BRANCH}" \
+            ${SPICE_METRIC_LABELS} \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
             --etl-sink "${ETL_SINK}" \

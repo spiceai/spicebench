@@ -105,10 +105,15 @@ pub struct RunArgs {
     #[arg(long, default_value = "system_adapter", env = "SYSTEM_ADAPTER")]
     pub(crate) system_adapter_name: String,
 
-    /// Optional suffix added as a separate `run_tag` metric label for differentiating
-    /// runs in dashboards without changing the adapter_name dimension.
-    #[arg(long, default_value = "", env = "RUN_TAG")]
-    pub(crate) run_tag: String,
+    /// Custom metric labels in key=value form. Can be repeated. Each becomes a
+    /// resource attribute on every emitted metric (end-of-run and periodic SUT
+    /// metrics), so callers can attach arbitrary run provenance without a code
+    /// change per dimension — e.g. `spibench_branch` (CI git ref), `run_tag`, or the
+    /// resolved spice runtime image (`spice_commit`, `spice_on_trunk`,
+    /// `spice_ref_name`). Mirrors the `--otlp-header` / `--system-adapter-env`
+    /// key=value pattern.
+    #[arg(long, value_parser = parse_key_val, action = ArgAction::Append, value_name = "KEY=VALUE")]
+    pub(crate) metric_label: Vec<(String, String)>,
 
     /// How to execute when a system adapter transport is configured.
     /// - adapter-command: dispatch spicebench run as a JSON-RPC command (e.g. run.load)
