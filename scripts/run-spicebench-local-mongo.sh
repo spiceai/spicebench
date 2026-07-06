@@ -246,6 +246,26 @@ else
     const tables = ["lineitem","orders","customer","part","partsupp","supplier","nation","region"];
     tables.forEach(t => { try { db[t].drop(); print("  dropped: " + t); } catch(e) {} });
   ' 2>/dev/null || true
+  # Reap stale per-run throwaway databases left by earlier local runs that were
+  # killed before cleanup — they accumulate and pressure the WiredTiger cache.
+  # Drop dated spidapter_<YYYY_MM_DD>_<id> dbs at least REAP_SPIDAPTER_MAX_AGE_DAYS
+  # calendar days old (default 2 => >24h). Set REAP_SPIDAPTER_MAX_AGE_DAYS=0 to
+  # reap ALL spidapter_* throwaways (incl. undated pre-rename ones) — safe on a
+  # single-user local box. Local instance only; never sweep a shared/Atlas one.
+  REAP_DAYS="${REAP_SPIDAPTER_MAX_AGE_DAYS:-2}"
+  echo "      reaping stale spidapter_* databases (>= ${REAP_DAYS} day(s) old; 0 = all)..."
+  "$MONGOSH" "$MONGO_URI" --quiet --eval '
+    const minAge = '"$REAP_DAYS"';
+    const todayDays = Math.floor(Date.now() / 86400000);
+    db.getSiblingDB("admin").adminCommand({ listDatabases: 1, nameOnly: true })
+      .databases.map(d => d.name).filter(n => /^spidapter_/.test(n))
+      .forEach(n => {
+        const m = n.match(/^spidapter_(\d{4})_(\d{2})_(\d{2})_/);
+        if (!m) { if (minAge === 0) { db.getSiblingDB(n).dropDatabase(); print("  reaped (undated): " + n); } return; }
+        const dbDays = Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000);
+        if (minAge === 0 || todayDays - dbDays >= minAge) { db.getSiblingDB(n).dropDatabase(); print("  reaped: " + n); }
+      });
+  ' 2>/dev/null || true
 fi
 echo "      MongoDB ready"
 
@@ -357,10 +377,33 @@ stop_monitors() {
   kill "$CDC_PROBE_PID" 2>/dev/null || true
 }
 
+# Drop the per-run spidapter_<date>_<id> database(s) this run created, recovered
+# from the run log (the adapter prints the name at setup). Safety net for
+# spidapter's in-process teardown, which does NOT run when spidapter is
+# signal-killed (Ctrl+C / the cleanup trap below): MongoDbGuard is fail-safe and
+# never deletes on drop, so without this the throwaway db leaks and accumulates
+# (WiredTiger cache pressure locally; shared-instance bloat on Atlas). Precise —
+# only drops the exact name(s) from THIS run's log, so it never touches another
+# run's db, even on a shared instance.
+drop_run_db() {
+  [ -n "${LOG:-}" ] && [ -f "$LOG" ] || return 0
+  local dbs db
+  dbs=$(grep -oE "spidapter_[0-9a-f_]+" "$LOG" | sort -u || true)
+  [ -n "$dbs" ] || return 0
+  for db in $dbs; do
+    echo "      dropping per-run database: $db"
+    "$MONGOSH" "$MONGO_URI" --quiet --eval "db.getSiblingDB('$db').dropDatabase()" 2>/dev/null \
+      || echo "      WARN: failed to drop $db (leaving it for later cleanup)"
+  done
+}
+
 cleanup() {
   echo ""
   echo "Interrupted — stopping background monitors..."
   stop_monitors
+  # spidapter is about to be signal-killed, so its teardown RPC won't drop the
+  # per-run db — do it here first (unless the caller asked to keep resources).
+  [ "$NO_TEARDOWN" = "true" ] || drop_run_db
   # Kill the spicebench process group so spidapter + spiced also exit
   kill -- -$$ 2>/dev/null || true
   exit 130
@@ -413,6 +456,11 @@ RUST_LOG="$RUST_LOG" \
 BENCH_EXIT=$?
 
 stop_monitors
+
+# Safety net: on a clean run spidapter's teardown RPC already dropped the per-run
+# db, so this is a no-op; it only matters if teardown failed silently. Skip when
+# --no-teardown was requested (the caller wants the db kept for inspection).
+[ "$NO_TEARDOWN" = "true" ] || drop_run_db
 
 # ---------------------------------------------------------------------------
 # Final metrics snapshot before stopping collectors
