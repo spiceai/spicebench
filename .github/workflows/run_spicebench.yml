@@ -46,6 +46,10 @@ env:
   ETL_TYPE: ${{ github.event.inputs.etl_type || 'changes' }}
   SCALE_FACTOR: ${{ github.event.inputs.scale_factor || '1' }}
 
+concurrency:
+  group: "${{ inputs.system_under_test == 'spice_cloud' && 'spicebench-spicehq-cluster' || format('run-{0}', github.run_id) }}"
+  cancel-in-progress: false
+
 jobs:
   run-spicebench:
     name: Run spicebench
@@ -55,13 +59,6 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-cc
-
-      - uses: ./.github/actions/management-login
-        if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
-        with:
-          token-url: https://spice.ai/api/oauth/token
-          client-id: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
-          client-secret: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
 
       - name: Log in to GHCR
         if: ${{ env.SYSTEM_UNDER_TEST == 'spice_cloud' }}
@@ -151,7 +148,10 @@ jobs:
 
       - name: Run spicebench
         env:
-          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          # spidapter exchanges these client credentials for a fresh OAuth token
+          # (and re-mints it as needed) instead of receiving a static, expiring key.
+          SPICE_CLOUD_CLIENT_ID: ${{ secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD }}
+          SPICE_CLOUD_CLIENT_SECRET: ${{ secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD }}
           SPICE_CLOUD_API_URL: https://api.spice.ai
           BRANCH: ${{ github.ref_name }}
           SPICE_METRIC_LABELS: ${{ steps.spice_image.outputs.metric_label_args }}
@@ -213,7 +213,7 @@ jobs:
             # Scenarios are baked into the spidapter image (SPIDAPTER_SCENARIO_BASE_PATH
             # defaults to /app/scenarios there), so we only select the scenario here.
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_SCENARIO=cayenne"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL"
+            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPICE_CLOUD_CLIENT_ID -e SPICE_CLOUD_CLIENT_SECRET -e SPICE_CLOUD_API_URL"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY}"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SCHEDULER_STATE_LOCATION"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ORGANIZATION_TAG"
