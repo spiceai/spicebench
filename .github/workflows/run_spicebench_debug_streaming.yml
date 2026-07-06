@@ -186,6 +186,10 @@ on:
 
 concurrency:
   group: spicebench-spicehq-cluster
+  # FIFO-queue runs in this shared group (up to 100 pending, processed by
+  # wait-start time) instead of the default queue: single where a newer pending
+  # run supersedes the older. Compatible with cancel-in-progress: false.
+  queue: max
   cancel-in-progress: false
 
 jobs:

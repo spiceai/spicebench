@@ -61,6 +61,12 @@ env:
 
 concurrency:
   group: "${{ inputs.system_under_test == 'spice_cloud' && 'spicebench-spicehq-cluster' || format('run-{0}', github.run_id) }}"
+  # FIFO-queue runs sharing the group (GitHub keeps up to 100 pending, processed
+  # by wait-start time) instead of the default `queue: single`, where a newer
+  # pending run supersedes the older. Compatible with cancel-in-progress: false
+  # (an in-flight benchmark is never killed); the two are mutually exclusive with
+  # cancel-in-progress: true.
+  queue: max
   cancel-in-progress: false
 
 jobs:
