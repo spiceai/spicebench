@@ -221,6 +221,49 @@ jobs:
         with:
           drivers: flightsql
 
+      # Report + GC backstop. Each MongoDB CDC run creates a throwaway
+      # `spidapter_<date>_<id>` db that the adapter drops at teardown; an abnormal
+      # exit (cancelled/killed job) leaks one. This step, run before the job creates
+      # its own db (so it can never touch it), reports how many `spidapter_*` dbs are
+      # on the shared Atlas instance and drops any that are stale.
+      #
+      # "Stale" = named date is >= 2 calendar days ago. The date is day-granular, so
+      # a *yesterday*-dated db may have been created at 23:59 and could still belong
+      # to a LIVE run; only `date <= today - 2` guarantees the db is >24h old and
+      # safely past any in-flight run. Undated (pre-rename) `spidapter_<id>` dbs are
+      # left alone. A climbing count of non-stale dbs means cleanup is being skipped.
+      - name: Report and sweep stale spidapter databases (MongoDB)
+        if: ${{ inputs.system_under_test == 'mongodb-streams' }}
+        env:
+          MONGODB_ATLAS_URI: ${{ secrets.MONGODB_ATLAS_URI }}
+        run: |
+          set -uo pipefail
+          OUT=$(docker run --rm -e MONGODB_ATLAS_URI mongo:8.0 mongosh --quiet --eval '
+            const c = new Mongo(process.env.MONGODB_ATLAS_URI);
+            const MIN_AGE_DAYS = 2; // >= 2 calendar days old => >24h, safely past the 10h max run
+            const todayDays = Math.floor(Date.now() / 86400000);
+            const all = c.getDB("admin")
+              .adminCommand({ listDatabases: 1, nameOnly: true })
+              .databases.map(d => d.name).filter(n => /^spidapter_/.test(n)).sort();
+            print("COUNT=" + all.length);
+            all.forEach(n => print("  " + n));
+            const stale = all.filter(n => {
+              const m = n.match(/^spidapter_(\d{4})_(\d{2})_(\d{2})_/);
+              if (!m) return false; // undated (pre-rename) name: leave for manual cleanup
+              const dbDays = Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000);
+              return todayDays - dbDays >= MIN_AGE_DAYS;
+            });
+            stale.forEach(n => {
+              const r = c.getDB(n).dropDatabase();
+              print("dropped stale " + n + " -> " + JSON.stringify(r));
+            });
+            print("STALE=" + stale.length);
+          ') || { echo "WARN: could not list/sweep spidapter_* databases"; exit 0; }
+          echo "${OUT}"
+          COUNT=$(printf '%s\n' "${OUT}" | sed -n 's/^COUNT=//p')
+          STALE=$(printf '%s\n' "${OUT}" | sed -n 's/^STALE=//p')
+          echo "### MongoDB: ${COUNT:-?} \`spidapter_*\` database(s) on Atlas at job start; swept ${STALE:-0} stale (>=2 days old)" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Run spicebench
         env:
           # spidapter exchanges these client credentials for a fresh OAuth token
@@ -366,6 +409,10 @@ jobs:
           ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:${{ inputs.spidapter_image_tag || 'latest' }} stdio --verbose --ready-wait ${{ inputs.ready_wait_seconds || '1200' }}"
 
           set -x
+          # Tee the combined output so the "Drop this run's MongoDB database" step
+          # (if: always()) can recover the exact per-run database name the adapter
+          # printed and drop precisely that one. pipefail (set above) keeps the
+          # pipeline's exit status as spicebench's, so failures still fail the step.
           ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}" \
             --scenario "${SCENARIO}" \
@@ -379,4 +426,39 @@ jobs:
             --system-adapter-stdio-cmd docker \
             --system-adapter-stdio-args "${ADAPTER_ARGS}" \
             --system-adapter-env "SCHEDULER_STATE_LOCATION=${SCHEDULER_STATE_LOCATION}" \
-            ${NO_TEARDOWN_ARG}
+            ${NO_TEARDOWN_ARG} 2>&1 | tee "${RUNNER_TEMP}/spicebench-run.log"
+
+      # Backstop for the adapter's in-process teardown: on any run outcome
+      # (success, failure, or cancellation) drop the per-run MongoDB database this
+      # job created. The adapter only drops it via the teardown RPC on a clean end;
+      # a cancelled/killed job leaves it on the shared Atlas instance forever
+      # (MongoDbGuard is fail-safe and never deletes on drop). We recover the exact
+      # `spidapter_<date>_<id>` name from the run log the adapter printed, so we drop
+      # only THIS job's database and never a concurrent run's.
+      - name: Drop this run's MongoDB database
+        if: ${{ always() && inputs.system_under_test == 'mongodb-streams' }}
+        env:
+          MONGODB_ATLAS_URI: ${{ secrets.MONGODB_ATLAS_URI }}
+        run: |
+          set -uo pipefail
+          LOG="${RUNNER_TEMP}/spicebench-run.log"
+          if [ ! -f "${LOG}" ]; then
+            echo "No run log at ${LOG}; nothing to drop."
+            exit 0
+          fi
+          # The adapter logs: [stdio] MongoDB connect: using per-run database 'spidapter_<date>_<id>'
+          DBS=$(grep -oE "spidapter_[0-9a-f_]+" "${LOG}" | sort -u || true)
+          if [ -z "${DBS}" ]; then
+            echo "No spidapter_* database name found in the run log; nothing to drop."
+            exit 0
+          fi
+          echo "Per-run database(s) to drop:"
+          printf '  %s\n' ${DBS}
+          for db in ${DBS}; do
+            echo "Dropping ${db} ..."
+            docker run --rm -e MONGODB_ATLAS_URI -e DB="${db}" mongo:8.0 mongosh --quiet --eval '
+              const c = new Mongo(process.env.MONGODB_ATLAS_URI);
+              const r = c.getDB(process.env.DB).dropDatabase();
+              print("dropDatabase(" + process.env.DB + ") -> " + JSON.stringify(r));
+            ' || echo "WARN: failed to drop ${db}; it will remain for later cleanup"
+          done
