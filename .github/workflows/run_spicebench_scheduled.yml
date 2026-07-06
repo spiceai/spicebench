@@ -57,6 +57,7 @@ jobs:
       acceleration: cayenne
       etl_type: events
       scale_factor: '10'
+      bootstrap: true
       spidapter_image_tag: latest
       use_private_cluster: true
       app_memory_limit: '64Gi'
@@ -74,6 +75,7 @@ jobs:
       acceleration: cayenne
       etl_type: changes
       scale_factor: '10'
+      bootstrap: true
       spidapter_image_tag: latest
       use_private_cluster: true
       app_memory_limit: '64Gi'

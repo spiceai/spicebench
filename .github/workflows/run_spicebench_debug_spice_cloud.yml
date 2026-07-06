@@ -211,11 +211,24 @@ jobs:
         with:
           drivers: flightsql
 
+      # Resolve the exact spiced runtime image that will be benchmarked and read
+      # its OCI provenance labels (commit + on_trunk + ref) for both channels.
+      - name: Resolve spiced image + provenance labels
+        id: spice_image
+        uses: ./.github/actions/resolve-spiced-image
+        with:
+          custom_image_tag: ${{ inputs.custom_image_tag || '' }}
+          nightly_tag: ${{ vars.SPICE_NIGHTLY_TAG || 'latest' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          package_read_token: ${{ secrets.SPICEBENCH_PACKAGE_READER_TOKEN }}
+
       - name: Run spicebench
         env:
           SPICE_CLOUD_CLIENT_ID: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
           SPICE_CLOUD_CLIENT_SECRET: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
           SPICE_CLOUD_API_URL: ${{ inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
+          BRANCH: ${{ github.ref_name }}
+          SPICE_METRIC_LABELS: ${{ steps.spice_image.outputs.metric_label_args }}
           SCENARIO: ${{ inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ inputs.system_under_test || 'spice_cloud' }}
           SYSTEM_ADAPTER: ${{ inputs.system_under_test || 'spice_cloud' }}
@@ -340,6 +353,8 @@ jobs:
           ~/.spice/bin/spicebench run \
             --concurrency "${NUM_QUERY_CLIENTS}"  \
             --scenario "${SCENARIO}" \
+            --metric-label "spibench_branch=${BRANCH}" \
+            ${SPICE_METRIC_LABELS} \
             --executor-instance-type "${EXECUTOR_INSTANCE_TYPE}" \
             ${ETL_ARGS} \
             ${ETL_SINK_ARGS} \
