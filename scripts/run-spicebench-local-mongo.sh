@@ -31,11 +31,16 @@
 #   UPDATE_RATIO=0.8          fraction of mutations that are updates
 #   DELETE_RATIO=0.2          fraction of mutations that are deletes
 #   CHECKPOINT_INTERVAL_STEPS=2  checkpoint cadence over the mutation steps
-#   DATA_ARCHIVE=./data/spicebench-sf<SF>-bootstrap.tar.zst  cached data archive (generated if missing)
-#   CHECKPOINT_DIR=./data/spicebench-checkpoints-sf<SF>-bootstrap  local checkpoint dir (auto-generated if missing)
+#   DATA_ARCHIVE=./data/spicebench-bootstrap  BASE path for the data archive; a
+#       parameter signature (sf/ns/ms/cf/ur/dr) is appended before .tar.zst, so
+#       changing any generation knob regenerates instead of reusing a stale cache
+#   CHECKPOINT_DIR=./data/spicebench-checkpoints-bootstrap  BASE checkpoint dir; the
+#       signature plus checkpoint cadence (ci) is appended, so it regenerates when
+#       any generation knob OR CHECKPOINT_INTERVAL_STEPS changes
 #   SPICEBENCH=./target/release/spicebench    path to spicebench binary
-#   SPIDAPTER_MANIFEST=../spiceai/tools/spidapter/Cargo.toml  path to spidapter manifest
-#   SPICED=../spiceai/target/debug/spiced     path to spiced binary
+#   SPICEAI_REPO=../spiceai   spiceai checkout (sibling of spicebench by default)
+#   SPIDAPTER_MANIFEST=$SPICEAI_REPO/tools/spidapter/Cargo.toml  path to spidapter manifest
+#   SPICED=$SPICEAI_REPO/target/release/spiced  path to spiced binary
 #   MONGO_URI=mongodb://localhost:27017/spicebench?directConnection=true&replicaSet=rs0&tls=false
 #   OUTDIR=/tmp/spicebench-mongo-<timestamp>  output directory for logs + metrics
 #   VALIDATION_TIMEOUT=3600   max seconds to wait for checkpoint convergence
@@ -45,7 +50,7 @@ set -uo pipefail
 # Put the script in its own process group so Ctrl+C can kill all children
 set -m 2>/dev/null || true
 
-case "${1:-}" in -h|--help) sed -n '2,46p' "$0"; exit 0;; esac
+case "${1:-}" in -h|--help) sed -n '2,47p' "$0"; exit 0;; esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -58,17 +63,37 @@ BOOTSTRAP_CHURN_FRACTION="${BOOTSTRAP_CHURN_FRACTION:-0.17}"
 UPDATE_RATIO="${UPDATE_RATIO:-0.8}"
 DELETE_RATIO="${DELETE_RATIO:-0.2}"
 CHECKPOINT_INTERVAL_STEPS="${CHECKPOINT_INTERVAL_STEPS:-2}" # checkpoint cadence over mutation steps
-DATA_ARCHIVE="${DATA_ARCHIVE:-$REPO_ROOT/data/spicebench-sf${SF}-bootstrap.tar.zst}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-$REPO_ROOT/data/spicebench-checkpoints-sf${SF}-bootstrap}"
+
+# Parameter signature baked into the archive/checkpoint names so changing ANY
+# generation knob yields a NEW path -> automatic cache miss -> regeneration. Old
+# artifacts coexist (named by their params) instead of being silently reused.
+#   GEN_SIG  = everything that determines the data archive (SF + generate knobs)
+#   CKPT_SIG = the archive params PLUS the checkpoint cadence. Checkpoints derive
+#              from the archive, so they must also invalidate when a data param
+#              changes — hence CKPT_SIG is a superset of GEN_SIG.
+GEN_SIG="sf${SF}-ns${NUM_STEPS}-ms${BOOTSTRAP_MUTATION_STEPS}-cf${BOOTSTRAP_CHURN_FRACTION}-ur${UPDATE_RATIO}-dr${DELETE_RATIO}"
+CKPT_SIG="${GEN_SIG}-ci${CHECKPOINT_INTERVAL_STEPS}"
+
+# DATA_ARCHIVE / CHECKPOINT_DIR are treated as a BASE location; the signature is
+# always appended (for the archive, before the .tar.zst extension). Override the
+# base to relocate the artifacts — the param suffix still applies, so the
+# regenerate-on-param-change guarantee holds either way.
+DATA_ARCHIVE_BASE="${DATA_ARCHIVE:-$REPO_ROOT/data/spicebench-bootstrap}"
+CHECKPOINT_DIR_BASE="${CHECKPOINT_DIR:-$REPO_ROOT/data/spicebench-checkpoints-bootstrap}"
+DATA_ARCHIVE="${DATA_ARCHIVE_BASE%.tar.zst}-${GEN_SIG}.tar.zst"
+CHECKPOINT_DIR="${CHECKPOINT_DIR_BASE%/}-${CKPT_SIG}"
+
 SPICEBENCH="${SPICEBENCH:-$REPO_ROOT/target/release/spicebench}"
 # Note: binary is built with --features duckdb (required for checkpoint generation)
-SPIDAPTER_MANIFEST="${SPIDAPTER_MANIFEST:-/Users/viktor/workspace/spiceai/tools/spidapter/Cargo.toml}"
-SPICED="${SPICED:-/Users/viktor/workspace/spiceai/target/debug/spiced}"
-#SPICED="${SPICED:-/Users/viktor/workspace/spiceai/target/debug/spiced_broken}"
-# Local runs use the local-compute scenarios (compute: local) under
-# spiceai/data/spicebench-scenarios. The CI variants (compute: scp) live in the
-# spidapter image at tools/spidapter/scenarios, so don't default to those here.
-SCENARIO_BASE_PATH="${SCENARIO_BASE_PATH:-/Users/viktor/workspace/spiceai/data/spicebench-scenarios}"
+# spiceai is expected as a sibling checkout of spicebench (../spiceai); override
+# SPICEAI_REPO to point elsewhere.
+SPICEAI_REPO="${SPICEAI_REPO:-$(cd "$REPO_ROOT/.." && pwd)/spiceai}"
+SPIDAPTER_MANIFEST="${SPIDAPTER_MANIFEST:-$SPICEAI_REPO/tools/spidapter/Cargo.toml}"
+SPICED="${SPICED:-$SPICEAI_REPO/target/release/spiced}"
+# Local runs use the local-compute scenarios (compute: local) that ship with
+# spicebench under scripts/local-scenarios. The CI variants (compute: scp) live
+# in the spidapter image at tools/spidapter/scenarios, so don't default to those.
+SCENARIO_BASE_PATH="${SCENARIO_BASE_PATH:-$REPO_ROOT/scripts/local-scenarios}"
 MONGO_URI="${MONGO_URI:-mongodb://localhost:27017/spicebench?directConnection=true&replicaSet=rs0&tls=false}"
 
 # Optional acceleration pod selection. The `mongodb-streams` scenario deploys a full
@@ -110,7 +135,7 @@ RUST_LOG="${RUST_LOG:-info,etl::sink::mongodb=debug,etl::sink::adbc=debug}"
 # connector-mongodb resume-token / change-stream logs — surface them here.
 SPICED_LOG="${SPICED_LOG:-info,connector_mongodb=debug}"
 MONGO_PARALLELISM="${SPICEBENCH_MONGO_PARALLELISM:-16}"
-MONGOSH="${MONGOSH:-$(command -v mongosh 2>/dev/null || echo /opt/homebrew/bin/mongosh)}"
+MONGOSH="${MONGOSH:-$(command -v mongosh 2>/dev/null || echo mongosh)}"
 
 METRICS_PORT="${METRICS_PORT:-19090}"
 
@@ -125,6 +150,7 @@ echo "  SF=$SF  base_steps=$NUM_STEPS  mutation_steps=$BOOTSTRAP_MUTATION_STEPS"
 echo "  churn=$BOOTSTRAP_CHURN_FRACTION  update/delete=$UPDATE_RATIO/$DELETE_RATIO"
 echo "  checkpoint_interval=$CHECKPOINT_INTERVAL_STEPS"
 echo "  archive=$DATA_ARCHIVE"
+echo "  checkpoints=$CHECKPOINT_DIR"
 echo "  output=$OUTDIR"
 echo "============================================"
 
@@ -180,7 +206,7 @@ else
   # The checkpointer reads the bootstrap layout from the archive's version.json
   # and phases identically to the run: checkpoint 0 = full base, then one
   # checkpoint per CHECKPOINT_INTERVAL_STEPS mutation steps.
-  DUCKDB_PATH="/tmp/spicebench-checkpoint-sf${SF}-bootstrap.duckdb"
+  DUCKDB_PATH="/tmp/spicebench-checkpoint-${CKPT_SIG}.duckdb"
   rm -f "$DUCKDB_PATH"
   mkdir -p "$CHECKPOINT_DIR"
   if ! RUSTC_WRAPPER="" "$SPICEBENCH" checkpoint \

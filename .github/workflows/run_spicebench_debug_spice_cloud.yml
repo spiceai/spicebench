@@ -149,21 +149,19 @@ on:
         required: false
         default: false
         type: boolean
+concurrency:
+  group: spicebench-spicehq-cluster
+  cancel-in-progress: false
+
 jobs:
   run-spicebench:
     name: Run spicebench
     runs-on: spiceai-dev-runners
-    timeout-minutes: 600
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-cc
-
-      - uses: ./.github/actions/management-login
-        with:
-          token-url: ${{ inputs.environment == 'prod' && 'https://spice.ai/api/oauth/token' || 'https://dev.spice.ai/api/oauth/token' }}
-          client-id: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
-          client-secret: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -180,7 +178,10 @@ jobs:
       - name: Validate adapter configuration
         env:
           SCENARIO: ${{ inputs.scenario || 'tpch' }}
-          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          # spidapter exchanges these client credentials for a fresh OAuth token
+          # (and re-mints it as needed) instead of receiving a static, expiring key.
+          SPICE_CLOUD_CLIENT_ID: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          SPICE_CLOUD_CLIENT_SECRET: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
           SPICE_CLOUD_API_URL: ${{ inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
         run: |
           set -euo pipefail
@@ -190,8 +191,8 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${SPICEAI_API_KEY:-}" ]; then
-            echo "SPICEAI_API_KEY must be set for spice_cloud"
+          if [ -z "${SPICE_CLOUD_CLIENT_ID:-}" ] || [ -z "${SPICE_CLOUD_CLIENT_SECRET:-}" ]; then
+            echo "SPICE_CLOUD_CLIENT_ID and SPICE_CLOUD_CLIENT_SECRET must be set for spice_cloud"
             exit 1
           fi
 
@@ -212,7 +213,8 @@ jobs:
 
       - name: Run spicebench
         env:
-          SPICEAI_API_KEY: ${{ env.SPICEAI_API_KEY }}
+          SPICE_CLOUD_CLIENT_ID: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_ID_PROD || secrets.SPICE_MANAGEMENT_CLIENT_ID }}
+          SPICE_CLOUD_CLIENT_SECRET: ${{ inputs.environment == 'prod' && secrets.SPICE_MANAGEMENT_CLIENT_SECRET_PROD || secrets.SPICE_MANAGEMENT_CLIENT_SECRET }}
           SPICE_CLOUD_API_URL: ${{ inputs.environment == 'prod' && 'https://api.spice.ai' || 'https://dev-api.spice.ai' }}
           SCENARIO: ${{ inputs.scenario || 'tpch' }}
           SYSTEM_UNDER_TEST: ${{ inputs.system_under_test || 'spice_cloud' }}
@@ -295,7 +297,7 @@ jobs:
             export SPICEBENCH_ADBC_REUSE_BULK_INGEST_STREAMS=false
           fi
           ADAPTER_CMD="docker"
-          ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=${EXECUTOR_REPLICAS} -e SPICEAI_API_KEY -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
+          ADAPTER_DOCKER_OPTS="run -i -e SPIDAPTER_EXECUTOR_REPLICAS=${EXECUTOR_REPLICAS} -e SPICE_CLOUD_CLIENT_ID -e SPICE_CLOUD_CLIENT_SECRET -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID=${S3_AWS_ACCESS_KEY_ID} -e AWS_SECRET_ACCESS_KEY=${S3_AWS_SECRET_ACCESS_KEY} -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SCHEDULER_STATE_LOCATION"
 
           # Scenarios are baked into the spidapter image (SPIDAPTER_SCENARIO_BASE_PATH
           # defaults to /app/scenarios there), so we only select the scenario here.
