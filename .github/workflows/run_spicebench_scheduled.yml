@@ -49,7 +49,7 @@ jobs:
   mongodb-events:
     name: mongodb SF10 events
     needs: spice-cloud-changes
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'schedule' }}
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
     with:
       environment: production
@@ -67,7 +67,7 @@ jobs:
   mongodb-changes:
     name: mongodb SF10 changes
     needs: mongodb-events
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'schedule' }}
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
     with:
       environment: production
