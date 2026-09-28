@@ -178,22 +178,22 @@ turso = []
 duckdb = { git = "https://github.com/spiceai/duckdb-rs.git", rev = "d4343d8adbb910a2051f46fc07d253d45ad3fb74" } # branch: viktor/df-55-upgrade-1.5.3 (duckdb 1.5.3, arrow 59)
 
 # arrow-rs 59.2 with spice patches
-arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" } # branch: viktor/df-55-upgrade
-arrow-arith = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-array = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-buffer = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-cast = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-csv = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-data = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-flight = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-ipc = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-json = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-ord = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-row = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-schema = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-select = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-arrow-string = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
-parquet = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
+arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" } # branch: spiceai-59-patches
+arrow-arith = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-array = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-buffer = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-cast = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-csv = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-data = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-flight = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-ipc = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-json = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-ord = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-row = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-schema = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-select = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+arrow-string = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
+parquet = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" }
 
 # tpchgen-rs main with arrow 59 support (PR #278 "Bump Arrow and Parquet to
 # 59.0.0", merged 2026-06-24). The published 2.0.2 crate still caps arrow at
@@ -205,5 +205,5 @@ tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs.git", rev = "4
 # adbc_client depends on adbc_core/adbc_driver_manager 0.24, which requires
 # arrow 59 - the published 0.23.x release caps arrow at <59, causing a
 # duplicate arrow-array in the graph otherwise.
-adbc_core = { git = "https://github.com/spiceai/arrow-adbc.git", rev = "fe5f49581968880c664a1466f234fec2301ca7bf" } # branch: viktor/df-55-upgrade
+adbc_core = { git = "https://github.com/spiceai/arrow-adbc.git", rev = "fe5f49581968880c664a1466f234fec2301ca7bf" } # branch: spiceai-59-patches
 adbc_driver_manager = { git = "https://github.com/spiceai/arrow-adbc.git", rev = "fe5f49581968880c664a1466f234fec2301ca7bf" }
