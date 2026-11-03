@@ -52,13 +52,6 @@ on:
         required: false
         default: '0.17'
         type: string
-    secrets:
-      MINIO_ENDPOINT:
-        required: true
-      MINIO_ACCESS_KEY_ID:
-        required: true
-      MINIO_SECRET_ACCESS_KEY:
-        required: true
   workflow_dispatch:
     inputs:
       scenario:
@@ -127,6 +120,10 @@ jobs:
     name: Run data generation
     runs-on: spiceai-dev-runners
     timeout-minutes: 600
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # RustFS credentials
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
@@ -157,6 +154,16 @@ jobs:
           cargo build --release --features duckdb -p spicebench
           install -m 755 target/release/spicebench ~/.spice/bin/spicebench
 
+      # Credentials for the spicebench bucket in RustFS, passed only to the steps
+      # that use the bucket.
+      - name: Get RustFS credentials
+        id: rustfs
+        uses: spiceai/spiceai/.github/actions/rustfs-credentials@trunk
+        with:
+          endpoint: ${{ vars.RUSTFS_ENDPOINT }}
+          duration-seconds: '36000'
+          export-env: 'false'
+
       - name: Run data generation
         env:
           SCENARIO: ${{ inputs.scenario || github.event.inputs.scenario || 'tpch' }}
@@ -165,9 +172,10 @@ jobs:
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           NUM_STEPS: ${{ inputs.num_steps || github.event.inputs.num_steps || '25' }}
-          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
+          MINIO_ENDPOINT: ${{ vars.RUSTFS_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ steps.rustfs.outputs.access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.rustfs.outputs.secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.rustfs.outputs.session-token }}
           UPDATE_RATIO: ${{ inputs.update_ratio || github.event.inputs.update_ratio }}
           DELETE_RATIO: ${{ inputs.delete_ratio || github.event.inputs.delete_ratio }}
           BOOTSTRAP: ${{ inputs.bootstrap || github.event.inputs.bootstrap || 'false' }}
@@ -208,9 +216,10 @@ jobs:
           PREFIX: ${{ inputs.prefix || github.event.inputs.prefix || 'data-gen' }}
           REGION: ${{ inputs.region || github.event.inputs.region || 'us-east-1' }}
           CHECKPOINT_INTERVAL_STEPS: ${{ inputs.checkpoint_interval_steps || github.event.inputs.checkpoint_interval_steps || '100' }}
-          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
+          MINIO_ENDPOINT: ${{ vars.RUSTFS_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ steps.rustfs.outputs.access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.rustfs.outputs.secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.rustfs.outputs.session-token }}
           RUST_LOG: info
         run: |
           # Bootstrap datasets also get checkpoints: the checkpointer replays the

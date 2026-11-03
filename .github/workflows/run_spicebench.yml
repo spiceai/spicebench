@@ -55,6 +55,10 @@ jobs:
     name: Run spicebench
     runs-on: spiceai-dev-runners
     timeout-minutes: 600
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # RustFS credentials
     steps:
       - uses: actions/checkout@v6
 
@@ -146,6 +150,16 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           package_read_token: ${{ secrets.SPICEBENCH_PACKAGE_READER_TOKEN }}
 
+      # Credentials for the spicebench bucket in RustFS, passed only to the steps
+      # that use the bucket.
+      - name: Get RustFS credentials
+        id: rustfs
+        uses: spiceai/spiceai/.github/actions/rustfs-credentials@trunk
+        with:
+          endpoint: ${{ vars.RUSTFS_ENDPOINT }}
+          duration-seconds: '36000'
+          export-env: 'false'
+
       - name: Run spicebench
         env:
           # spidapter exchanges these client credentials for a fresh OAuth token
@@ -177,9 +191,10 @@ jobs:
           VALIDATE_CHECKPOINT_RESULTS: 'true'
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
-          MINIO_ENDPOINT: ${{ secrets.MINIO_ENDPOINT }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_ACCESS_KEY }}
+          MINIO_ENDPOINT: ${{ vars.RUSTFS_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ steps.rustfs.outputs.access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.rustfs.outputs.secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.rustfs.outputs.session-token }}
           S3_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           S3_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           SPIDAPTER_APP_MEMORY_LIMIT: '62Gi'
