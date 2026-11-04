@@ -154,7 +154,7 @@ jobs:
       # that use the bucket.
       - name: Get RustFS credentials
         id: rustfs
-        uses: spiceai/spiceai/.github/actions/rustfs-credentials@trunk
+        uses: spiceai/spiceai/.github/actions/rustfs-credentials@673c0d1ae313d52799b45e836359906217688be9 # trunk
         with:
           endpoint: ${{ vars.RUSTFS_ENDPOINT }}
           duration-seconds: '36000'
