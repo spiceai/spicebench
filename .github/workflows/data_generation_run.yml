@@ -14,7 +14,7 @@ on:
         type: string
       bucket:
         required: false
-        default: 'spiceai-public-datasets'
+        default: 'spicebench'
         type: string
       prefix:
         required: false

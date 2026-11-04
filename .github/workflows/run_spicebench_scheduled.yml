@@ -10,6 +10,10 @@ jobs:
   spice-cloud-events:
     name: spice_cloud SF10 events
     if: ${{ github.event_name != 'schedule' }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # RustFS credentials
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
@@ -30,6 +34,10 @@ jobs:
     name: spice_cloud SF10 changes
     needs: spice-cloud-events
     if: ${{ !cancelled() && github.event_name != 'schedule' }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # RustFS credentials
     uses: ./.github/workflows/run_spicebench_debug_spice_cloud.yml
     with:
       environment: prod
@@ -50,6 +58,10 @@ jobs:
     name: mongodb SF10 events
     needs: spice-cloud-changes
     if: ${{ !cancelled() && github.event_name != 'schedule' }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # RustFS credentials
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
     with:
       environment: production
@@ -68,6 +80,10 @@ jobs:
     name: mongodb SF10 changes
     needs: mongodb-events
     if: ${{ !cancelled() && github.event_name != 'schedule' }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # RustFS credentials
     uses: ./.github/workflows/run_spicebench_debug_streaming.yml
     with:
       environment: production
