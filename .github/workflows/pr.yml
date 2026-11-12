@@ -28,8 +28,8 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v6.1.0
+      - uses: dorny/paths-filter@v3.0.4
         id: filter
         with:
           filters: |
@@ -47,7 +47,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -69,7 +69,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
         with:
           ref: ${{ github.head_ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -100,12 +100,12 @@ jobs:
     concurrency:
       group: spicebench-run
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
 
-      - uses: ./.github/actions/setup-cc
+      - uses: $/.github/actions/setup-cc
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -114,7 +114,7 @@ jobs:
       - name: Pull spidapter image
         run: docker pull ghcr.io/spiceai/spidapter:latest
 
-      - uses: ./.github/actions/build-spicebench
+      - uses: $/.github/actions/build-spicebench
 
       - name: Generate test data (sf 0.001)
         env:
