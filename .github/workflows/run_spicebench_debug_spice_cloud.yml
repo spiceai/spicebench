@@ -163,12 +163,12 @@ jobs:
       packages: read
       id-token: write # RustFS credentials
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
 
-      - uses: ./.github/actions/setup-cc
+      - uses: $/.github/actions/setup-cc
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -177,7 +177,7 @@ jobs:
       - name: pull spidapter image
         run: docker pull ghcr.io/spiceai/spidapter:${{ inputs.spidapter_version || 'latest' }}
 
-      - uses: ./.github/actions/build-spicebench
+      - uses: $/.github/actions/build-spicebench
 
       - name: Validate adapter configuration
         env:
@@ -219,7 +219,7 @@ jobs:
       # its OCI provenance labels (commit + on_trunk + ref) for both channels.
       - name: Resolve spiced image + provenance labels
         id: spice_image
-        uses: ./.github/actions/resolve-spiced-image
+        uses: $/.github/actions/resolve-spiced-image
         with:
           custom_image_tag: ${{ inputs.custom_image_tag || '' }}
           nightly_tag: ${{ vars.SPICE_NIGHTLY_TAG || 'latest' }}
