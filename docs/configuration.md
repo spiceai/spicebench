@@ -34,7 +34,7 @@ SpiceBench attaches metadata to each run for cross-system comparison and adapter
 | `executor_instance_type`   | `--executor-instance-type`    | `unknown`                           | Executor hardware class                  |
 | `scenario`                 | `--scenario`                  | required                            | Benchmark scenario                       |
 | `system_adapter_name`      | `--system-adapter-name`       | `system_adapter`                    | Logical target-system identifier         |
-| `etl_bucket`               | `--etl-bucket`                | `spiceai-public-datasets`           | Source data bucket                       |
+| `etl_bucket`               | `--etl-bucket`                | `spice-datasets-gjezag77s0hu`           | Source data bucket                       |
 | `etl_prefix`               | `--etl-prefix`                | `data-gen`                          | Source data prefix                       |
 | `etl_version`              | derived from `--scale-factor` | `format_scale_factor(scale_factor)` | Version path segment passed to adapters  |
 | `scale_factor`             | `--scale-factor`              | `1.0`                               | Benchmark dataset scale factor           |
