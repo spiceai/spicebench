@@ -5,7 +5,7 @@ This guide covers installing, building, and running SpiceBench for the first tim
 ## Prerequisites
 
 - **Rust** - nightly toolchain (see `rust-toolchain.toml`; currently Rust 1.91.0+, edition 2024)
-- **S3 access** - read access to the source data bucket (default: `spiceai-public-datasets`)
+- **S3 access** - read access to the source data bucket (default: `spice-datasets-gjezag77s0hu`)
 - **System adapter** - a running or launchable adapter for your target platform (see [System Adapters](system-adapters.md))
 - **ADBC driver** - the appropriate ADBC driver for your target system
 
@@ -127,7 +127,7 @@ To run the ETL pipeline independently:
 spicebench etl \
     --scenario tpch \
     --scale-factor 1 \
-    --bucket spiceai-public-datasets \
+    --bucket spice-datasets-gjezag77s0hu \
     --prefix data-gen \
     --sink null
 ```

@@ -55,7 +55,7 @@ Set exactly one of `--system-adapter-stdio-cmd` or `--system-adapter-http-url`.
 
 | Flag                         | Type     | Default                   | Description                                                                                            |
 | ---------------------------- | -------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `--etl-bucket`               | `String` | `spiceai-public-datasets` | S3 bucket containing source data batches                                                               |
+| `--etl-bucket`               | `String` | `spice-datasets-gjezag77s0hu` | S3 bucket containing source data batches                                                               |
 | `--etl-prefix`               | `String` | `data-gen`                | S3 key prefix for source data                                                                          |
 | `--scale-factor`             | `f64`    | `1.0`                     | Dataset scale factor. The ETL version path is derived automatically                                    |
 | `--etl-sink`                 | `Enum`   | `adbc`                    | ETL sink type: `adbc` (ADBC bulk ingest)                                                               |

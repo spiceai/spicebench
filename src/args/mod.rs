@@ -147,7 +147,7 @@ pub struct RunArgs {
     pub(crate) system_adapter_env: Vec<(String, String)>,
 
     /// S3 bucket name for the ETL source and target
-    #[arg(long, default_value = "spiceai-public-datasets")]
+    #[arg(long, default_value = "spice-datasets-gjezag77s0hu")]
     pub(crate) etl_bucket: String,
 
     /// S3 key prefix (the `{prefix}` portion of `{prefix}/{scenario}/{version}/`)

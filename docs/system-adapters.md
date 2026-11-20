@@ -71,7 +71,7 @@ Returns ADBC connection details for the benchmark run and can optionally provisi
             "table_format": "parquet",
             "executor_instance_type": "c6i.4xlarge",
             "system_under_test": "myplatform",
-            "etl_bucket": "spiceai-public-datasets",
+            "etl_bucket": "spice-datasets-gjezag77s0hu",
             "etl_prefix": "data-gen",
             "etl_version": "1.0"
         },
