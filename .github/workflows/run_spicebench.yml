@@ -187,7 +187,7 @@ jobs:
           ETL_PREFIX: ${{ env.ETL_TYPE == 'changes' && 'data-gen-mutable' || 'data-gen' }}
           ETL_REGION: us-east-1
           ETL_SINK: adbc
-          SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
+          SCHEDULER_STATE_LOCATION: s3://spiceai-ci-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
           VALIDATE_CHECKPOINT_RESULTS: 'true'
           SCRAPE_SUT_METRICS: 'true'
           SPICEAI_BENCHMARK_METRICS_KEY: ${{ secrets.SPICEAI_BENCHMARK_METRICS_KEY }}
@@ -201,8 +201,6 @@ jobs:
           SPIDAPTER_EXECUTOR_MEMORY_LIMIT: '62Gi'
           SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB: '256Gi'
           SPIDAPTER_ORGANIZATION_TAG: spicehq
-          SPIDAPTER_ICEBERG_REGION: us-west-1
-          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
         run: |
           set -euo pipefail
           export RUST_LOG='info,etl::sink::adbc=debug'
@@ -235,8 +233,6 @@ jobs:
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_APP_MEMORY_LIMIT"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EXECUTOR_MEMORY_LIMIT"
             ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_EPHEMERAL_STORAGE_LIMIT_GB"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_REGION"
-            ADAPTER_DOCKER_OPTS="${ADAPTER_DOCKER_OPTS} -e SPIDAPTER_ICEBERG_CATALOG_FROM"
 
             ADAPTER_CMD="docker"
             ADAPTER_ARGS="${ADAPTER_DOCKER_OPTS} ghcr.io/spiceai/spidapter:latest stdio --verbose"

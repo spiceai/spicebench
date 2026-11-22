@@ -310,7 +310,7 @@ jobs:
           ETL_PREFIX: ${{ inputs.bootstrap && 'data-gen-bootstrap' || (inputs.etl_type == 'changes' && 'data-gen-mutable' || 'data-gen') }}
           ETL_REGION: us-east-1
           ETL_SINK: adbc
-          SCHEDULER_STATE_LOCATION: s3://spiceai-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
+          SCHEDULER_STATE_LOCATION: s3://spiceai-ci-testing-cluster-state/spicebench-scheduler-state-${{ github.run_id }}/
           BOOTSTRAP: ${{ inputs.bootstrap || 'false' }}
           # Bootstrap datasets have checkpoints too (cp0 = full base, then per
           # mutation interval), so checkpoint validation applies like normal runs.
