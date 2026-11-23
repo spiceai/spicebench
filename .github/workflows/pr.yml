@@ -155,8 +155,6 @@ jobs:
           NUM_QUERY_CLIENTS: ${{ github.event.inputs.num_query_clients || '1' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          SPIDAPTER_ICEBERG_REGION: us-west-1
-          SPIDAPTER_ICEBERG_CATALOG_FROM: iceberg:https://glue.us-west-1.amazonaws.com/iceberg/v1/catalogs/211125479522/namespaces
           RUST_LOG: info
         run: |
           ~/.spice/bin/spicebench run \
@@ -167,4 +165,4 @@ jobs:
             --scale-factor 0.001 \
             --etl-region us-east-1 \
             --system-adapter-stdio-cmd docker \
-            --system-adapter-stdio-args "run -i -e SPICE_CLOUD_CLIENT_ID -e SPICE_CLOUD_CLIENT_SECRET -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_ICEBERG_REGION -e SPIDAPTER_ICEBERG_CATALOG_FROM -e SPIDAPTER_CHANNEL=nightly -e SPIDAPTER_SCENARIO=cayenne ghcr.io/spiceai/spidapter:latest stdio --verbose"
+            --system-adapter-stdio-args "run -i -e SPICE_CLOUD_CLIENT_ID -e SPICE_CLOUD_CLIENT_SECRET -e SPICE_CLOUD_API_URL -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e SPIDAPTER_CHANNEL=nightly -e SPIDAPTER_SCENARIO=cayenne ghcr.io/spiceai/spidapter:latest stdio --verbose"
